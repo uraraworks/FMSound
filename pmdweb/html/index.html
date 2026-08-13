@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PMD Web Player</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; }
+    table { border-collapse: collapse; margin-top: 1rem; font: 12px monospace; }
+    th, td { border: 1px solid #999; padding: .2rem .4rem; text-align: right; }
+    .controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: .8rem 0; }
+    .debug { white-space: pre-wrap; font: 12px monospace; margin-top: .5rem; }
+    /* 表示倍率は JS が整数倍に合わせる(fitCanvasScale)。
+       非整数倍(例1.5倍)だと元の1ドットが1物理px/2物理pxに交互配分され、
+       5x6ドットの font_fmdsp_small が不均等に潰れて行が伸びて見える。 */
+    #fmdsp-canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+      display: block;
+      margin-top: 1rem;
+      /* border ではなく outline。border は幅を占めるので、1280px 幅の画面で
+         2倍(1280px)が「あと2px 足りない」で 1倍に落ちてしまう。 */
+      outline: 1px solid #444;
+      box-sizing: content-box;
+    }
+    details.debug-table { margin-top: .8rem; }
+    details.debug-table summary { cursor: pointer; font: 12px monospace; }
+  </style>
+</head>
+<body>
+  <h1>98FMPlayer / PMD Web</h1>
+  <input id="file" type="file" accept=".m,.M">
+  <button id="sample">テスト曲を再生</button>
+  <button id="stop">停止</button>
+  <div class="controls">
+    <label>同期較正: <input id="calibration" type="number" min="-200" max="200" step="1" value="0"> ms</label>
+    <label><input id="synchronized" type="checkbox" checked> 同期表示</label>
+  </div>
+  <canvas id="fmdsp-canvas" width="640" height="400"></canvas>
+  <div class="controls">
+    <button id="comment-prev">&uarr; コメント</button>
+    <button id="comment-next">&darr; コメント</button>
+  </div>
+
+  <details class="debug-table">
+    <summary>デバッグ用テーブル(生の同期データ)</summary>
+    <table>
+      <thead><tr><th>track</th><th>play</th><th>tone</th><th>vol</th><th>ticks</th><th>left</th><th>key</th><th>actual</th><th>gate</th><th>status</th></tr></thead>
+      <tbody id="tracks"></tbody>
+    </table>
+  </details>
+  <div id="snapshot" class="debug">snapshot ring: inactive</div>
+  <div id="audio" class="debug">AudioWorklet: inactive</div>
+
+  <script type="module">
+    import createPmdWeb from './pmdweb.js';
+    import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
+    import { FmdspFont, SmallFont } from './fmdsp/font.js';
+    import { drawTrackRows } from './fmdsp/trackrow.js';
+    import { PALETTES } from './fmdsp/palette.js';
+    import { FONT_SMALL } from './fmdsp/font_small.js';
+    import { drawComment, commentScroll } from './fmdsp/comment.js';
+    import * as rightpane from './fmdsp/rightpane.js';
+
+    const Module = await createPmdWeb();
+    const vram = new Vram(PC98_W, PC98_H);
+    const canvas = document.getElementById('fmdsp-canvas');
+    const canvasCtx = canvas.getContext('2d');
+
+    // 表示倍率を「物理ピクセル基準の整数倍」に合わせる。
+    // 非整数倍だと 5x6 ドットの font_fmdsp_small が行ごとに不均等へ拡大され、
+    // 文字が潰れて縦に伸びたように見える(実測: DPR=1 で 1.5倍のとき発生)。
+    // devicePixelRatio を掛けてから整数に丸めるので、Retina(DPR=2)では
+    // CSS上 1.5倍でも物理3倍となり破綻しない。
+    function fitCanvasScale() {
+      const dpr = window.devicePixelRatio || 1;
+      // body の左右余白を無視してビューポート幅で測る。canvas は outline なので
+      // 枠のぶんの幅を消費しない。
+      const available = document.documentElement.clientWidth;
+      // 物理ピクセルでの整数倍を求め、CSSサイズへ戻す
+      const scale = Math.max(1, Math.floor((available * dpr) / PC98_W));
+      canvas.style.width = `${(PC98_W * scale) / dpr}px`;
+      canvas.style.height = `${(PC98_H * scale) / dpr}px`;
+    }
+    fitCanvasScale();
+    window.addEventListener('resize', fitCanvasScale);
+    // resize イベントが来ない経路(DPIの違うモニタへの移動、埋め込み時の
+    // ビューポート変更など)があるので、実際の箱の変化も直接監視する。
+    new ResizeObserver(fitCanvasScale).observe(document.documentElement);
+    // docs/fmdsp-layout.md §1: パレットは fmdsp_pacc_alloc() で s_palettes[0] を
+    // 初期値にする(fmdsp-pacc.c:1114)。フェード等は今回のスコープ外。
+    const palette = PALETTES[0];
+
+    // 右半分の静的装飾(ロゴ・タイトル・各種ラベル・SPECTRUM/LEVELの枠)は
+    // 依頼どおり「初期化時に1回だけ描く」。vram.js は元々「毎フレーム全消去して
+    // 全部描き直す」簡略実装(vram.jsの設計コメント参照)だったため、静的部分だけ
+    // 再描画を避けるにはピクセルのスナップショットを取っておき、毎フレームの
+    // 消去をこのスナップショットへの復元に置き換える(drawStaticDecorations自体は
+    // 起動時に1回しか呼ばない)。
+    // バージョン文字列: FMPLAYER_VERSION_0/1/2相当の値はwasm側に対応exportが無く
+    // (pmdweb/src/PmdWeb.cppにgetVersion系の関数は存在しない)、でっち上げないため
+    // 固定のプレースホルダ('-','-','-')にする。
+    rightpane.drawStaticDecorations(vram, ['-', '-', '-']);
+    const staticVramSnapshot = vram.pixels.slice();
+
+    // SPECTRUM/LEVELのピーク保持状態。rAFを跨いで使い回す必要があるため
+    // ここ(呼び出し側)で1回だけ生成し、毎フレームrightpane.draw*Bars/Metersに
+    // 渡して書き換えてもらう(rightpane.js側のコメント参照)。
+    const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
+    const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
+    let rightPaneFrameCounter = 0;
+
+    let fmdspFont = null;
+    FmdspFont.load('./shinonome.rom').then((font) => { fmdspFont = font; })
+      .catch((error) => console.error('failed to load shinonome.rom:', error));
+    const commentSmallFont = new SmallFont(FONT_SMALL);
+
+    // コメント欄(曲名・作曲者・編曲者・メモ)。CP932バイト列は embind の
+    // std::string で返すとUTF-8として誤解釈され壊れるため、PmdWeb.cpp側は
+    // 「ポインタ+バイト長」で返す。ここでHEAPU8から直接コピーして
+    // Uint8Array(CP932バイト列そのもの)を得る(PmdCore.cのコメント参照)。
+    let commentOffset = 0;
+    function commentBytesFor(line) {
+      const length = Module.getCommentLength(line);
+      if (!length) return null;
+      const pointer = Module.getCommentPointer();
+      // subarrayはHEAPU8のバッファを共有する(次のgetCommentLength呼び出しで
+      // g_comment_buf の中身が上書きされるため、必要ならコピーしてから使うこと)。
+      return Module.HEAPU8.slice(pointer, pointer + length);
+    }
+    document.getElementById('comment-prev').addEventListener('click', () => {
+      const modePmd = Module.getCommentModePmd() !== 0;
+      commentOffset = commentScroll(commentOffset, false, modePmd, commentBytesFor);
+    });
+    document.getElementById('comment-next').addEventListener('click', () => {
+      const modePmd = Module.getCommentModePmd() !== 0;
+      commentOffset = commentScroll(commentOffset, true, modePmd, commentBytesFor);
+    });
+    const ringSize = 2048;
+    const invalidIndex = 0xffffffff;
+    const trackCount = Module.getTrackCount();
+    const fieldCount = Module.getFieldCount();
+    const tbody = document.getElementById('tracks');
+    const calibration = document.getElementById('calibration');
+    const synchronized = document.getElementById('synchronized');
+    for (let track = 0; track < trackCount; ++track) {
+      const row = tbody.insertRow();
+      row.insertCell().textContent = track;
+      for (let column = 0; column < 9; ++column) row.insertCell().textContent = '0';
+    }
+
+    function entryAt(pointerWords, entryWords, logicalIndex) {
+      const start = pointerWords + (logicalIndex & (ringSize - 1)) * entryWords;
+      return Module.HEAP32.subarray(start, start + entryWords);
+    }
+
+    function findSnapshot(pointerWords, entryWords, writeIndex, targetFrame) {
+      const available = Math.min(writeIndex, ringSize);
+      const oldest = writeIndex - available;
+      const newest = writeIndex - 1;
+      const first = entryAt(pointerWords, entryWords, oldest);
+      const last = entryAt(pointerWords, entryWords, newest);
+      if (targetFrame <= (first[0] >>> 0)) return first;
+      if (targetFrame >= (last[0] >>> 0)) return last;
+      let low = oldest;
+      let high = newest;
+      while (low <= high) {
+        const middle = low + Math.floor((high - low) / 2);
+        const entry = entryAt(pointerWords, entryWords, middle);
+        if ((entry[0] >>> 0) <= targetFrame) low = middle + 1;
+        else high = middle - 1;
+      }
+      return entryAt(pointerWords, entryWords, high);
+    }
+
+    // docs/right-pane-data.md §2: 1エントリの中に fft[]/levels[] が同居している。
+    // entry(HEAP32のsubarray)は既存の同期の仕組み(findSnapshot)でエントリ単位の
+    // Int32Arrayとして渡ってくるので、その byteOffset がそのままエントリ先頭の
+    // 絶対バイトアドレスになる(HEAP32はHEAPU8と同じArrayBufferのビューのため)。
+    function readRightPaneData(entry) {
+      const entryBase = entry.byteOffset;
+      const fftBase = entryBase + Module.getSnapshotFftOffset();
+      const fftCount = Module.getFftBinCount();
+      const fft = Module.HEAPU8.subarray(fftBase, fftBase + fftCount);
+
+      const levelCount = Module.getLevelCount();
+      const levelFieldCount = Module.getLevelFieldCount();
+      const levelBase = (entryBase + Module.getSnapshotLevelOffset()) / 4;
+      const levels = [];
+      for (let c = 0; c < levelCount; ++c) {
+        const o = levelBase + c * levelFieldCount;
+        levels.push({
+          level: Module.HEAP32[o + 0],
+          pan: Module.HEAP32[o + 1],
+          prog: Module.HEAP32[o + 2],
+          key: Module.HEAP32[o + 3],
+          playing: Module.HEAP32[o + 4] !== 0,
+        });
+      }
+      return { fft, levels };
+    }
+
+    function draw(entry) {
+      // trackスロット index -> このフレームのflatten済みデータ、の配列を作る。
+      // trackrow.js 側はこれを使い FMDSP_LEFT_MODE_OPNA (10行) を描画する。
+      const entryTracks = [];
+      for (let track = 0; track < trackCount; ++track) {
+        const data = entry.subarray(1 + track * fieldCount, 1 + (track + 1) * fieldCount);
+        entryTracks.push(data);
+        const cells = tbody.rows[track].cells;
+        cells[1].textContent = data[0];
+        cells[2].textContent = data[6];
+        cells[3].textContent = data[7];
+        cells[4].textContent = data[2];
+        cells[5].textContent = data[3];
+        cells[6].textContent = data[4];
+        cells[7].textContent = data[5];
+        cells[8].textContent = data[8];
+        cells[9].textContent = String.fromCharCode(...data.subarray(10, 18));
+      }
+      if (fmdspFont) {
+        // 静的装飾は再描画せず、起動時に1回だけ撮ったスナップショットへ復元する
+        // (vram.clear(0)の代わり)。
+        vram.pixels.set(staticVramSnapshot);
+        drawTrackRows(vram, fmdspFont, entryTracks);
+        // fmdsp-pacc.c本家はcomment_tex_bufをcomment_reset/scroll時のみ再描画するが
+        // (docs/fmdsp-layout.md §6)、Web版はvramを毎フレーム全消去する簡略実装
+        // (vram.jsの設計コメント参照)のため、コメント欄も毎フレーム描き直す。
+        const modePmd = Module.getCommentModePmd() !== 0;
+        drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset);
+
+        // 右半分の動的部分。
+        // PASSED TIME/CLOCK COUNT/TIMER B CYCLE/LOOP COUNT/CPU/FPS/ループバー/
+        // CIRCLE/PLAY-STOP-PAUSEアイコンの元データ(work->generated_frames,
+        // timerb_cnt, timerb, loop_cnt, cpuusage, fps, playing/paused等)には
+        // 対応するwasm exportが存在しない(pmdweb/src/PmdWeb.cppを参照。
+        // getSnapshotXxx/getComment系/FFT・LEVEL系のみがexportされている)。
+        // でっち上げず、取れない値は0/falseのまま渡す。唯一「playing」だけは
+        // 既存の同期コードが使っているaudioWorkletの再生状態(state.playback、
+        // 実際にaudioが再生されているかどうかの実データ)から妥当に導出できるため
+        // それを使う。frameCntはCIRCLEのポーズ点滅%32判定にしか使わないローカル
+        // 描画アニメーションカウンタ(実測値の代用ではない)。
+        const audioState = globalThis.pmdAudioState;
+        const rightPanePlaying = Boolean(audioState?.playback);
+        rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+        rightpane.drawDynamic(vram, {
+          generatedFrames: 0n,
+          timerbCnt: 0,
+          timerb: 0,
+          loopCnt: 0,
+          cpuUsage: 0,
+          fps: 0,
+          timerbCntLoop: 0,
+          loopTimerbCnt: 0,
+          playing: rightPanePlaying,
+          stopped: !rightPanePlaying,
+          paused: false,
+          frameCnt: rightPaneFrameCounter,
+        });
+
+        // SPECTRUM/LEVEL: docs/right-pane-data.md のレイアウトどおりentryから
+        // 直接読み出す(データ供給側の実装、C側のexportをそのまま使う)。
+        const { fft, levels } = readRightPaneData(entry);
+        rightpane.drawSpectrumBars(vram, fft, fftPeakState);
+        rightpane.drawLevelMeters(vram, levels, levelPeakState);
+
+        canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
+      }
+    }
+
+    function update() {
+      const writeIndex = Module.getSnapshotWriteIndex() >>> 0;
+      if (writeIndex === invalidIndex || writeIndex === 0) {
+        document.getElementById('snapshot').textContent = 'snapshot ring: inactive/empty';
+      } else {
+        const pointerWords = Module.getSnapshotRingPointer() / 4;
+        const entryWords = Module.getSnapshotEntryByteSize() / 4;
+        const latest = entryAt(pointerWords, entryWords, writeIndex - 1);
+        const renderFrame = latest[0] >>> 0;
+        const state = globalThis.pmdAudioState;
+        let selected = latest;
+        let syncText = 'sync: waiting for playFrame';
+        if (state?.playback && state.context) {
+          const context = state.context;
+          const sampleRate = context.sampleRate;
+          const outputLatency = Number.isFinite(context.outputLatency) && context.outputLatency > 0
+            ? context.outputLatency
+            : (Number.isFinite(context.baseLatency) && context.baseLatency > 0 ? context.baseLatency : 0);
+          const calibrationMs = Math.max(-200, Math.min(200, Number.parseFloat(calibration.value) || 0));
+          const estimatedPlayFrame = state.playback.playFrame +
+            (context.currentTime - state.playback.contextTime) * sampleRate;
+          const audibleFrame = Math.max(0, estimatedPlayFrame -
+            (outputLatency + calibrationMs / 1000) * sampleRate);
+          if (synchronized.checked) selected = findSnapshot(pointerWords, entryWords, writeIndex, audibleFrame);
+          syncText = `sync: audibleFrame=${Math.round(audibleFrame)} renderFrame=${renderFrame} ` +
+            `difference=${((renderFrame - audibleFrame) / sampleRate * 1000).toFixed(1)}ms ` +
+            `latency=${(outputLatency * 1000).toFixed(1)}ms calibration=${calibrationMs.toFixed(1)}ms`;
+        }
+        draw(selected);
+        document.getElementById('snapshot').textContent = `${syncText}\n` +
+          `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}`;
+      }
+      const state = globalThis.pmdAudioState;
+      if (state) {
+        const stats = state.stats;
+        document.getElementById('audio').textContent =
+          `AudioWorklet: requested=${stats.requestedFrames} rendered=${stats.renderedFrames} ` +
+          `queued=${stats.queuedFrames} underflow=${stats.underflowFrames}`;
+      }
+      requestAnimationFrame(update);
+    }
+    requestAnimationFrame(update);
+
+    async function playBytes(bytes, name) {
+      Module.FS.writeFile('/' + name, bytes);
+      const error = Module.playMusic('/' + name);
+      if (error) alert(error);
+      // fmdsp_pacc_comment_reset(fp)相当(fmdsp-pacc.c:2349-2352):
+      // 曲ロード時にスクロール位置を先頭へ戻す。
+      commentOffset = 0;
+    }
+    document.getElementById('file').addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+      if (file) await playBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    });
+    document.getElementById('sample').addEventListener('click', async () => {
+      const response = await fetch('./PC-98_Hartmann_s_Youkai_GIrl.M');
+      await playBytes(new Uint8Array(await response.arrayBuffer()), 'sample.M');
+    });
+    document.getElementById('stop').addEventListener('click', () => Module.stopMusic());
+  </script>
+</body>
+</html>

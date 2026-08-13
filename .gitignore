@@ -1,0 +1,15 @@
+# 独立した外部リポジトリ群(79MB)。各自が自分の repo を持つので追跡しない。
+/upstream/
+
+# ビルド成果物(7.4MB)。CMake キャッシュに絶対パスが焼かれるため移植性も無い。
+/pmdweb/build-web/
+
+# ツールチェーンへの symlink(実体は ../PC98/emsdk)。
+/emsdk
+
+# 生成したプレビュー画像(tools/render_*.mjs の出力)。
+/rightpane-preview.png
+/trackrow-preview.png
+/tools/*.png
+
+.DS_Store
