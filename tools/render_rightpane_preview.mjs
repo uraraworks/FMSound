@@ -133,7 +133,9 @@ function render(vram, { faultInject = false, faultInjectLevels = false } = {}) {
       blitCopy: (sprite, spriteW, x, y, w, h) => vram.blitCopy(sprite, spriteW, 0, y, w, h),
     });
   } else {
-    rightpane.drawStaticDecorations(vram, ['1', '2', '3']);
+    // 2026-08-14以降のバージョン欄は「gitコミット日付 YY.MM.DD」の2桁×3フィールド
+    // (ui/version.js相当)。プレビューでは実データに寄せてレイアウトを確認する。
+    rightpane.drawStaticDecorations(vram, ['26', '08', '14']);
   }
   const state = dummyState();
   rightpane.drawDynamic(vram, state);

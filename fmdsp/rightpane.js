@@ -14,7 +14,7 @@
 // 付す(trackrow.js の流儀を踏襲)。読み取れなかった値は「未確認」と明記する。
 
 import { drawText, SmallFont } from './font.js';
-import { FONT_SMALL, FONT_MEDIUM } from './font_small.js';
+import { FONT_SMALL } from './font_small.js';
 import {
   NUM_W, NUM_H, S_NUM, S_NUM_COLON, S_NUM_BAR,
   LOGO_FM_W, LOGO_DS_W, LOGO_P_W, LOGO_H, LOGO_W,
@@ -29,14 +29,30 @@ import {
   PANPOT_W, PANPOT_H, S_PANPOT,
 } from './sprites.js';
 
-const SMALL_FONT = new SmallFont(FONT_SMALL); // font_fmdsp_small (5x6, buf_font_1/1_d相当)
-const MEDIUM_FONT = new SmallFont(FONT_MEDIUM); // font_fmdsp_medium (6x8, buf_font_2/2_d相当)
+const SMALL_FONT = new SmallFont(FONT_SMALL); // font_fmdsp_small (5x6)
 
-// buf_font_7/buf_solid_7系は本家では「font_fmdsp_small」の別インスタンス
-// (fmdsp-pacc.c:825-833 tex_font/tex_fontm の2種類しか無く、7番色版も同じ
-// glyphを使い分けているだけ)。本Web版はフォント形状ではなく描画時の color
-// 引数で色番号を切り替える(drawText の最終引数)ので、フォントオブジェクトは
-// SMALL_FONT/MEDIUM_FONT の2種で足りる。
+// --- フォントの取り違え点検(2026-08-14) ---
+// 「buf_font_2」という名前から MEDIUM_FONT(tex_fontm, 6x8) を連想しがちだが、
+// 実際は buf_font_1/buf_font_2/buf_font_7 の3つとも同じ tex_font(font_fmdsp_small,
+// 5x6)から作られたバッファで、末尾の数字は色番号(パレットindex)の違いにすぎない
+// (fmdsp-pacc.c:986-990 `buf_font_1 = gen_buf(tex_font,...)` /
+// `buf_font_2 = gen_buf(tex_font,...)` / `buf_font_7 = gen_buf(tex_font,...)`)。
+// 本当の medium フォント(tex_fontm)を使うバッファは buf_fontm_2/buf_fontm_3 の
+// 2つだけで、これは fmdsp-pacc.c:1879-1884 (mode_update 内、PCM種類名の色分け
+// 表示 pcmname[i] とファイル名 filename の描画)にしか登場しない。この箇所は
+// init_default/update_default(=本モジュールのFMDSP_RIGHT_MODE_DEFAULTスコープ、
+// ファイル冒頭のコメント参照)の外なので、rightpane.js には medium フォントを
+// 使うべき箇所が1つも無い。
+//
+// 点検の結果、drawTitle()・drawTimeLabels()・drawCpuFpsLabels() の3関数が
+// MEDIUM_FONT(6px送り)を使っていたのは全て取り違えで、正しくは
+// buf_font_2 = SMALL_FONT(5px送り)。drawDriverLabel()・drawSpectrumLabels()・
+// drawLevelLabels()は元からSMALL_FONTで正しかった(buf_font_7/buf_font_1)。
+// 逆方向(本来medium を使うべき箇所をSMALL_FONTで代用していた例)は0件
+// (このスコープにmedium対応箇所が無いため、逆方向の誤りも起こりえない)。
+// 詳細は docs/fmdsp-layout.md 「10. フォント取り違え点検」参照。
+// 以上により本モジュールにMEDIUM_FONTの出番は無く、font_small.jsのFONT_MEDIUM
+// importも撤去した(未使用インポートを残さない)。
 
 // --- パレット色番号 ---
 // fmdsp-pacc.c:2063-2130 (fmdsp_pacc_render の draw()呼び出し列)より。
@@ -66,9 +82,17 @@ const TOP_ISPLAY_X = TOP_D_X + 4; // :118
 const TOP_VER_X = TOP_ISPLAY_X + 32; // :119
 const TOP_TEXT_Y = TOP_MUSIC_Y - 6; // :122
 const VER_Y = 8; // :125
-const VER_0_X = TOP_VER_X + 15; // :126
-const VER_1_X = VER_0_X + 7; // :127
-const VER_2_X = VER_1_X + 7; // :128
+// VER_0/1/2_X: 上流からの意図的な逸脱(2026-08-14, コーディネータ指示)。
+// 上流はここに1桁の自プレイヤーバージョン(FMPLAYER_VERSION_0/1/2)を置く想定で
+// 間隔7px(=1文字5px+空き2px、fmdsp_sprites.h:126-128 "TOP_VER_X+15/+7/+7")だが、
+// 我々はFMSound自身のバージョンとして「コミット日付 YY.MM.DD」の2桁×3フィールドを
+// 表示するため、1フィールドに2文字(10px)+区切りの空き2px=12px間隔が要る。
+// VER_0_X(576)は上流値のまま(TOP_VER_X+15)、VER_1_X/VER_2_Xのみ+7→+12に変更。
+// 終端確認: VER_2_X(600)+2桁*5px=610 < PC98_W(640) でキャンバス右端に収まる。
+// 数値検証: tools/verify_rightpane_title_spacing.mjs 参照。
+const VER_0_X = TOP_VER_X + 15; // :126 (=576、上流と同じ)
+const VER_1_X = VER_0_X + 12; // 逸脱: 上流は+7
+const VER_2_X = VER_1_X + 12; // 逸脱: 上流は+7
 
 const DRIVER_TEXT_X = 312; // :129
 const DRIVER_TEXT_Y = 27; // :130
@@ -157,23 +181,29 @@ export function drawLogo(vram) {
 }
 
 // タイトル文字列 "MUSIC FILE SELECTOR & STATUS DISPLAY" + バージョン表示。
-// fmdsp-pacc.c:1125-1176。buf_font_2 = color 2、buf_ver は pacc_mode_copy。
-// バージョン番号は固定文字列を渡す想定(呼び出し側が FMPLAYER_VERSION_0/1/2
-// 相当の文字列を持つ。本Web版に対応する値が無いため引数化する)。
-export function drawTitle(vram, version = ['0', '0', '0']) {
-  drawText(vram, MEDIUM_FONT, 'MUS', TOP_MUS_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'IC', TOP_IC_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'F', TOP_F_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'ILE', TOP_ILE_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'SELECTOR', TOP_SELECTOR_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, '&', TOP_AND_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'STATUS', TOP_STATUS_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'D', TOP_D_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'ISPLAY', TOP_ISPLAY_X, TOP_MUSIC_Y, COLOR_2);
+// fmdsp-pacc.c:1125-1176。buf_font_2 = color 2(実体はSMALL_FONT、上記「フォント
+// 取り違え点検」参照)、buf_ver は pacc_mode_copy。
+// バージョン: 上流は自プレイヤーのバージョン(FMPLAYER_VERSION_0/1/2、1桁×3)を
+// 埋め込むが、本Web版はMUCOM88/PMDを鳴らしているだけで98fmplayer自身のバージョンを
+// 出す意味が無いため、FMSound自身のバージョンに差し替えている。2026-08-14以降は
+// 「gitコミット日付 YY.MM.DD」の2桁×3フィールド(ui/version.js の
+// FMSOUND_VERSION_FIELDS、tools/gen_version.py が生成)を渡す想定。
+// デフォルト値'??'は「取得失敗時にはっきりわかる形で示す」というgen_version.pyの
+// 方針を、呼び出し忘れ時にも一貫させたもの(黙って'00'等の尤もらしい値にしない)。
+export function drawTitle(vram, version = ['??', '??', '??']) {
+  drawText(vram, SMALL_FONT, 'MUS', TOP_MUS_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'IC', TOP_IC_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'F', TOP_F_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'ILE', TOP_ILE_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'SELECTOR', TOP_SELECTOR_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, '&', TOP_AND_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'STATUS', TOP_STATUS_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'D', TOP_D_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'ISPLAY', TOP_ISPLAY_X, TOP_MUSIC_Y, COLOR_2);
   vram.blitCopy(S_VER, VER_W, TOP_VER_X, VER_Y, VER_W, VER_H);
-  drawText(vram, MEDIUM_FONT, `${version[0]}.`, VER_0_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, `${version[1]}.`, VER_1_X, TOP_MUSIC_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, `${version[2]}`, VER_2_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, `${version[0]}.`, VER_0_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, `${version[1]}.`, VER_1_X, TOP_MUSIC_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, `${version[2]}`, VER_2_X, TOP_MUSIC_Y, COLOR_2);
   vram.blitCopy(S_TEXT, TOP_TEXT_W, TOP_MUS_X, TOP_TEXT_Y, TOP_TEXT_W, TOP_TEXT_H);
 }
 
@@ -214,34 +244,34 @@ export function drawTimeLabels(vram) {
     vram.fillRect(TIME_TRI_X, TIME_Y + 8 + 19 * i, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
   }
 
-  drawText(vram, MEDIUM_FONT, 'PASSED', TIME_TEXT_X, TIME_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'T', TIME_TEXT_X + 11, TIME_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'IME', TIME_TEXT_X + 15, TIME_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'CLOCK', TIME_TEXT_X, CLOCK_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'COUNT', TIME_TEXT_X + 5, CLOCK_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'T', TIME_TEXT_X, TIMERB_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'IMER', TIME_TEXT_X + 4, TIMERB_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'CYCLE', TIME_TEXT_X + 5, TIMERB_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'LOOP', TIME_TEXT_X, LOOPCNT_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'COUNT', TIME_TEXT_X + 5, LOOPCNT_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'VOLUME', TIME_TEXT_X, VOLDOWN_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'DOWN', TIME_TEXT_X + 10, VOLDOWN_Y + 5, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'PGM', TIME_TEXT_X, PGMNUM_Y - 2, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'NUMBER', TIME_TEXT_X, PGMNUM_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'PASSED', TIME_TEXT_X, TIME_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'T', TIME_TEXT_X + 11, TIME_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'IME', TIME_TEXT_X + 15, TIME_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'CLOCK', TIME_TEXT_X, CLOCK_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'COUNT', TIME_TEXT_X + 5, CLOCK_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'T', TIME_TEXT_X, TIMERB_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'IMER', TIME_TEXT_X + 4, TIMERB_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'CYCLE', TIME_TEXT_X + 5, TIMERB_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'LOOP', TIME_TEXT_X, LOOPCNT_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'COUNT', TIME_TEXT_X + 5, LOOPCNT_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'VOLUME', TIME_TEXT_X, VOLDOWN_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'DOWN', TIME_TEXT_X + 10, VOLDOWN_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'PGM', TIME_TEXT_X, PGMNUM_Y - 2, COLOR_2);
+  drawText(vram, SMALL_FONT, 'NUMBER', TIME_TEXT_X, PGMNUM_Y + 5, COLOR_2);
 }
 
 // CPU POWER COUNT / FRAMES PER SECOND のラベル群。fmdsp-pacc.c:1295-1322。
 export function drawCpuFpsLabels(vram) {
   vram.fillRect(CPU_BAR_X, CPU_Y, TIME_BAR_W, TIME_BAR_H, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'CPU', CPU_X, CPU_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'POWER', CPU_X + 17, CPU_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'COUNT', CPU_X + 17, CPU_Y + 7, COLOR_2);
+  drawText(vram, SMALL_FONT, 'CPU', CPU_X, CPU_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'POWER', CPU_X + 17, CPU_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'COUNT', CPU_X + 17, CPU_Y + 7, COLOR_2);
   vram.fillRect(CPU_TRI_X, CPU_TRI_Y, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
 
   vram.fillRect(FPS_BAR_X, CPU_Y, TIME_BAR_W, TIME_BAR_H, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'FRAMES', FPS_X, CPU_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'PER', FPS_X + 32, CPU_Y, COLOR_2);
-  drawText(vram, MEDIUM_FONT, 'SECOND', FPS_X + 17, CPU_Y + 7, COLOR_2);
+  drawText(vram, SMALL_FONT, 'FRAMES', FPS_X, CPU_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'PER', FPS_X + 32, CPU_Y, COLOR_2);
+  drawText(vram, SMALL_FONT, 'SECOND', FPS_X + 17, CPU_Y + 7, COLOR_2);
   vram.fillRect(FPS_TRI_X, CPU_TRI_Y, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
 }
 

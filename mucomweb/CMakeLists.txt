@@ -106,6 +106,17 @@ target_include_directories(${CMAKE_PROJECT_NAME}
         PRIVATE ${FFT_UPSTREAM_DIR}
         PRIVATE src)
 
+# FMSound自身のバージョン表示(ui/version.js)をgitのコミット日時/ハッシュから
+# 生成する。壁時計を使わず「同じコミットなら必ず同じ文字列」を満たす必要があるため
+# tools/gen_version.py にロジックを寄せ、CMakeからはpython3を呼ぶだけにする。
+# sync_html(下)が ../ui を丸ごとbuild-web/ui/へコピーするより先に走らせる必要が
+# あるため、add_dependenciesで明示的に順序付けする(ALL同士は順序が保証されない)。
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_custom_target(generate_version ALL
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_version.py"
+    COMMENT "git commit日時/ハッシュから ui/version.js を生成")
+
 # html/ の同期は file(COPY) だと configure 時にしか走らず、html/js だけ編集
 # しても build-web/ に反映されない（pmdweb/CMakeLists.txt で踏んだ問題と同じ）。
 # ALL 付き custom target なら make のたびに必ず走る。
@@ -120,6 +131,7 @@ add_custom_target(sync_html ALL
         "${CMAKE_CURRENT_SOURCE_DIR}/../ui"
         "${CMAKE_CURRENT_BINARY_DIR}/ui"
     COMMENT "html/ と fmdsp/ と ui/ を build-web/ へ同期")
+add_dependencies(sync_html generate_version)
 
 # サンプル MML。README には「ビルド後に毎回手でコピー」とあったがこの機会に自動化。
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD

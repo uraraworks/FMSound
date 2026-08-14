@@ -89,6 +89,7 @@
   <a href="https://github.com/aosoft/MucomWeb" target="_blank" rel="noopener">MUCOM88 on Web</a>
   <a href="https://github.com/aosoft/MucomWeb/blob/master/LICENSE" target="_blank" rel="noopener">(LICENSE)</a> /
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>
+  <span id="fmsoundVersionFooter" class="fmsound-version-footer"></span>
 </footer>
 
 <script type="module">
@@ -103,6 +104,11 @@
   import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT } from './adapter.js';
   import { ICONS, iconButton } from './ui/icons.js';
   import { setupFullscreen, setupPopover } from './ui/shell.js';
+  import { FMSOUND_VERSION_FIELDS, FMSOUND_VERSION_FOOTER } from './ui/version.js';
+
+  // フッターに完全な識別子(日時+コミットハッシュ)を表示する。gen_version.pyが
+  // 取得失敗時は'unknown'を返す方針なので、ここでも黙って空欄にせずそのまま出す。
+  document.getElementById('fmsoundVersionFooter').textContent = ` — FMSound ${FMSOUND_VERSION_FOOTER}`;
 
   // --- モード(player/editor)。localStorageに保存し、次回も同じモードで開く ---
   const UI_MODE_KEY = 'fmsound-mucom-ui-mode';
@@ -197,8 +203,10 @@
 
   const palette = PALETTES[0];
 
-  // バージョン文字列相当のexportはMUCOM側にも無い。pmdweb同様プレースホルダ。
-  rightpane.drawStaticDecorations(vram, ['-', '-', '-']);
+  // FMDSPタイトル欄にはFMSound自身のバージョン(gitコミット日付 YY.MM.DD)を出す。
+  // ui/version.js は tools/gen_version.py がビルド時に生成する(未生成/取得失敗
+  // 時は'??'。詳細はrightpane.jsのdrawTitle()コメントとdocs/fmdsp-layout.md参照)。
+  rightpane.drawStaticDecorations(vram, FMSOUND_VERSION_FIELDS);
   const staticVramSnapshot = vram.pixels.slice();
 
   const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);

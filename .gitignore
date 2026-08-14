@@ -13,4 +13,9 @@
 /trackrow-preview.png
 /tools/*.png
 
+# tools/gen_version.py が git コミット日時/ハッシュから生成するバージョン情報。
+# コミットしなくてもビルドのたびに内容が変わりうる(HEADが動けば変わる)ため
+# 追跡しない(mucomweb/CMakeLists.txt の generate_version ターゲット参照)。
+/ui/version.js
+
 .DS_Store

@@ -182,3 +182,11 @@ emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build buil
 - OPNA は 98fmplayer が `libopna`（自前実装）、mucom88 が `fmgen`（cisc氏）と別実装。
   fmgen は NP2 系と同系統なので、WebNP2 での知見がそのまま通用する。
   ただし**コードの流用先は無い**（両者とも音源を自前で持っているため）。
+
+## バージョン表示
+
+FMDSP タイトル欄の `Ver YY.MM.DD` とページフッターの識別子は、手動採番ではなく
+**git のコミット日時・ハッシュから自動生成**している（`tools/gen_version.py` →
+`ui/version.js`、ビルド時刻は使わないので同じコミットなら常に同じ文字列になる）。
+更新したい場合は該当コミットを作るだけでよく、直接編集する場所は無い
+（詳細: `docs/fmdsp-layout.md` §11）。

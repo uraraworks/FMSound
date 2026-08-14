@@ -328,3 +328,129 @@ pacc固有の追加テクスチャ生成(スプライトデータそのもので
 7. **VOLUME DOWN/PGM NUMBERの値表示は依然として実装箇所不明**: fmdsp.c/pacc.c
    両方でラベルのみ確認でき、値の描画コードは発見できなかった。Web版で必要なら
    別途仕様確認(実機/実プレイヤーでの挙動観察)が要る。
+
+## 10. フォント取り違え点検(2026-08-14)
+
+### 経緯
+
+FMDSPタイトル"MUSIC FILE SELECTOR & STATUS DISPLAY"が文字同士めり込んで読めない
+不具合の原因調査から、`fmdsp/rightpane.js`が`buf_font_2`相当の描画に
+**MEDIUM_FONT(font_fmdsp_medium, 6x8, 送り6px)を誤って使っていた**ことが判明した。
+`buf_font_2`という名前から連想しやすいが、実際は下記の通り3つの`buf_font_*`が
+すべて同じ`font_fmdsp_small`(5x6, 送り5px)由来である。
+
+### 出典による裏取り
+
+- `fmdsp-pacc.c:799-801`(`fmdsp_pacc_init_tex`): `tex_font = tex_from_font(...,
+  &font_fmdsp_small)`、`tex_fontm = tex_from_font(..., &font_fmdsp_medium)`の
+  2種類のテクスチャのみ存在。
+- `fmdsp-pacc.c:986-999`(`fmdsp_pacc_init_buf`):
+  - `buf_font_1 = gen_buf(tex_font, ...)` (small)
+  - `buf_font_1_d = gen_buf(tex_font, ...)` (small)
+  - `buf_font_2 = gen_buf(tex_font, ...)` (small) ← **ここが取り違えの元**
+  - `buf_font_2_d = gen_buf(tex_font, ...)` (small)
+  - `buf_font_7 = gen_buf(tex_font, ...)` (small)
+  - `buf_fontm_2 = gen_buf(tex_fontm, ...)` (medium)
+  - `buf_fontm_3 = gen_buf(tex_fontm, ...)` (medium)
+
+  つまり`buf_font_*`(末尾が数字だけ)は全部small、`buf_fontm_*`(fontmと明記)だけが
+  medium。数字の1/2/7は色番号(パレットindex)であってフォントサイズとは無関係。
+- 送り幅の実装根拠: `pacc/pacc-gl.c:283-295`(`pacc_buf_vprintf`)の
+  `int w = pb->tex->w / 256;` はテクスチャ幅をそのままグリフ送り幅として使う。
+  small=5px、medium=6px。
+
+### 点検範囲と結論
+
+`init_default`(`1121-1435`)/`update_default`(`1501-1808`)、すなわち
+`FMDSP_RIGHT_MODE_DEFAULT`(本モジュールのスコープ、ファイル冒頭コメント参照)内で
+使われる`buf_font_*`を全数点検した結果:
+
+| 呼び出し箇所 | 使用バッファ | 実体 | rightpane.js側(修正前) | 修正後 |
+|---|---|---|---|---|
+| タイトル("MUS"〜"ISPLAY"、バージョン欄) `1125-1176` | `buf_font_2` | small | MEDIUM_FONT(誤) | SMALL_FONT |
+| DRIVERラベル `1182-1191` | `buf_font_7` | small | SMALL_FONT(元から正しい) | 変更なし |
+| PASSED TIME〜PGM NUMBER各ラベル `1197-1285` | `buf_font_2` | small | MEDIUM_FONT(誤) | SMALL_FONT |
+| CPU POWER COUNT/FRAMES PER SECOND `1296-1319` | `buf_font_2` | small | MEDIUM_FONT(誤) | SMALL_FONT |
+| SPECTRUM ANALYZER見出し `1366-1378` | `buf_font_7` | small | SMALL_FONT(元から正しい) | 変更なし |
+| FREQ/250/500/1k/2k/4k目盛 `1379-1405` | `buf_font_1` | small | SMALL_FONT(元から正しい) | 変更なし |
+| ON/PAN/PROG/KEY, FM1〜PPZ列見出し, 0/-48目盛 | `buf_font_1`/`buf_font_7` | small | SMALL_FONT(元から正しい) | 変更なし |
+
+**結論: 取り違えは3関数(`drawTitle`/`drawTimeLabels`/`drawCpuFpsLabels`)の
+計21箇所。すべて「upstreamはsmallなのに我々がmedium(MEDIUM_FONT)を使っていた」
+という同一方向の誤り。逆方向(upstreamがmediumなのに我々がsmallだった箇所)は
+0件。** 理由は単純で、`FMDSP_RIGHT_MODE_DEFAULT`スコープ内にはmedium
+(`buf_fontm_2`/`buf_fontm_3`)を使う描画が1つも存在しないため、逆方向の誤りが
+そもそも起こりえない。
+
+medium(`buf_fontm_2`/`buf_fontm_3`)の実際の使用箇所は`mode_update`内
+`fmdsp-pacc.c:1879-1884`(PCM種類名`work->pcmname[i]`とファイル名`work->filename`
+の描画、`pcmerror[i]`時は`buf_fontm_3`の赤系に切替)のみで、これは
+`FILEBAR`領域(PLAYING_Y付近)の動的表示であり、`docs/fmdsp-layout.md`§2の
+「PCMタイプ名バー」行が指す機能。本Web版ではこの機能自体が未実装
+(`fmdsp/`配下に`pcmname`/`filename`を扱うコードが無いことをgrepで確認済み)。
+そのため今回の修正で`MEDIUM_FONT`はrightpane.js内で完全に不要となり、
+`font_small.js`の`FONT_MEDIUM`importごと削除した。将来PCM名/ファイル名表示を
+実装する際に、この`buf_fontm_2/3`の対応を再度参照すること。
+
+### 検証
+
+- 数値: `tools/verify_rightpane_title_spacing.mjs`(タイトル9断片+バージョン欄の
+  間隔を「開始X+文字数×送り幅」で計算し、隣接要素との差が想定通りか機械検査。
+  故障注入で送り幅を6px(修正前相当)にすり替えると検査がFAILすることを確認済み)。
+- 目視: `tools/render_rightpane_preview.mjs`で修正前後を比較。修正前は
+  "MUSICFILESELECTORSTATUSDISPLAYer123"のように断片同士がめり込んでいたが、
+  修正後は"MUSIC FILE SELECTOR & STATUS DISPLAY Ver 26.08.14"、
+  "PASSED TIME"/"CLOCK COUNT"/"TIMER CYCLE"/"LOOP COUNT"/"VOLUME DOWN"/
+  "PGM NUMBER"/"CPU POWER COUNT"/"FRAMES PER SECOND"のいずれも隣接語との
+  重なりなく読めることを確認した。
+
+## 11. バージョン表示の仕様(2026-08-14)
+
+98fmplayer自身のバージョン(`FMPLAYER_VERSION_0/1/2`)を出す元々の設計は、
+MUCOM88/PMDを鳴らしている本Web版には意味が無いため、**FMSound自身のバージョン**
+に差し替えた。詳細な生成ロジックは`tools/gen_version.py`のdocstring、表示側の
+配線は`fmdsp/rightpane.js`の`drawTitle()`コメントおよび
+`mucomweb/html/index.html`参照。ここでは上流からの座標逸脱のみ記録する。
+
+### VER_0/1/2_Xの逸脱(上流からの唯一の座標変更点)
+
+上流(`fmdsp_sprites.h:126-128`)は1桁の数字を想定して間隔7px
+(`TOP_VER_X+15`, `+7`, `+7`)で設計されている。本Web版は「gitコミット日付
+YY.MM.DD」の2桁×3フィールドを表示するため、1フィールド2文字(10px)+区切り2px
+=12px間隔が必要。そのため`VER_1_X`/`VER_2_X`のみ上流の`+7`を`+12`に変更した
+(`VER_0_X`自体は上流と同じ`TOP_VER_X+15`=576のまま)。
+
+**上流からの座標逸脱はこの2箇所(`VER_1_X`,`VER_2_X`の加算値)だけ。** 他の座標
+定数(TOP_MUS_X等9個、TOP_VER_X、CURL/TIME/CPU/FPS/SPECTRUM/LEVEL系すべて)は
+上流と完全一致のまま変更していない。
+
+ピリオドの扱いは上流の書式`"%s." / "%s." / "%s"`(`fmdsp-pacc.c:1165-1176`)を
+そのまま踏襲し、`${version[0]}.` `${version[1]}.` `${version[2]}`で描画する
+(`fmdsp/rightpane.js`の`drawTitle()`)。間隔計算(576/588/600)はピリオドを含めず
+2桁の数字部分だけで行っている。これは上流自体が「1文字+ピリオド=2文字ぶんの幅」を
+7px(=1文字ぶんより2px広いだけ)に収める設計になっており、ピリオドのグリフが
+5pxセルの左寄りにしか点を持たないため文字同士の実ピクセルは重ならない、という
+upstreamの比率をそのまま2桁化して踏襲したもの。終端は`VER_2_X(600)+2桁*5px=610`
+で、キャンバス幅`PC98_W=640`に収まることを`tools/verify_rightpane_title_spacing.mjs`
+で数値確認済み。
+
+### 生成方法
+
+`tools/gen_version.py`がgitのコミット日時(UTC, コミッターdate)とコミットハッシュ
+から`ui/version.js`を生成する(ビルド時刻=壁時計は使わない。同じコミットから
+何度ビルドしても同じ文字列になることが要件)。`mucomweb/CMakeLists.txt`の
+`generate_version`ターゲット(ALL付き、`sync_html`より先に実行されるよう
+`add_dependencies`で順序付け)がビルドのたびに実行する。生成物は
+`.gitignore`対象(`/ui/version.js`)。
+
+取得に失敗した場合(gitが無い/リポジトリでない等)は、`FMSOUND_VERSION_FIELDS`は
+`['??','??','??']`、`FMSOUND_VERSION_FOOTER`は`'unknown'`と、**はっきりわかる形**
+で出力する(黙って空欄や尤もらしい値で埋めない方針)。
+
+### 表示は2箇所
+
+- FMDSPタイトル欄(`VER_0/1/2_X`): 日付のみ`YY.MM.DD`(`FMSOUND_VERSION_FIELDS`)。
+  幅の制約により時刻・ハッシュは入らない。
+- ページフッター(`mucomweb/html/index.html`の`#fmsoundVersionFooter`):
+  完全な識別子`YYYY-MM-DD HH:MM UTC (ハッシュ7桁)`(`FMSOUND_VERSION_FOOTER`)。
+  同日に複数回コミットした場合に区別するための一意識別子として、不具合報告時に使う。
