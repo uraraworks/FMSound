@@ -19,6 +19,8 @@ import { PC98_W, PC98_H } from './fmdsp/vram.js';
 import { ICONS, iconButton } from './ui/icons.js';
 import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER } from './ui/version.js';
+import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
+import { urlBaseName } from './net-load.js';
 
 const VALID_DRIVERS = ['pmd', 'mucom'];
 // 既定ドライバ: pmd。このツール一式の目的は「Webで PC-98 のゲームを作る」ことで、
@@ -29,7 +31,21 @@ const DEFAULT_DRIVER = 'pmd';
 
 const params = new URLSearchParams(location.search);
 const requestedDriver = params.get('driver');
-const driver = VALID_DRIVERS.includes(requestedDriver) ? requestedDriver : DEFAULT_DRIVER;
+// ?mml=<URL> で曲を指定できる(net/配線タスク)。?driver= が明示されていればそちらを
+// 優先し、無い場合だけURLの拡張子(EXTENSION_DRIVER_TABLE、net/song-select.js)から
+// ドライバを推測する。拡張子で判別できない場合(書庫URL等)は既定ドライバのまま
+// (書庫の中身は取得後でないと分からず、取得前にどちらのwasmを読み込むか決める
+// この段階では中身を見られないため)。
+const songUrl = params.get('mml');
+function sniffDriverFromUrl(url) {
+  const name = urlBaseName(url).toLowerCase();
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return null;
+  return EXTENSION_DRIVER_TABLE[name.slice(dot)] ?? null;
+}
+const driver = VALID_DRIVERS.includes(requestedDriver)
+  ? requestedDriver
+  : (songUrl && sniffDriverFromUrl(songUrl)) || DEFAULT_DRIVER;
 
 const DRIVER_LABELS = {
   mucom: 'MUCOM88 (PC-8801)',
@@ -156,6 +172,7 @@ const ctx = {
   settingsPopoverEl: document.getElementById('settingsPopover'),
   btnFullscreen,
   fileInput: document.getElementById('fileInput'),
+  songUrl,
   sampleLinksEl: document.getElementById('sampleLinks'),
   enginePaneEl: document.getElementById('enginePane'),
   debugPaneEl: document.getElementById('debugPane'),

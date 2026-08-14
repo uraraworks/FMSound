@@ -42,6 +42,7 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
+import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -356,6 +357,22 @@ export async function init(ctx) {
   // 確認して気づいた。lastPlayIconKeyも同じ理由で同居させる)。
   let moduleReady = false;
   let lastPlayIconKey = null;
+  // URL指定(?mml=)で読み込んだが、まだ再生ボタンを押していない曲。
+  // { bytes, name } | null。btnPlayPauseクリックで消費してplayBytes()する
+  // (読み込むだけで自動再生はしない。AudioContextはユーザー操作を要求するため)。
+  let pendingUrlSong = null;
+
+  // --- URL指定読み込み時の状態表示(常時表示。#result/#mmlStatusはmmlEditorPane配下で
+  // プレイヤーモード時に隠れるため、その外側(sampleLinksElの直後)に置く)。 ---
+  const netStatusEl = document.createElement('div');
+  netStatusEl.className = 'net-status hidden';
+  sampleLinksEl.insertAdjacentElement('afterend', netStatusEl);
+
+  function setNetStatus(message, isError) {
+    netStatusEl.textContent = message;
+    netStatusEl.classList.toggle('net-status-error', Boolean(isError));
+    netStatusEl.classList.toggle('hidden', !message);
+  }
 
   applyUiMode(currentUiMode());
 
@@ -615,6 +632,16 @@ export async function init(ctx) {
         : `コンパイル&再生 (${SHORTCUT_PLAY_HINT})`;
       active = false;
       dirty = mmlDirty && hasMmlContent;
+    } else if (pendingUrlSong && uiMode !== 'editor') {
+      // URL指定(?mml=)で読み込んだが未再生の曲がある状態。読み込むだけでは自動再生
+      // しない方針のため、ここではbtnPlayPauseを「読み込んだ曲を再生」ボタンとして
+      // 有効化する(押した瞬間に初めてModule.playMusic()が呼ばれる)。
+      playDisabled = !moduleReady;
+      stopDisabled = !moduleReady || !hasPlayback;
+      iconKey = 'play';
+      title = `曲を再生 (${SHORTCUT_PLAY_HINT})`;
+      active = false;
+      dirty = false;
     } else {
       playDisabled = !moduleReady || !hasPlayback;
       stopDisabled = !moduleReady || !hasPlayback;
@@ -688,6 +715,12 @@ export async function init(ctx) {
     if (btnPlayPause.disabled) return;
     if (needsCompileNow()) {
       compileAndPlay();
+      return;
+    }
+    if (pendingUrlSong && uiMode !== 'editor') {
+      const { bytes, name } = pendingUrlSong;
+      pendingUrlSong = null;
+      playBytes(bytes, name);
       return;
     }
     const audioState = globalThis.pmdAudioState;
@@ -793,6 +826,7 @@ export async function init(ctx) {
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
     clearCompileStatus();
+    pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
     if (error) {
@@ -851,4 +885,63 @@ export async function init(ctx) {
     btnStop,
     popovers: [settingsPopoverEl, downloadMenu.popoverEl],
   });
+
+  // --- URL指定での曲読み込み(?mml=<URL>)。net/(取得・書庫展開)を実際にUIへ配線する
+  // 箇所(2026-08-15)。PMDは「曲を開く」「ドラッグ&ドロップ」と同じく.M/.mを常に
+  // バイナリ(コンパイル済みデータ)として扱う(MMLソースのコンパイルを経由しない)。
+  // 読み込むだけで自動再生はしない(AudioContextはユーザー操作を要求するため。
+  // 「リングは進むが無音」という紛らわしい状態を避ける)ので、ここでは
+  // pendingUrlSong に保持するだけに留め、再生は既存のbtnPlayPauseクリックへ委ねる。
+  async function loadSongFromUrlParam(url) {
+    setNetStatus(`読み込み中: ${url}`, false);
+    let resolved;
+    try {
+      resolved = await resolveSongFromUrl(url, (loaded, total) => {
+        setNetStatus(total ? `読み込み中: ${loaded}/${total} bytes` : `読み込み中: ${loaded} bytes`, false);
+      });
+    } catch (err) {
+      setNetStatus(err && err.message ? err.message : `取得に失敗しました(${url})`, true);
+      return;
+    }
+
+    if (resolved.kind === 'archive') {
+      const pmdCandidates = resolved.candidates.filter((c) => c.driver === 'pmd');
+      if (pmdCandidates.length === 0) {
+        const otherCount = resolved.candidates.length;
+        setNetStatus(
+          otherCount > 0
+            ? `この書庫にPMD(.M/.m)の曲は見つかりませんでした(他ドライバの曲が${otherCount}件見つかりました。?driver=mucom で開き直してください)`
+            : 'この書庫の中に再生可能な曲が見つかりませんでした',
+          true,
+        );
+        return;
+      }
+      let chosen = pmdCandidates[0];
+      if (pmdCandidates.length > 1) {
+        chosen = await pickSongCandidate(pmdCandidates);
+        if (!chosen) {
+          setNetStatus('曲の選択をキャンセルしました', false);
+          return;
+        }
+      }
+      // pendingUrlSongは.M/.mバイナリの直接再生(プレイヤーモードの仕組み)を前提にしている。
+      // エディタモードのままだと、上のupdateTransportButtonUI()分岐(uiMode!=='editor'限定)が
+      // 効かず再生ボタンが有効化されないため、読み込み時にプレイヤーモードへ切り替える
+      // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。
+      if (uiMode === 'editor') setUiMode('player');
+      pendingUrlSong = { bytes: chosen.entry.data, name: chosen.displayName };
+      setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
+      updateTransportButtonUI();
+      return;
+    }
+
+    if (uiMode === 'editor') setUiMode('player');
+    pendingUrlSong = { bytes: resolved.bytes, name: resolved.name };
+    setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
+    updateTransportButtonUI();
+  }
+
+  if (ctx.songUrl) {
+    loadSongFromUrlParam(ctx.songUrl);
+  }
 }

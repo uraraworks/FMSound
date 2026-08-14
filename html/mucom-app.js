@@ -25,6 +25,8 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
+import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
+import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // MUCOM88のテンポ'C'はPMDの't'と違い4分音符基準のBPMそのまま(PMD側は2分音符基準、
@@ -475,6 +477,46 @@ export async function init(ctx) {
 
   let lastLoadedRawBytes = null;
   let lastLoadedText = null;
+  // 課題(net配線): 直近に読み込んだMMLの文字コード判定結果('utf-8'|'shift_jis'|null)。
+  // 手動切替ボタン(encodingBadgeEl)の表示・再デコードに使う。
+  let lastLoadedEncoding = null;
+
+  // --- URL指定読み込み時の状態表示(常時表示。enginePaneEl内はplayerモードで丸ごと
+  // 隠れるため、その外側に置く)。 ---
+  const netStatusEl = document.createElement('div');
+  netStatusEl.className = 'net-status hidden';
+  sampleLinksEl.insertAdjacentElement('afterend', netStatusEl);
+
+  // --- 文字コード判定結果の表示+手動切替(課題: MMLはCP932とは限らない)。
+  // 判定に失敗しても(=期待と違う結果でも)利用者が明示的に切り替えられるようにする。 ---
+  const encodingBadgeEl = document.createElement('button');
+  encodingBadgeEl.type = 'button';
+  encodingBadgeEl.className = 'net-encoding-badge hidden';
+  netStatusEl.insertAdjacentElement('afterend', encodingBadgeEl);
+
+  function setNetStatus(message, isError) {
+    netStatusEl.textContent = message;
+    netStatusEl.classList.toggle('net-status-error', Boolean(isError));
+    netStatusEl.classList.toggle('hidden', !message);
+  }
+
+  function updateEncodingBadge() {
+    if (!lastLoadedRawBytes) {
+      encodingBadgeEl.classList.add('hidden');
+      return;
+    }
+    encodingBadgeEl.classList.remove('hidden');
+    const label = lastLoadedEncoding === 'utf-8' ? 'UTF-8' : 'CP932(Shift_JIS)';
+    encodingBadgeEl.textContent = `文字コード判定: ${label}(自動判定。クリックで切り替え)`;
+  }
+
+  encodingBadgeEl.addEventListener('click', () => {
+    if (!lastLoadedRawBytes) return;
+    const next = lastLoadedEncoding === 'utf-8' ? 'shift_jis' : 'utf-8';
+    applyMmlBytes(lastLoadedRawBytes, { forceEncoding: next });
+    // 表示内容が変わったので、コンパイル済み状態を無効化して再コンパイルを促す。
+    markMmlDirty();
+  });
 
   let commentBytesCache = [null, null, null];
   function setCommentFromMml(mmlText) {
@@ -780,15 +822,23 @@ export async function init(ctx) {
     clearCompileStatus();
   });
 
-  const sjisDecoder = new TextDecoder('shift_jis');
-
-  function applyMmlBytes(buffer) {
-    const rawBytes = new Uint8Array(buffer);
-    const text = sjisDecoder.decode(buffer);
+  // 課題(net配線): 文字コードは決め打ちしない(以前はshift_jis固定だった)。
+  // UTF-8として妥当なバイト列かを検査し、駄目ならCP932とみなす(net/charset.js参照。
+  // 検証材料でUTF-8保存のMUCOM88 MMLが実在することを確認済み)。
+  // opts.forceEncoding を渡すと判定結果を無視して指定のエンコーディングで強制デコードする
+  // (encodingBadgeEl のクリックによる手動切替用)。
+  function applyMmlBytes(bytesOrBuffer, opts = {}) {
+    const rawBytes = bytesOrBuffer instanceof Uint8Array ? bytesOrBuffer : new Uint8Array(bytesOrBuffer);
+    const forced = opts.forceEncoding ?? null;
+    const { text, encoding } = forced
+      ? { text: decodeMmlBytesAs(rawBytes, forced), encoding: forced }
+      : decodeMmlBytes(rawBytes);
     lastLoadedRawBytes = rawBytes;
     lastLoadedText = text;
+    lastLoadedEncoding = encoding;
     mmlTextarea.value = text;
     mmlEditorApi.render();
+    updateEncodingBadge();
   }
 
   function downloadMML(url) {
@@ -879,4 +929,55 @@ export async function init(ctx) {
     btnStop,
     popovers: [settingsPopoverEl, downloadMenu.popoverEl],
   });
+
+  // --- URL指定での曲読み込み(?mml=<URL>)。net/(取得・書庫展開)を実際にUIへ配線する
+  // 箇所(2026-08-15)。読み込むだけで自動再生はしない: AudioContextはユーザー操作を
+  // 要求するため、ここで鳴らそうとしても実際には鳴らないのに「リングは進んでいるが
+  // 無音」という紛らわしい状態になる。applyMmlBytes()はcompileAndPlay()を呼ばないので、
+  // 読み込み後にmmlDirty/hasCompiledの状態から自然に「未コンパイル」扱いになり、
+  // 利用者が再生ボタンを押すとneedsCompileNow()経由でコンパイル&再生される。
+  async function loadSongFromUrlParam(url) {
+    setNetStatus(`読み込み中: ${url}`, false);
+    let resolved;
+    try {
+      resolved = await resolveSongFromUrl(url, (loaded, total) => {
+        setNetStatus(total ? `読み込み中: ${loaded}/${total} bytes` : `読み込み中: ${loaded} bytes`, false);
+      });
+    } catch (err) {
+      setNetStatus(err && err.message ? err.message : `取得に失敗しました(${url})`, true);
+      return;
+    }
+
+    if (resolved.kind === 'archive') {
+      const mucomCandidates = resolved.candidates.filter((c) => c.driver === 'mucom');
+      if (mucomCandidates.length === 0) {
+        const otherCount = resolved.candidates.length;
+        setNetStatus(
+          otherCount > 0
+            ? `この書庫にMUCOM88(.muc)の曲は見つかりませんでした(他ドライバの曲が${otherCount}件見つかりました。?driver=pmd で開き直してください)`
+            : 'この書庫の中に再生可能な曲が見つかりませんでした',
+          true,
+        );
+        return;
+      }
+      let chosen = mucomCandidates[0];
+      if (mucomCandidates.length > 1) {
+        chosen = await pickSongCandidate(mucomCandidates);
+        if (!chosen) {
+          setNetStatus('曲の選択をキャンセルしました', false);
+          return;
+        }
+      }
+      applyMmlBytes(chosen.entry.data);
+      setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
+      return;
+    }
+
+    applyMmlBytes(resolved.bytes);
+    setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
+  }
+
+  if (ctx.songUrl) {
+    loadSongFromUrlParam(ctx.songUrl);
+  }
 }
