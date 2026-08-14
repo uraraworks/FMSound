@@ -510,3 +510,152 @@ part->output_freq = outfreq;
   総量からの推測に留まる。`.fxnsz`テーブルの中身を読むか、関数単位で`.text`を
   区切って実測する。
 - **(c)（PMD.ASM移植）との工数比較**: 依然未着手。
+
+## 7. リンク・WebNP2実行・「ドライバが走った」ことの実測（2026-08-14）
+
+前節までの到達点（`-huge`でのコンパイル・サイズ実測）を受けて、**リンクが通るか、
+PC-98上（WebNP2/NP2kai）でドライバのコードが実際に走るか**を実測した。
+音を鳴らすことは目的にしていない（OPNAポート番号は今回も未調査のまま）。
+作業ファイルは全て`scratchpad/pmdlink/`（`main.c`, `songdata.asm`,
+`build_and_link.mjs`等）に置き、`WorkbenchNP2`/`WebNP2`はどちらも読むだけ
+（作業後`git -C WorkbenchNP2 status`・`git -C WebNP2 status`とも clean を確認済み）。
+
+### 7-1. リンクは通った（実測）
+
+6節で使った`fmdriver_pmd.c`（ppz8.hシム＋`:1892`書き換え済み、パッチ済み
+`-huge`版smlrc）に加えて、以下を新たに用意した:
+
+- `main.c`: 測定用ハーネス。`opna_writereg`/`opna_readreg`/`opna_status`を
+  「呼ばれた回数と最後のレジスタ番号・値を記録するだけ」のシムに差し替え、
+  `pmd_load`→`pmd_init`→`work.driver_opna_interrupt(&work)`を8回呼んで
+  `printf`で結果を表示する（`scratchpad/pmdlink/main.c`）。
+- `songdata.asm`: `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
+  （7107バイト、権利不明のためローカル実験専用、リポジトリ・配布物どちらにも
+  含めていない）を`db`配列化し、`_song_data`/`_song_data_end`ラベルで公開
+  （SmallerCはシンボルに`_`を前置するため、asm側もこの命名規則に合わせる
+  必要があった。最初`song_data`のままでリンクし`Symbol '_song_data_end' not
+  found`で失敗、命名を直して解決）。
+- `fmdriver_common.c`: `fmdriver_pmd.c`が呼ぶ`fmdriver_fm_freq2key`/
+  `fmdriver_ppz8_freq2key`はヘッダ宣言のみで実体は別ファイルにあり、
+  最初これを含めずリンクして`Symbol '_fmdriver_fm_freq2key' not found`で
+  失敗した。`fmdriver_common.c`も同じ`-huge`パイプラインでコンパイル・
+  アセンブルして追加することで解決（ただし`#include "fmdriver/fmdriver_common.h"`
+  というupstream側の相対パスがそのままでは解決できず、scratchpadのコピー内で
+  `#include "fmdriver_common.h"`に書き換えた。upstream本体は無改変）。
+
+`smlrl -huge main.o fmdriver_pmd.o fmdriver_common.o songdata.o lcdh.a -o
+pmdspike2.exe`が**`exit 0`で成功**し、142,972バイトのMZ EXEが生成された
+（`smlrl`のmapファイルで`_main`/`_pmd_load`/`_pmd_init`/`_song_data`等の
+シンボルが期待通りのアドレスに解決されていることを確認済み）。標準ライブラリは
+`toolchain/smallerc-src/v0100/lib/lcdh.a`（huge model用、`doc/smlrcc.md`の
+`-dosh`の説明どおり）を使用。`-small`用のリンク手順（`compile-core.mjs`の
+`linkSmall`）を土台に、モデルを`-huge`、ライブラリを`lcdh.a`に差し替えた形。
+
+**未解決だったが今回解消できた壁は2つとも「リンクの構成」の問題であり、
+コンパイラ・言語仕様側の壁ではなかった**（シンボル命名規則の不一致、
+実体が別の翻訳単位にある関数の見落とし）。
+
+### 7-2. WebNP2で実行できた（実測、screenshot・screen_text両方で確認）
+
+`toolchain/makefd.mjs`の`makeFd()`を直接呼び、`pmdspike2.exe`を1ファイルだけ
+含むPC-98 2HD FAT12イメージ（`pmdspike2.xdf`, 1,261,568バイト）を作成。
+ローカルCORSサーバ（127.0.0.1:8240）で配信し、`webnp2-dev-5273`
+（`http://localhost:5273/?freedos=1&run=1&fd2=...`）をブラウザタブで開いた。
+
+`pipeline-spike.md`で確立済みの手順（rAF停止環境ではキャンバスへの
+`left_click`を挟むとその直後だけrAFがバーストする／`window.np2debug.call()`
+で`type_text`・`screen_text`を直接呼ぶ）を踏襲。**新たに分かった注意点**:
+`np2debug.call()`は`Promise`を返す非同期APIで、`javascript_exec`は
+top-levelで`await`できない（`SyntaxError`）ため、`.then()`で結果を
+`window.__x`等に保存してから別呼び出しで読み出す必要がある（1回目は
+これに気づかず`JSON.stringify(promise)`で`{}`を得て「起動していない」と
+誤読しかけた）。また`type_text`は長い文字列を1回で送ると環境のrAF状態
+次第で**送信途中で切れる**ことがあった（`dir`が`d`で止まる、`pmdspk2`が
+`pmdspk`で止まる）。クリックを挟んで残りを追送すれば続きが入力できた。
+
+`dir`で`PMDSPK2  EXE       142,972  26-07-31  0:00`を確認、`pmdspk2`を実行。
+
+### 7-3. 「レジスタ書き込みがN回発生した」は表示された（ドライバが走った証拠）
+
+`screen_text`で取得した画面内容（`screenshot`でも同一内容を目視確認）:
+
+```
+B:\>pmdspk2
+pmd-link-spike: song data embedded, size=7107 bytes
+pmd_load ok
+pmd_init done, writes so far=17
+register writes occurred: 25 times
+last reg write: addr=39 data=63
+pmd-link-spike: done
+B:\>
+```
+
+クラッシュ・フリーズ・リセットなく`B:\>`へ正常復帰した。内訳:
+- `pmd_load`（曲データのパース）が成功（`false`を返さなかった）。
+- `pmd_init`（内部で`pmd_reset_opna`/`pmd_reset_timer`を呼ぶ）だけで
+  **17回**のレジスタ書き込みが発生（ドライバの初期化ロジックが実際に
+  音源初期化シーケンスを実行したことを示す）。
+- 疑似「タイマー割り込み」を8回呼んだ後、合計**25回**（8回分の増分）。
+  1回の割り込みあたり平均1回という数は、今回のシムでは
+  `opna_status`が呼び出しごとに一度だけ`3`（タイマーA/B桁上げ相当）を
+  返してから`0`を返す実装にしたため（`pmd_opna_interrupt`は
+  `status&3`が真の間ループして`pmd_timer`を呼ぶ設計。無限ループを避ける
+  ため1回だけ真を返す形にした。詳細は`main.c`のコメント参照）、
+  「1割り込み=1 timer tick」を模した最小限の刺激であり、実際の音楽再生の
+  発音頻度（ノートオン等でのレジスタ書き込み量）を代表する数値ではない。
+- **これらの数値そのものが目的ではなく**、「PMDドライバのC実装
+  （`pmd_load`/`pmd_init`/`pmd_opna_interrupt`という内部関数を含む）が
+  実機（相当のNP2kaiコア上）で実際にCPU命令として実行され、外部から
+  観測可能な副作用（シムのカウンタ増加）を生んだ」ことの証拠として実測した。
+
+**実行ファイルサイズ**: 142,972バイト（MZ EXE、コード+データ+曲データ7107バイト
+込み）。6節で実測した`fmdriver_pmd.c`単体のセクション合計(約113.3KB)に
+`main.c`・`fmdriver_common.c`・曲データ・標準ライブラリ（printf/malloc等）
+が加わった数字で、「他のドライバ・OS常駐部との同居を考えても大きな余裕がある」
+という6節の見立てとは別に、**標準ライブラリをリンクした場合の下限がどの程度
+膨らむか**が今回初めて分かった（printf等をリンクしない、より軽量な出力手段
+（直接`int 21h`呼び出し等）に絞れば下げられる余地はあるが未計測）。
+
+### 7-4. 常駐(TSR)＋割り込みとの両立の見通し
+
+**事実（今回の実測で分かったこと）**:
+- `-huge`モデルはDOSの通常MZ EXEとしてリンク・実行でき（`smlrl -huge`）、
+  DPMI/DOSエクステンダなしでNP2kai(WebNP2)上で正常に起動・終了できた。
+  4-3節で見立てていた「保護モード特有の懸念が発生しない」という点は、
+  少なくとも「通常のEXEとして起動して終了する」という範囲では実測で裏付けられた。
+- crt0（`c0dh.asm`、`lcdh.a`収録）は起動時にhuge model特有の再配置処理
+  （`.relod`/`.relot`セクションを読んでコード/データの実アドレスを解決）を
+  行ってから`main()`を呼ぶ。この再配置はプロセス起動時に一度だけ走るコードで、
+  今回のリンク・実行が通ったことで**再配置そのものは機能する**ことは確認できた。
+
+**推測（未検証のまま、事実と分けて明記）**:
+- TSR化（常駐）するには、この起動時re-location機構を経た後のコード/データを
+  「常駐領域」として残し、残りの初期化コードだけを解放する常駐化処理
+  （PSPの操作、`int 21h AH=31h`常駐終了）が必要になる。`-huge`モデルの
+  re-location機構がTSR化後の**再入時**（つまり別プログラムの下で走る
+  ときにセグメントが変わりうる状況）にどう振る舞うかは、今回1回の起動・
+  終了のサイクルしか検証していないため**未検証**。
+- 割り込みハンドラ内で`-huge`のfar pointer変換（32bit物理アドレス⇔
+  16bitセグメント:オフセット）が挟まる場合の再入禁止区間内の安全性は、
+  4-3節時点の懸念のまま**引き続き未検証**。
+- 113KBという実行ファイルサイズは、今回`printf`等の標準ライブラリを
+  フルリンクした結果であり、常駐部として必要なのは「音楽データ処理に
+  関わる部分」だけのはずなので、TSR化する際は不要な標準ライブラリ関数
+  （`printf`/`malloc`等）を削ぎ落とすことでかなり圧縮できる可能性が高いが
+  **具体的にどこまで削れるかは未計測**。コンベンショナルメモリの実質的な
+  空き（〜500KB程度、6-4節記載）との比較では、削らずそのまま常駐させても
+  致命的な圧迫ではなさそうだが、これも「他に何が同時に常駐するか」次第で
+  **一般論としては断定できない**。
+
+### 7-5. 次に確かめるべきこと（更新）
+
+- **TSR化の最小サンプル**: `int 21h AH=31h`で実際に常駐終了させ、別のCOM/EXEを
+  起動した状態から常駐部の関数を呼び出せるかを検証する（今回はスコープ外）。
+- **OPNA Timer B割り込みからの実呼び出し**: 今回は`opna_status`シムで
+  疑似的にタイマー桁上げを模したが、実際のPC-98割り込みベクタ
+  （INT 0Ah系、86音源のTimer B）から`work.driver_opna_interrupt`を
+  呼ぶグルーコードは未実装・未検証のまま。
+- **サイズの圧縮余地**: 標準ライブラリ依存（`printf`等）を削ぎ落とした場合の
+  実行ファイルサイズ実測。
+- **`ppz8.c`本体側の`uint64_t`依存**: 引き続き未着手（5-1節から変化なし）。
+- **(c)（PMD.ASM移植）との工数比較**: 引き続き未着手。
