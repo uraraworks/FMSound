@@ -30,11 +30,22 @@ PMD・MUCOM88それぞれの `html/*-app.js` に同名の関数を持つ(考え�
 しない」: 2ファイルだけのために抽象化レイヤーを増やすほどではないと判断した)。
 
 ```js
+// PMD(2026-08-15改訂版。MUCOM88はuiMode/pendingUrlSongの概念が無いぶん単純で、
+// 「hasPlayback」の判定だけを持つ相当の実装になっている)。
 function needsCompileNow() {
-  // PMDのみ: プレイヤーモードでは常にfalse(コンパイル不要、再生専用ボタンとして動く)
-  if (uiMode !== 'editor') return false;
   const hasPlayback = Boolean(globalThis.xxxAudioState?.playback);
-  return mmlDirty || !hasCompiled || !hasPlayback;
+  if (hasPlayback) {
+    // 既に鳴っている(または一時停止中の)曲があるなら、通常はPause/Resumeのトグル。
+    // エディタモードで編集し直された場合だけ再コンパイルする。
+    return uiMode === 'editor' && (mmlDirty || !hasCompiled);
+  }
+  // 曲(pendingUrlSongの未再生バイナリ含む)が無い場合、そちらの再生を優先する
+  // (プレイヤーモードの既存挙動: URL/サンプル読み込みの精密なバイト列を
+  // テキストの再コンパイルで上書きしない)。
+  if (pendingUrlSong && uiMode !== 'editor') return false;
+  // 「曲が読み込まれている」と「MMLがある」は別概念: 前者が無いなら後者の有無
+  // だけでコンパイル要否を決める(モードを問わない。症状⑦の対処)。
+  return mmlTextarea.value.trim().length > 0;
 }
 ```
 
@@ -46,6 +57,23 @@ function needsCompileNow() {
 見えても、クリックハンドラ側の条件が合わずコンパイル&再生に分岐しなかった、
 またはPMDでは表示側の条件がStop後を考慮しておらずボタン自体がdisabledに
 なっていた)。
+
+### 症状⑦(2026-08-15): リロードすると再生できなくなる(下書き復元後にPlayが無効)
+
+実機報告: 一度でも使うと下書き(`fmsound-pmd-mml-draft`)が保存され、次回リロード時に
+`mmlTextarea.value`へ復元される。しかしPMDは既定がプレイヤーモード(`uiMode !==
+'editor'`)で、旧実装の`needsCompileNow()`は**プレイヤーモードでは無条件にfalseを
+返していた**(「プレイヤーモードはコンパイル不要、再生専用ボタン」という前提)。
+そのため`updateTransportButtonUI()`は「曲が読み込まれている(`hasPlayback`)か」
+だけを見る分岐に落ち、下書きが復元されて`mmlTextarea`に中身があっても
+`hasPlayback`が偽(何も再生していない)ならPlayボタンは`disabled`のままだった。
+
+原因は「曲が読み込まれている」(`hasPlayback`/`pendingUrlSong`)と「MMLがある」
+(`mmlTextarea.value`)を同じ条件式の中で区別せずに扱っていたこと。上のコード例の
+とおり、`hasPlayback`が無い場合にかぎり`pendingUrlSong`→`mmlTextarea`の順で
+フォールバックするよう分離した。`pendingUrlSong`(URL指定/サンプル読み込みの
+未再生バイナリ)を優先する順序は変えていないため、既定サンプルの読み込みや
+`?mml=`読み込みの挙動に影響は無い(手元検証・verify_net_url_load.mjs等で確認)。
 
 ## 状態を変える経路の一覧
 

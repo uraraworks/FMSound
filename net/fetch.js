@@ -108,8 +108,8 @@ async function readResponseWithProgress(response, onProgress) {
   return result;
 }
 
-/** 中継サービス経由でURLを取得し、成功したバイト列を返す。取得できない場合はエラーをthrowする。 @param {string} url @param {(loaded: number, total: number | null) => void} progress @param {Error} fallbackError */
-async function fetchViaProxy(url, progress, fallbackError) {
+/** 中継サービス経由でURLを取得し、成功したバイト列を返す。取得できない場合はエラーをthrowする。 @param {string} url @param {(loaded: number, total: number | null) => void} progress @param {Error} fallbackError @param {(headers: Headers) => void} onHeaders */
+async function fetchViaProxy(url, progress, fallbackError, onHeaders) {
   const proxyUrl = `${NET_PROXY_BASE}/fetch?url=${encodeURIComponent(url)}`;
   let proxyResponse;
   try {
@@ -131,6 +131,7 @@ async function fetchViaProxy(url, progress, fallbackError) {
   if (looksLikeHtml(bytes, proxyResponse.headers.get('content-type'))) {
     throw new Error(`取得結果がHTMLページでした(${url})。共有リンクの権限設定を確認してください`);
   }
+  onHeaders(proxyResponse.headers);
   return bytes;
 }
 
@@ -149,12 +150,19 @@ async function fetchViaProxy(url, progress, fallbackError) {
  * それでも(直接fetch成功時・中継利用時のいずれでも)取得結果がHTML/XMLに見える場合は
  * looksLikeHtml で検出し、曲データではないと案内する。
  *
+ * 取得に使ったレスポンスのHTTPヘッダ(`Content-Disposition`のファイル名取得に使う想定)を
+ * 参照したい場合は第3引数 onHeaders を渡す(直接fetch・中継経由のいずれで取得できた場合も
+ * 成功時に一度だけ呼ばれる。失敗時・呼び出し省略時は何もしない、既存呼び出し元への
+ * 後方互換のため省略可能な追加引数にしてある)。
+ *
  * @param {string} url
  * @param {(loaded: number, total: number | null) => void} [onProgress]
+ * @param {(headers: Headers) => void} [onHeaders]
  * @returns {Promise<Uint8Array>}
  */
-export async function fetchSongBytes(url, onProgress) {
+export async function fetchSongBytes(url, onProgress, onHeaders) {
   const progress = onProgress ?? (() => {});
+  const reportHeaders = onHeaders ?? (() => {});
   const hostname = urlHostname(url);
   if (hostMatches(hostname, ONEDRIVE_HOSTS)) {
     throw new Error(`OneDriveの共有リンクは直接取得できません(${url})。ダウンロードして手動で読み込んでください`);
@@ -172,6 +180,7 @@ export async function fetchSongBytes(url, onProgress) {
       }
       const bytes = await readResponseWithProgress(response, progress);
       if (!looksLikeHtml(bytes, response.headers.get('content-type'))) {
+        reportHeaders(response.headers);
         return bytes;
       }
       directWasHtml = true;
@@ -193,5 +202,5 @@ export async function fetchSongBytes(url, onProgress) {
   }
 
   const fallbackError = directError ?? new Error(`ネットワークエラーで取得できませんでした(${url})`);
-  return await fetchViaProxy(url, progress, fallbackError);
+  return await fetchViaProxy(url, progress, fallbackError, reportHeaders);
 }

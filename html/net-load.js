@@ -8,6 +8,7 @@
 import { resolveArchiveFileName, extractArchive, baseNameOf } from './net/archive.js';
 import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
+import { decodeMmlBytes } from './net/charset.js';
 
 /**
  * URLのパス部分末尾からファイル名相当の文字列を取り出す(拡張子推測・表示名に使う)。
@@ -28,17 +29,86 @@ export function urlBaseName(url) {
 }
 
 /**
+ * `Content-Disposition` レスポンスヘッダからファイル名を取り出す(RFC 6266)。
+ * `filename*=UTF-8''...` を優先し、無ければ `filename="..."` を見る。どちらも
+ * 無ければnull。
+ * @param {Headers | null} headers
+ */
+function filenameFromContentDisposition(headers) {
+  const cd = headers?.get('content-disposition');
+  if (!cd) return null;
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(cd);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim()) || null;
+    } catch {
+      // 不正なパーセントエンコーディングは無視してplainの方を試す。
+    }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
+  return plain ? plain[1].trim() || null : null;
+}
+
+/**
+ * MMLテキストの `#title` 行から曲名を取り出す(MUCOM88/PMDいずれもテキストMMLの
+ * 慣例として先頭付近に書く)。PMDのコンパイル済み `.M` 等バイナリはテキストとして
+ * 意味を成さないため、単に一致しない(=null)だけで安全に素通りする。
+ * @param {Uint8Array} bytes
+ */
+function titleFromMmlHeader(bytes) {
+  let text;
+  try {
+    ({ text } = decodeMmlBytes(bytes));
+  } catch {
+    return null;
+  }
+  const m = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(text);
+  return m ? m[1].trim() || null : null;
+}
+
+/**
+ * URL末尾を表示名として使ってよいか判定する。「拡張子が無ければ疑う」という
+ * 素直な規則(view/edit/download/uc等の一般語を個別に列挙しない): 拡張子付きの
+ * 名前だけを信頼する。
+ * @param {string} name
+ */
+function looksLikeMeaningfulUrlTail(name) {
+  return /\.[A-Za-z0-9]+$/.test(name);
+}
+
+/**
+ * 単体ファイル取得時の表示名を優先順位に従って決める:
+ * 1. Content-Disposition のファイル名
+ * 2. (書庫展開時のファイル名は呼び出し側=archiveの枝で別途扱う)
+ * 3. MMLヘッダの #title
+ * 4. URL末尾(拡張子が無い等、意味を成さない場合は使わない)
+ * どれも取れなければnull(呼び出し側は名前を出さず「読み込みました」とだけ表示する)。
+ * @param {string} url @param {Uint8Array} bytes @param {Headers | null} headers
+ */
+function resolveSingleFileName(url, bytes, headers) {
+  return (
+    filenameFromContentDisposition(headers) ??
+    titleFromMmlHeader(bytes) ??
+    (looksLikeMeaningfulUrlTail(urlBaseName(url)) ? urlBaseName(url) : null)
+  );
+}
+
+/**
  * URLから曲データを取得し、単体ファイルか書庫かを判定して返す。
  * 書庫の場合はここで展開まで行い、再生候補一覧(findSongCandidates())まで返す
  * (どれを再生するかの選択は呼び出し側の責務)。
  * @param {string} url @param {(loaded:number, total:number|null)=>void} [onProgress]
  * @returns {Promise<
- *   | { kind: 'single', name: string, bytes: Uint8Array }
+ *   | { kind: 'single', name: string | null, bytes: Uint8Array }
  *   | { kind: 'archive', candidates: import('./net/song-select.js').SongCandidate[] }
  * >}
  */
 export async function resolveSongFromUrl(url, onProgress) {
-  const bytes = await fetchSongBytes(url, onProgress);
+  /** @type {Headers | null} */
+  let responseHeaders = null;
+  const bytes = await fetchSongBytes(url, onProgress, (headers) => {
+    responseHeaders = headers;
+  });
   const nameFromUrl = urlBaseName(url);
   const archiveFileName = resolveArchiveFileName(nameFromUrl, bytes);
   if (archiveFileName) {
@@ -46,7 +116,7 @@ export async function resolveSongFromUrl(url, onProgress) {
     const candidates = findSongCandidates(entries);
     return { kind: 'archive', candidates };
   }
-  return { kind: 'single', name: nameFromUrl, bytes };
+  return { kind: 'single', name: resolveSingleFileName(url, bytes, responseHeaders), bytes };
 }
 
 /**

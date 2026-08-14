@@ -617,10 +617,23 @@ export async function init(ctx) {
   // 別物で、Module側は曲を手放しているため単純なcontext.resume()では鳴らせない。
   // ここに来たら「コンパイル&再生」扱いにして、もう一度compileAndPlay()を
   // 呼び直せば復帰する(内容は変わっていないので再コンパイルしても実害は無い)。
+  //
+  // 2026-08-15 実機報告(リロードで再生ボタンが押せない)の対処: 以前は
+  // `uiMode !== 'editor'` の時点で無条件にfalseを返しており、「プレイヤーモードの
+  // 隠れたエディタ欄にMMLがある(下書き復元・手入力・貼り付け由来)が、まだ何も
+  // 再生していない」状態を考慮していなかった。「曲が読み込まれている」
+  // (hasPlayback/pendingUrlSong)と「MMLがある」(mmlTextarea.value)は別概念であり、
+  // 前者が無い場合は後者の有無だけでコンパイル要否を決める(モードを問わない)。
+  // ただしpendingUrlSong(URL/サンプルから読み込み済みの.M/.mバイナリ)がある場合は
+  // そちらの再生を優先する(プレイヤーモードの既存挙動どおり。テキストの再コンパイルで
+  // 上書きしない)。詳細はdocs/transport-button-state.md参照。
   function needsCompileNow() {
-    if (uiMode !== 'editor') return false;
     const hasPlayback = Boolean(globalThis.pmdAudioState?.playback);
-    return mmlDirty || !hasCompiled || !hasPlayback;
+    if (hasPlayback) {
+      return uiMode === 'editor' && (mmlDirty || !hasCompiled);
+    }
+    if (pendingUrlSong && uiMode !== 'editor') return false;
+    return mmlTextarea.value.trim().length > 0;
   }
 
   function updateTransportButtonUI() {

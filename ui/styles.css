@@ -76,7 +76,13 @@ body {
   background: var(--page-bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+  /* iOSは100vhを「ブラウザUIが隠れた状態の最大高さ」として扱うため、実際に見えている
+     領域より大きくなりフッターが画面外へはみ出す(2026-08-15 iPhone Chrome実機報告)。
+     100dvhはアドレスバーの表示/非表示に追従して伸縮しスクロール中に跳ねることがあるため、
+     ヘッダー/フッター固定・中央だけスクロールのこの構成では「跳ねないこと」を優先し
+     100svh(常に最小の見えている高さ)を使う。100vhは未対応環境向けのフォールバック。 */
   height: 100vh;
+  height: 100svh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -860,6 +866,7 @@ footer.app-footer a {
 .console-card:-webkit-full-screen {
   width: 100vw;
   height: 100vh;
+  height: 100svh; /* 上のbody同様、iOSの100vh肥大対策(跳ねないことを優先しsvh) */
   max-width: none;
   max-height: none;
   background: #000;
