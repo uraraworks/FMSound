@@ -8,43 +8,62 @@
 //   false になり、ループする曲は pmd->loop.looped が true のままなので
 //   常に true(html/pmd-app.js SNAPSHOT_HEADER.DRIVER_PLAYING参照)。
 //   html/pmd-app.js updateChannelStatus() が true->false の変化を検出したら
-//   stopPlayback()(頭出し停止)を呼ぶ。
+//   stopPlayback()(頭出し停止)を呼ぶ。この機構は今も有効(下記E参照)。
 //
-// MUCOM88側:
+// MUCOM88側(2026-08-15: 自動終了検出そのものを撤去した。撤去の経緯を記録):
 //   実測で判明: GetStatus(MUCOM_STATUS_PLAYING)はcmucom.cppのplayflag
 //   (Play()でtrue、Stop()を呼んだ時だけfalse)をそのまま返すだけで、
-//   ループしない曲が末尾に到達しても自動ではfalseにならない
-//   (intCountも上限なく増え続ける。tools/verify_mucom_tempo_absolute.mjs等と
-//   同じ方法で実測、docs/mucom-tempo-commands.mdの調査と同様に一次資料が
-//   無いため実測で確定させた)。そのためこのAPIは使わず、
-//   docs/mucom-pchdata-mapping.md §3 で確認済みの PCHDATA.flag bit0
+//   ループしない曲が末尾に到達しても自動ではfalseにならない。そのため
+//   代わりに docs/mucom-pchdata-mapping.md §3 の PCHDATA.flag bit0
 //   (LOOPEND FLAG)と、パートのcode(音程コード)が一定ポーリング回数
-//   変化していないことを組み合わせて判定する(html/mucom-app.js
-//   checkMucomSongEnded()と同じロジックをここでも実装し、実測で検証する)。
-//   bit0単体はループする曲でも最初の1周目で立ってしまう(実測: 本スクリプトの
-//   陽性対照参照)ため、「bit0が立ってからもcodeが変化し続けているか」を
-//   見て初めてループと非ループを区別できる。
+//   変化していないことを組み合わせた判定(html/mucom-app.js
+//   checkMucomSongEnded()、2026-08-14実装)を一度は採用した。
+//
+//   しかし2026-08-15、実機報告(同梱サンプルのループ曲が約6.5秒で止まる)を
+//   受けて**実物の2パートMML(tools/sample_fur_elise_mucom.mml)で再測定した
+//   ところ、bit0は「authored MMLデータの末尾に到達した」時点で一度立つと、
+//   ループが継続していても二度と下がらないと判明した**。つまりbit0は
+//   ループ点と曲の終了を区別する情報を最初から持っておらず、code安定判定を
+//   組み合わせても「休符・同音連打で3ポーリング以上codeが変わらない瞬間」に
+//   誤発火してしまう(下記F参照)。以前の検証(単純な単音階の合成MML、
+//   休符・和音・複数パート無し)がこれを再現できなかったのは、実物の楽曲を
+//   使っていなかったため(下記Fが実物での再測定)。
+//
+//   結論: 手元のPCHDATAからMUCOM88の信頼できる終了検出は組み立てられない。
+//   「ループする曲が途中で止まる」方が「ループしない曲が終了後に鳴り続ける」
+//   より明確に害が大きいため、MUCOM88側の自動停止機能そのものを撤去し、
+//   利用者が手動でStopを押す従来の挙動に戻した(html/mucom-app.js。
+//   docs/transport-button-state.md 症状⑧)。PMD側はfmdriver_work.playingという
+//   ドライバ本体の専用フラグを使っており、この問題(ループ点と終了の区別が
+//   できない)は起きないため撤去していない。
 //
 // 検証内容:
-//   PMD:
-//     A. ループしない曲(Lコマンド無し)を再生し続けるとdriver_playingが
-//        true->falseへ変わる(=曲が終わったことを検出できる)。
-//     B. ループする曲(Lコマンドあり)はdriver_playingが最後までtrueのまま
-//        (誤発火しない)。
-//   MUCOM88:
-//     C. ループしない曲(Lコマンド無し)はcheckMucomSongEnded()相当のロジックが
-//        いずれtrueになる。
-//     D. ループする曲(Lコマンドあり)は同じ観測時間ではtrueにならない
-//        (誤発火しない)。
-//     E. [陽性対照] flag bit0単体だけを終了条件にすると、ループする曲でも
-//        最初の1周目でtrueになってしまう(=bit0単体では区別できないことの確認。
-//        codeの安定性チェックを組み合わせる必要性の証拠)。
+//   A. PMD: ループしない曲(Lコマンド無し)を再生し続けるとdriver_playingが
+//      true->falseへ変わる(=曲が終わったことを検出できる)。
+//   B. PMD: ループする曲(Lコマンドあり)はdriver_playingが最後までtrueのまま
+//      (誤発火しない)。短いサンプル相当の周期でも確認する。
+//   C. MUCOM88: html/mucom-app.js に自動終了検出の呼び出し
+//      (checkMucomSongEnded/resetMucomEndState、rAFループでのstopPlayback()
+//      自動呼び出し)が存在しないこと(撤去が実際に行われ、再発していないことの
+//      構造的な確認)。
+//   D. MUCOM88: 手動Stop(Module.stopMusic())自体は引き続き機能すること
+//      (撤去したのは自動検出だけで、手動操作を壊していないことの確認)。
+//   E. [陽性対照/実物] 撤去前のロジック(bit0 + codeの安定判定)を実際の
+//      同梱サンプル(sample_fur_elise_mucom.mml、2パート・休符あり)で
+//      再現すると、ループの折り返し付近で誤ってtrueになる(=撤去の根拠が
+//      実測で裏付けられることの確認。合成MMLではなく実物を使う)。
 //
 // 実行: node tools/verify_song_end_detection.mjs
 
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
 import createMucomWeb from '../mucomweb/build-web/mucom88.js';
 import { compileMml as compilePmdMml } from '../compiler/pmd_mml_compiler.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
 
 let failCount = 0;
 let passCount = 0;
@@ -90,7 +109,8 @@ async function measurePmdDriverPlayingSeries(mml, pollSteps, framesPerPoll) {
 }
 
 // ---------------------------------------------------------------
-// MUCOM88(html/mucom-app.js checkMucomSongEnded()と同じロジック)
+// MUCOM88: 撤去前のロジック(html/mucom-app.jsにはもう存在しない。ここには
+// 「なぜ撤去したか」を実物のMMLで裏付けるためだけに残す、独立した再現実装)。
 // ---------------------------------------------------------------
 const MUCOM_CH_COUNT = 11;
 const PCH_FIELD_COUNT = 15;
@@ -161,27 +181,26 @@ async function main() {
       `false件数=${looping.filter((v) => v === false).length}/${looping.length}`);
   }
 
-  // --- C/D. MUCOM88(安定判定つき、実際にアプリで使うロジック) ---
-  console.log('\n--- C/D. MUCOM88: flag bit0 + code安定判定 ---');
+  // --- C/D. MUCOM88: 自動終了検出が実際に撤去されていることの構造チェック ---
+  console.log('\n--- C/D. MUCOM88: 自動終了検出の撤去確認 ---');
   {
-    const nonLooping = await measureMucomEndedSeries('A @78 T400 o5 l4 v10 cdefgab>c<', 60, 2048 * 5, true);
-    const becameTrue = nonLooping.some((v) => v === true);
-    check('C. ループしない曲(Lなし)はいずれ終了判定がtrueになる', becameTrue,
-      `series末尾10件=${JSON.stringify(nonLooping.slice(-10))}`);
-
-    const looping = await measureMucomEndedSeries('A @78 T400 o5 l4 v10 L cdefgab>c<', 90, 2048 * 5, true);
-    const anyTrue = looping.some((v) => v === true);
-    check('D. ループする曲(Lあり)は同じ観測時間では終了判定がtrueにならない(誤発火しない)',
-      !anyTrue, `true件数=${looping.filter((v) => v === true).length}/${looping.length}`);
+    const mucomSrc = readFileSync(path.join(REPO_ROOT, 'html/mucom-app.js'), 'utf8');
+    check('C. checkMucomSongEnded/resetMucomEndStateの呼び出しがhtml/mucom-app.jsに存在しない',
+      !/checkMucomSongEnded\(|resetMucomEndState\(/.test(mucomSrc));
+    check('D. 手動停止(Module.stopMusic())の呼び出しは引き続き存在する(撤去したのは自動検出だけ)',
+      /Module\.stopMusic\(\)/.test(mucomSrc));
   }
 
-  // --- E. 陽性対照: bit0単体では区別できない ---
-  console.log('\n--- E. [陽性対照] flag bit0単体はループする曲でも最初の1周目でtrueになる ---');
+  // --- E. 陽性対照(実物): 撤去前ロジックを実際のサンプルMMLで再現すると誤発火する ---
+  console.log('\n--- E. [陽性対照/実物] 撤去前ロジックはsample_fur_elise_mucom.mmlで誤発火する ---');
   {
-    const loopingBitOnly = await measureMucomEndedSeries('A @78 T400 o5 l4 v10 L cdefgab>c<', 30, 2048 * 5, false);
-    const anyTrue = loopingBitOnly.some((v) => v === true);
-    check('[陽性対照] bit0単体(安定判定なし)はループする曲でもtrueになってしまう(誤検出の再現)',
-      anyTrue, `true件数=${loopingBitOnly.filter((v) => v === true).length}/${loopingBitOnly.length}`);
+    const realMml = readFileSync(path.join(REPO_ROOT, 'tools/sample_fur_elise_mucom.mml'), 'utf8');
+    // 1周あたり約6.5秒(利用者報告どおり)。framesPerPoll=2048@55467Hz(≒37ms/poll)で
+    // pollSteps=260なら約9.6秒分、1周目の終わり〜2周目突入までをカバーする。
+    const series = await measureMucomEndedSeries(realMml, 260, 2048, true);
+    const trueCount = series.filter((v) => v === true).length;
+    check('[陽性対照/実物] 実際の同梱MML(2パート・休符あり)ではループ中に誤ってtrueになる',
+      trueCount > 0, `true件数=${trueCount}/${series.length}(このロジックはhtml/mucom-app.jsには存在しない)`);
   }
 
   console.log(`\n${passCount} PASS, ${failCount} FAIL`);

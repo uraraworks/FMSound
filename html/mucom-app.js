@@ -311,63 +311,37 @@ export async function init(ctx) {
 
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
-  // 課題B: 「曲が終わったこと」の検出を1箇所にまとめる(updateChannelStatus()内)。
+  // 課題B(2026-08-14): 「曲が終わったこと」を自動検出して頭出し停止する機能を
+  // 実装したが、2026-08-15の実機報告(同梱サンプルのループ曲が約6.5秒で止まる)を
+  // 受けて再測定した結果、**MUCOM88では信頼できる終了検出手段が無いと判明したため
+  // 撤去した**(以下は撤去の根拠。docs/transport-button-state.md 症状⑧にも記録)。
   //
   // 実測で判明した制約: MUCOM88(このport)には PMD の fmdriver_work.playing に相当する
   // 単一の「再生中/終了」フラグが無い。GetStatus(MUCOM_STATUS_PLAYING)はcmucom.cppの
   // playflag(Play()でtrue、Stop()を呼んだ時だけfalse)をそのまま返すだけで、
   // ループしない曲が末尾に到達しても自動ではfalseにならない(実測:非ループ曲を
-  // 400tick以上再生してもGetStatus(PLAYING)は常に1のまま。intCountも上限なく
-  // 増え続ける)。よってこのAPIは終了検出に使えない。
+  // 400tick以上再生してもGetStatus(PLAYING)は常に1のまま)。よってこのAPIは
+  // 終了検出に使えない。
   //
-  // 代わりに docs/mucom-pchdata-mapping.md §3 で確認済みの PCHDATA.flag bit0
-  // (LOOPEND FLAG)を使う。ただしbit0単体は「ループ点(またはパート末尾)に
-  // 到達したか」を示すだけで、Lコマンドで曲がループする場合も*最初の1周目*で
-  // 同じように1が立ち、その後も1のまま推移する(実測: tools/verify_mucom_song_end.mjs
-  // 参照。Lありの曲でbit0がstep19で1になった後もcodeが変化し続け、ループが
-  // 継続していることを確認した)。bit0だけを終了判定に使うと、ループする曲の
-  // 最初の1周目で誤発火してしまう。
+  // 代わりに docs/mucom-pchdata-mapping.md §3 の PCHDATA.flag bit0(LOOPEND FLAG)と
+  // codeの安定性を組み合わせる方式を試したが、**実際の同梱サンプル(2パートの
+  // 生メロディ、tools/sample_fur_elise_mucom.mml)で実測したところ、bit0は
+  // 「authored MMLデータの末尾に到達した」時点で一度立つと、ループが続いていても
+  // 二度と下がらないことが分かった**(scratchpadでの実測: ループ曲でbit0がt=6.8s
+  // 付近で1になった後、10秒以上再生を続けてもbit0は1のまま。codeはその後も
+  // ノート毎に変化するが、休符や同音連打で3ポーリング以上codeが変化しない瞬間が
+  // 頻繁にあり、そのたびに「終了」条件(bit0=1 かつ code安定)を満たして誤発火した)。
+  // 以前の検証(tools/verify_song_end_detection.mjs)が誤検出を再現できなかったのは、
+  // 単純な単音階の合成MML(cdefgab>c<の繰り返し、休符・和音・複数パート無し)を
+  // 使っていたためで、実物の楽曲を使っていなかった。
   //
-  // そこで「flag bit0が立っている」*かつ*「そのパートのcode(音程コード)が
-  // 一定ポーリング回数(STABLE_POLLS)変化していない」の両方が揃ったときだけ
-  // 「そのパートは終了した」とみなす(ループする曲はbit0が立った後もcodeが
-  // 変化し続けるため、この条件を満たさない)。実際に曲で使われた(過去に
-  // code!==0になったことがある)パート全てがこの条件を満たしたとき、
-  // 曲全体が終了したと判定する。
-  const MUCOM_END_STABLE_POLLS = 3; // 「フレーム基準の隙間はポーリング2回ぶん」より1回分余裕を持たせる
-  const mucomEndState = {
-    usedParts: new Set(),
-    lastCode: new Array(MUCOM_CH_COUNT).fill(null),
-    stableCount: new Array(MUCOM_CH_COUNT).fill(0),
-  };
-  function resetMucomEndState() {
-    mucomEndState.usedParts.clear();
-    mucomEndState.lastCode.fill(null);
-    mucomEndState.stableCount.fill(0);
-  }
-  // 曲全体が終了したかどうかを1回分のスナップショットから判定し、内部状態を更新する。
-  function checkMucomSongEnded(latest) {
-    let anyUsed = false;
-    let allEnded = true;
-    for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
-      const base = snapshotHeaderWordCount + ch * PCH_FIELD_COUNT;
-      const code = latest[base + 7] & 0xff;   // PCH.CODE
-      const flag = latest[base + 8] & 0xff;   // PCH.FLAG
-      if (code !== 0) mucomEndState.usedParts.add(ch);
-      if (!mucomEndState.usedParts.has(ch)) continue;
-      anyUsed = true;
-      if (code === mucomEndState.lastCode[ch]) {
-        mucomEndState.stableCount[ch]++;
-      } else {
-        mucomEndState.stableCount[ch] = 0;
-      }
-      mucomEndState.lastCode[ch] = code;
-      const loopEnd = (flag & 1) !== 0;
-      const partEnded = loopEnd && mucomEndState.stableCount[ch] >= MUCOM_END_STABLE_POLLS;
-      if (!partEnded) allEnded = false;
-    }
-    return anyUsed && allEnded;
-  }
+  // 結論: bit0は「ループ点(=authoredデータの末尾)」と「曲の終了」を区別する
+  // 情報を持っておらず(ループする曲でも最初の1周目終わりに立ったきり戻らない)、
+  // 手元のPCHDATAから信頼できる終了検出は組み立てられない。「ループする曲が
+  // 途中で止まる」方が「ループしない曲が終了後に鳴り続ける」より明確に害が大きい
+  // ため、MUCOM88側の自動停止機能は撤去し、利用者が手動でStopを押す従来の
+  // 挙動に戻す(PMD側はfmdriver_work.playingという専用フラグがあり、この問題は
+  // 起きないため撤去していない)。
 
   // 症状③⑥の根本原因(PMD側と共通): 以前はここで毎フレーム無条件に
   // btnPlayPause.replaceChildren(...)していたため、ボタンの中身(アイコンのsvg)が
@@ -422,7 +396,6 @@ export async function init(ctx) {
       audioState.context.resume();
     }
     setAudioPaused(false);
-    resetMucomEndState();
   }
 
   function setAudioPaused(paused) {
@@ -812,15 +785,9 @@ export async function init(ctx) {
         displaySnapshot(selected);
         draw(selected);
 
-        // 課題B: 曲が終わったこと(頭出し停止)の検出。latest(遅延の無い最新値)で
-        // 判定する。実際に再生中(hasPlayback&&!paused)のときだけ発火させる。
-        {
-          const ended = checkMucomSongEnded(latest);
-          const activelyPlaying = Boolean(playback) && !Boolean(audioState?.paused);
-          if (ended && activelyPlaying) {
-            stopPlayback();
-          }
-        }
+        // 課題B→撤去(2026-08-15): MUCOM88の自動終了検出(頭出し停止)は信頼できる
+        // 判定手段が無いと判明したため撤去した。詳細は上のmoduleReady初期化直後の
+        // コメント、docs/transport-button-state.md 症状⑧を参照。
 
         const t = selected.subarray(snapshotHeaderWordCount, snapshotHeaderWordCount + 15);
         const dbgPassTick = selected[SNAPSHOT_HEADER.PASS_TICK] | 0;
@@ -876,7 +843,6 @@ export async function init(ctx) {
     // 要求どおりの箇所として明示的に置く)。
     clearCompileStatus();
     adapter.reset();
-    resetMucomEndState();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;

@@ -193,7 +193,15 @@ header.app-header .app-tagline {
   image-rendering: -moz-crisp-edges;
   display: block;
   background: #000;
-  touch-action: none;
+  /* 2026-08-15 iPhone実機報告: touch-action: noneだとピンチズームまで無効になり、
+     画面の大部分を占めるこのcanvas上でだけ拡大縮小できなくなっていた(WebNP2/WebX68k
+     由来の指定。あちらはcanvas上でバーチャルパッド/ソフトキーボード入力を受けるため
+     ブラウザジェスチャーを止める必要があったが、FMSoundのcanvasは表示専用
+     (コメント欄の三角クリック以外は入力を受けない)ためその制約は不要)。
+     manipulationにするとピンチ/パンは効いたまま、ダブルタップズームとそれに伴う
+     クリック遅延(約300ms)だけを消せる(auto=ダブルタップズームも許すよりcanvas上の
+     三角クリックの反応が良くなる)。 */
+  touch-action: manipulation;
 }
 
 /* 課題B: ドラッグ&ドロップで曲を開く際の目印。以前は.console-card(consoleCard)
