@@ -84,12 +84,20 @@ ROM イメージ（PC-98 本体 BIOS 等）や市販ソフトウェアのデー�
 （`.gitignore` 参照）。そのため、クローンしただけではビルドできません。
 以下の手順で取得してください。
 
+取得先とリビジョンは [`upstream-revisions.env`](./upstream-revisions.env)
+に一元化してあります（GitHub Actions のビルドもここを参照します。固定する
+理由もファイル内のコメント参照）。
+
 ```bash
-mkdir upstream && cd upstream
-git clone https://github.com/onitama/mucom88.git
-git clone https://github.com/aosoft/MucomWeb.git
-git clone https://github.com/myon98/98fmplayer.git
-cd ..
+set -a; source upstream-revisions.env; set +a
+
+mkdir -p upstream
+git clone "$UPSTREAM_98FMPLAYER_REPO" upstream/98fmplayer
+git -C upstream/98fmplayer checkout --detach "$UPSTREAM_98FMPLAYER_REV"
+
+git clone "$UPSTREAM_MUCOMWEB_REPO" upstream/MucomWeb
+git -C upstream/MucomWeb checkout --detach "$UPSTREAM_MUCOMWEB_REV"
+git -C upstream/MucomWeb submodule update --init --recursive
 ```
 
 ツールチェーンは `PC98/emsdk`（emscripten SDK）を `emsdk` というシンボリックリンク
@@ -121,6 +129,17 @@ tools/build_dist.sh
 1行だけのアクセサパッチ（`mucomweb/patches/0001-cmucom-expose-vm.patch`）が
 自動適用されます。upstream の作業ツリー自体は変更しないので、追跡やコミットは
 不要です。
+
+### GitHub Pages への公開（CI）
+
+`master` への push で [`.github/workflows/pages.yml`](./.github/workflows/pages.yml)
+が上記と同じ手順（upstream 取得 → emsdk 導入 → 両ドライバビルド →
+`net/config.js` 生成 → `tools/build_dist.sh`）を実行し、`dist/` を
+GitHub Pages へデプロイします。中継サーバー URL はリポジトリ変数
+`DISK_PROXY_URL`（Settings → Secrets and variables → Actions → Variables）
+から注入されます。未設定でもビルド・公開自体は失敗しません（中継しない
+だけの動作になります。fork した人が変数を設定しなくても公開できるように
+するための既定挙動）。
 
 ### 開発ノート
 

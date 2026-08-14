@@ -1,0 +1,106 @@
+name: Deploy to GitHub Pages
+
+# upstream/ と emsdk は .gitignore 対象(README.md参照)なので、Pages配信物
+# (dist/)はここで毎回組み立てる。upstream の取得先・リビジョンは
+# upstream-revisions.env に一元化してある(README.mdのビルド手順もこれを参照)。
+#
+# DISK_PROXY_URL(リポジトリ変数)は fork した人には未設定のことがある。
+# tools/gen_net_config.py は未設定でも空文字列で正常終了する設計なので、
+# このワークフローでも未設定を理由に失敗させない。
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時デプロイの競合を避ける。実行中のデプロイは打ち切らない
+# (Pages公開の途中状態を作らないため)。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # job全体に効かせる: tools/build_dist.sh が内部で tools/gen_net_config.py を
+    # もう一度呼ぶため(冪等)、ステップ単位でDISK_PROXY_URLを渡すと「Assemble dist/」
+    # ステップの再呼び出し時に環境変数が無くなり空文字列で上書きされてしまう
+    # (dry-runで実際に踏んだ)。job envにして両ステップに効かせる。
+    env:
+      DISK_PROXY_URL: ${{ vars.DISK_PROXY_URL }}
+    steps:
+      - name: Checkout FMSound
+        uses: actions/checkout@v4
+
+      - name: Load pinned upstream revisions
+        run: cat upstream-revisions.env >> "$GITHUB_ENV"
+
+      - name: Clone upstream sources (pinned revisions)
+        run: |
+          set -euo pipefail
+          mkdir -p upstream
+
+          git clone "$UPSTREAM_98FMPLAYER_REPO" upstream/98fmplayer
+          git -C upstream/98fmplayer checkout --detach "$UPSTREAM_98FMPLAYER_REV"
+
+          git clone "$UPSTREAM_MUCOMWEB_REPO" upstream/MucomWeb
+          git -C upstream/MucomWeb checkout --detach "$UPSTREAM_MUCOMWEB_REV"
+          git -C upstream/MucomWeb submodule update --init --recursive
+
+          actual_mucom88_rev="$(git -C upstream/MucomWeb/mucom88 rev-parse HEAD)"
+          if [ "$actual_mucom88_rev" != "$UPSTREAM_MUCOM88_SUBMODULE_REV" ]; then
+            echo "::error::mucom88 submodule のリビジョンが想定と異なります。期待値=$UPSTREAM_MUCOM88_SUBMODULE_REV 実際=$actual_mucom88_rev (upstream-revisions.env の UPSTREAM_MUCOMWEB_REV を確認すること)"
+            exit 1
+          fi
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+
+      - name: Build mucomweb (wasm)
+        run: |
+          set -euo pipefail
+          cd mucomweb
+          emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-web -j "$(nproc)"
+
+      - name: Build pmdweb (wasm)
+        run: |
+          set -euo pipefail
+          cd pmdweb
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-web -j "$(nproc)"
+
+      - name: Generate net/config.js (DISK_PROXY_URL)
+        run: python3 tools/gen_net_config.py
+
+      - name: Assemble dist/
+        run: tools/build_dist.sh
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
