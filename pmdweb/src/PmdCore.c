@@ -52,12 +52,33 @@ struct flat_level_status {
   int32_t playing;    // track_status[].playing (PDZF/PPZ8のinfoでは強制0。出典どおり)
 };
 
+// frame に続くカウンタ群。fmdriver_work(upstream/98fmplayer/fmdriver/fmdriver.h)
+// 由来で、いずれも「取れる」ことを確認済み(docs/right-pane-data.md §7参照)。
+// mucomweb/src/MucomWeb.cpp の StatusSnapshot(frame+passTick/intCount/maxCount)
+// と同じ「frameに続くヘッダ」の作法を踏襲する。PMD側はMUCOMのpassTick相当
+// (経過時間の元データ)が不要: frame自体が既にopna.generated_frames(55467Hz
+// 換算のサンプル数)であり、fmdsp-pacc.cのpassed time計算(update_default(),
+// :1502)が使う値と同一。よってヘッダはtimerb系4項目のみで足りる。
+// - work->timerb_cnt: CLOCK COUNT表示・回転円(drawCircle)の元データ
+// - work->timerb: TIMER B CYCLE表示の元データ(0-255、uint8_tを素直にint32へ拡張)
+// - work->loop_cnt: LOOP COUNT表示の元データ(0-255)
+// - work->timerb_cnt_loop / work->loop_timerb_cnt: ループ進捗バー(drawLoopBar)の分子/分母
 struct status_snapshot {
   uint32_t frame;
+  uint32_t timerb_cnt;
+  uint32_t timerb;
+  uint32_t loop_cnt;
+  uint32_t timerb_cnt_loop;
+  uint32_t loop_timerb_cnt;
   struct flat_track_status tracks[TRACK_COUNT];
   uint8_t fft[FFT_BIN_COUNT_PADDED];  // [0..FFT_BIN_COUNT) が有効値(0-31)。末尾2byteは常に0の明示パディング
   struct flat_level_status levels[LEVEL_COUNT];
 };
+
+// frame を含む、frameに続くヘッダのワード数。JS側がハードコードせずに済むよう
+// pmdweb_get_snapshot_header_word_count() で export する
+// (mucomweb の getSnapshotHeaderWordCount() と同じ命名)。
+enum { SNAPSHOT_HEADER_WORD_COUNT = 6 };  // frame, timerb_cnt, timerb, loop_cnt, timerb_cnt_loop, loop_timerb_cnt
 
 _Static_assert(TRACK_COUNT == 21, "98fmplayer track count changed");
 _Static_assert(LEVEL_COUNT == 19, "FMDSP_LEVEL_COUNT changed");
@@ -67,7 +88,7 @@ _Static_assert(sizeof(struct flat_track_status) == FIELD_COUNT * sizeof(int32_t)
 _Static_assert(sizeof(struct flat_level_status) == LEVEL_FIELD_COUNT * sizeof(int32_t),
                "level field layout changed");
 _Static_assert(sizeof(struct status_snapshot) ==
-               sizeof(uint32_t) +
+               SNAPSHOT_HEADER_WORD_COUNT * sizeof(uint32_t) +
                TRACK_COUNT * sizeof(struct flat_track_status) +
                FFT_BIN_COUNT_PADDED +
                LEVEL_COUNT * sizeof(struct flat_level_status),
@@ -307,6 +328,11 @@ static void push_snapshot(void) {
   struct status_snapshot *snapshot =
       &g_snapshot_ring[logical_index & (SNAPSHOT_RING_SIZE - 1)];
   snapshot->frame = frame;
+  snapshot->timerb_cnt = g_player.work.timerb_cnt;
+  snapshot->timerb = g_player.work.timerb;
+  snapshot->loop_cnt = g_player.work.loop_cnt;
+  snapshot->timerb_cnt_loop = g_player.work.timerb_cnt_loop;
+  snapshot->loop_timerb_cnt = g_player.work.loop_timerb_cnt;
   for (int track = 0; track < TRACK_COUNT; ++track) {
     snapshot->tracks[track] = flatten(&g_player.work.track_status[track]);
   }
@@ -439,6 +465,7 @@ uint32_t pmdweb_get_snapshot_ring_pointer(void) {
 }
 uint32_t pmdweb_get_snapshot_entry_byte_size(void) { return sizeof(struct status_snapshot); }
 uint32_t pmdweb_get_snapshot_write_index(void) { return g_snapshot_write_index; }
+uint32_t pmdweb_get_snapshot_header_word_count(void) { return SNAPSHOT_HEADER_WORD_COUNT; }
 int pmdweb_get_track_count(void) { return TRACK_COUNT; }
 int pmdweb_get_field_count(void) { return FIELD_COUNT; }
 int pmdweb_get_sample_rate(void) { return SAMPLE_RATE; }

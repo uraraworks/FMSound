@@ -10,6 +10,7 @@ double pmdweb_render_frames_for_test(int frames);
 uint32_t pmdweb_get_snapshot_ring_pointer(void);
 uint32_t pmdweb_get_snapshot_entry_byte_size(void);
 uint32_t pmdweb_get_snapshot_write_index(void);
+uint32_t pmdweb_get_snapshot_header_word_count(void);
 int pmdweb_get_track_count(void);
 int pmdweb_get_field_count(void);
 int pmdweb_get_sample_rate(void);
@@ -37,6 +38,10 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("getSnapshotRingPointer", &pmdweb_get_snapshot_ring_pointer);
   emscripten::function("getSnapshotEntryByteSize", &pmdweb_get_snapshot_entry_byte_size);
   emscripten::function("getSnapshotWriteIndex", &pmdweb_get_snapshot_write_index);
+  // frameに続くヘッダ(timerb_cnt/timerb/loop_cnt/timerb_cnt_loop/loop_timerb_cnt)
+  // のワード数。JS側がハードコードせずに済むよう export する
+  // (mucomweb の getSnapshotHeaderWordCount() と同じ命名。docs/right-pane-data.md §7)。
+  emscripten::function("getSnapshotHeaderWordCount", &pmdweb_get_snapshot_header_word_count);
   emscripten::function("getTrackCount", &pmdweb_get_track_count);
   emscripten::function("getFieldCount", &pmdweb_get_field_count);
   emscripten::function("getSampleRate", &pmdweb_get_sample_rate);

@@ -118,6 +118,17 @@ export async function init(ctx) {
   const invalidIndex = 0xffffffff;
   const trackCount = Module.getTrackCount();
   const fieldCount = Module.getFieldCount();
+  // frameに続くヘッダ(timerb_cnt/timerb/loop_cnt/timerb_cnt_loop/loop_timerb_cnt)。
+  // mucomweb/html/mucom-app.js の SNAPSHOT_HEADER と同じ作法(PmdCore.c参照)。
+  const snapshotHeaderWordCount = Module.getSnapshotHeaderWordCount();
+  const SNAPSHOT_HEADER = {
+    FRAME: 0,
+    TIMERB_CNT: 1,
+    TIMERB: 2,
+    LOOP_CNT: 3,
+    TIMERB_CNT_LOOP: 4,
+    LOOP_TIMERB_CNT: 5,
+  };
   const tbody = document.querySelector('#channelStatus tbody');
   const calibrationInput = document.getElementById('calibrationMs');
   const synchronizedCheckbox = document.getElementById('useSynchronizedStatus');
@@ -175,9 +186,16 @@ export async function init(ctx) {
   }
 
   function draw(entry) {
+    const timerbCnt = entry[SNAPSHOT_HEADER.TIMERB_CNT] >>> 0;
+    const timerb = entry[SNAPSHOT_HEADER.TIMERB] >>> 0;
+    const loopCnt = entry[SNAPSHOT_HEADER.LOOP_CNT] >>> 0;
+    const timerbCntLoop = entry[SNAPSHOT_HEADER.TIMERB_CNT_LOOP] >>> 0;
+    const loopTimerbCnt = entry[SNAPSHOT_HEADER.LOOP_TIMERB_CNT] >>> 0;
     const entryTracks = [];
     for (let track = 0; track < trackCount; ++track) {
-      const data = entry.subarray(1 + track * fieldCount, 1 + (track + 1) * fieldCount);
+      const data = entry.subarray(
+        snapshotHeaderWordCount + track * fieldCount,
+        snapshotHeaderWordCount + (track + 1) * fieldCount);
       entryTracks.push(data);
       const cells = tbody.rows[track].cells;
       cells[1].textContent = data[0];
@@ -201,18 +219,20 @@ export async function init(ctx) {
       const paused = Boolean(audioState?.paused);
       const rightPanePlaying = hasPlayback && !paused;
       rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
-      // PASSED TIME/CLOCK COUNT/TIMER B CYCLE/LOOP COUNT/CPU/FPSの元データには
-      // 対応するwasm exportが存在しない(pmdweb/src/PmdWeb.cpp参照)。でっち上げず
-      // 取れない値は0/falseのまま渡す(旧pmdweb/html/index.htmlと同じ方針)。
+      // PASSED TIME(=entry.frame。opna.generated_framesそのものであり、
+      // fmdsp-pacc.cのpassed time計算(:1502)と同一の値)/CLOCK COUNT/
+      // TIMER B CYCLE/LOOP COUNT/ループバーは fmdriver_work(fmdriver.h)由来で
+      // 取得できる(docs/right-pane-data.md §7)。CPU/FPSに対応するwasm exportは
+      // 存在しないため、でっち上げず0のまま渡す(旧pmdweb/html/index.htmlと同じ方針)。
       rightpane.drawDynamic(vram, {
-        generatedFrames: 0n,
-        timerbCnt: 0,
-        timerb: 0,
-        loopCnt: 0,
+        generatedFrames: BigInt(entry[SNAPSHOT_HEADER.FRAME] >>> 0),
+        timerbCnt,
+        timerb,
+        loopCnt,
         cpuUsage: 0,
         fps: 0,
-        timerbCntLoop: 0,
-        loopTimerbCnt: 0,
+        timerbCntLoop,
+        loopTimerbCnt,
         playing: rightPanePlaying,
         stopped: !hasPlayback,
         paused,
@@ -333,7 +353,13 @@ export async function init(ctx) {
       }
       draw(selected);
       debug.textContent = `${syncText}\n` +
-        `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}`;
+        `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}\n` +
+        `counters: timerbCnt=${selected[SNAPSHOT_HEADER.TIMERB_CNT] >>> 0} ` +
+        `timerb=${selected[SNAPSHOT_HEADER.TIMERB] >>> 0} ` +
+        `loopCnt=${selected[SNAPSHOT_HEADER.LOOP_CNT] >>> 0} ` +
+        `timerbCntLoop=${selected[SNAPSHOT_HEADER.TIMERB_CNT_LOOP] >>> 0} ` +
+        `loopTimerbCnt=${selected[SNAPSHOT_HEADER.LOOP_TIMERB_CNT] >>> 0} ` +
+        `audioContextTime=${(state?.context?.currentTime ?? 0).toFixed(3)}s`;
     }
 
     const state = globalThis.pmdAudioState;

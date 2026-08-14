@@ -286,3 +286,102 @@ KeyOnが起きない(`docs/mucom-pchdata-mapping.md`既知の制約と同じ)た
 - `mucomweb/src/MucomWeb.cpp`: `LevelStatus`構造体・`BuildLevels()`・
   export(`getSnapshotLevelOffset`/`getLevelCount`/`getLevelFieldCount`、
   PMD側と同じ命名)を追加
+
+## 7. PMD側のPASSED TIME/CLOCK COUNT/TIMER B CYCLE/LOOP COUNT/回転円(2026-08-14)
+
+PMD側では長らく、これらのカウンタに対応するwasm exportが存在せず(旧実装)、
+`html/pmd-app.js`が全て0/falseを渡していた。そのため描画層(`fmdsp/rightpane.js`)は
+正しいのにPLAY表示だけが切り替わり、数値と回転円が全く動かないという不具合が
+あった。原因は「データが来ていない」ことであり、描画側の実装は無変更で直せる
+(`fmdsp/`は今回も一切変更していない)。
+
+### 何が取れて何が取れないか
+
+出典は `upstream/98fmplayer/fmdriver/fmdriver.h` の `struct fmdriver_work`。
+実装を読んで確認した結果、必要な項目は**全て取得できる**(でっち上げが必要な
+項目は無かった):
+
+| FMDSP表示項目 | 元データ | 取得可否 |
+|---|---|---|
+| PASSED TIME(経過時間) | `struct status_snapshot.frame`(既存。`opna.generated_frames`そのもの) | **既存フィールドで取得済み**(新規追加不要。fmdsp-pacc.cのpassed time計算`update_default()`:1502が使うのと同一の値) |
+| CLOCK COUNT | `work->timerb_cnt` | **取得できる**(新規追加) |
+| TIMER B CYCLE | `work->timerb` | **取得できる**(新規追加) |
+| LOOP COUNT | `work->loop_cnt` | **取得できる**(新規追加) |
+| ループ進捗バー | `work->timerb_cnt_loop` / `work->loop_timerb_cnt` | **取得できる**(新規追加) |
+| 回転円(drawCircle) | `work->timerb_cnt`(CLOCK COUNTと同じ値を`/8%8`) | **取得できる**(CLOCK COUNTと共用) |
+| CPU POWER COUNT / FRAMES PER SECOND | 対応するwasm export無し | **取得できない。0のまま**(でっち上げていない。旧実装と同じ方針を継続) |
+
+MUCOM側(`mucomweb/src/MucomWeb.cpp`)は`passTick`(`vm->time_master`)から
+経過時間を逆算する必要があったが、PMD側は`frame`フィールド自体が既に
+`opna.generated_frames`(55467Hz換算のサンプル数)であり、これは
+`fmdsp-pacc.c`のpassed time計算がそのまま使う値と同一のため、変換が一切不要。
+
+### スナップショットへの配線
+
+`struct status_snapshot`の`frame`に続けて、`timerb_cnt`/`timerb`/`loop_cnt`/
+`timerb_cnt_loop`/`loop_timerb_cnt`(いずれも`uint32_t`)を追加した
+(`pmdweb/src/PmdCore.c`)。既存の`_Static_assert`によるレイアウト固定の作法を
+そのまま踏襲しており、レイアウトを崩すとビルドが落ちる。
+
+```
+struct status_snapshot {
+  uint32_t frame;
+  uint32_t timerb_cnt;
+  uint32_t timerb;
+  uint32_t loop_cnt;
+  uint32_t timerb_cnt_loop;
+  uint32_t loop_timerb_cnt;
+  struct flat_track_status tracks[TRACK_COUNT];
+  uint8_t  fft[72];
+  struct flat_level_status levels[19];
+};
+```
+
+`push_snapshot()`(ドライバ割り込みのたび、`driver_interrupt()`経由で呼ばれる)で
+`g_player.work`から直接コピーしているだけで、独自のポーリングや平均化は
+一切していない。
+
+frameに続くヘッダのワード数(=6)は`getSnapshotHeaderWordCount()`で export し、
+JS側がハードコードしなくて済むようにした(`mucomweb`の同名exportと同じ命名。
+MUCOM側は`frame+passTick/intCount/maxCount+chstat[16]`で20ワードなのに対し、
+PMD側はchstat相当が無いぶん6ワードで済む)。`html/pmd-app.js`はこの値を使って
+トラック配列のオフセットを計算しており、ヘッダのワード数を変えても
+JS側の修正は不要。
+
+### 同期(リング経由)について
+
+表示はスナップショットリングをframe基準で二分探索して引き当てている
+(`docs/sync-design.md`)。カウンタ類も**必ずこのリング経由で読む**(現在値を
+直読みしない)ことで、既存の同期を壊していない。
+
+### 検証
+
+`tools/verify_pmd_timerb_counters.mjs`(Node直接実行)で以下を確認した:
+
+- 回転コマ(`floor(timerbCnt/8)%8`)が時間とともに変化する(停止中は変化しない
+  ことも対照として確認)
+- 経過時間(`frame/55467`秒)がNode側で制御した累積レンダリングフレーム数と
+  一致する。ただし`frame`はOPNAタイマーB割り込みのたびにしか更新されない
+  (毎サンプルではない)ため、最大で1割り込み周期ぶん(実測で数百フレーム、
+  10ms未満)遅れる。この遅延は既存のtrack_status等のスナップショットも
+  同じ構造で持っており、`sync-design.md`の二分探索設計はこれを前提にしている。
+  遅延が時間とともに拡大しないことも確認した
+- ループする曲(`upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`、ローカル
+  検証専用でdist配信には含まれない)で`loopCnt`が実際に増える(1周約155秒)
+- **故障注入**: `push_snapshot()`内の`snapshot->timerb_cnt = g_player.work.timerb_cnt;`
+  を一時的に`snapshot->timerb_cnt = 0;`へ変更して再ビルドし、回転コマの変化
+  検出と`timerbCnt`単調増加の検査が単独でFAILすることを確認してから元に戻した
+
+ブラウザでの実測(`?engine=pmd&debug=1`、`sample_fur_elise.M`再生)でも、
+壁時計(`AudioContext.currentTime`)9.494s時点でPASSED TIME表示が`00:09.30`
+(`frame/55467=9.305s`)、30.392s時点で`frame/55467=30.216s`となり、
+20.9秒の壁時計経過に対し経過時間表示も20.911秒進んでいる(slope誤差0.005%)。
+同時に`loopCnt`が0→4へ実際に増加することも確認した。オフセット(約0.18-0.23秒、
+AudioWorkletの出力レイテンシ相当)はMUCOM側の実測(§ドキュメント
+`docs/mucom-pchdata-mapping.md`)と同じ構造。
+
+### MUCOM側の回帰
+
+`fmdsp/`・`mucomweb/`は一切変更していない。ブラウザで`?engine=mucom`を開き、
+PASSED TIME/CLOCK COUNT/回転円が引き続き正常に動作すること、
+`tools/verify_right_pane_data_mucom.mjs`がALL PASSすることを確認した。
