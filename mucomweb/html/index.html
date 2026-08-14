@@ -91,7 +91,7 @@
   import { FONT_SMALL } from './fmdsp/font_small.js';
   import { drawComment } from './fmdsp/comment.js';
   import * as rightpane from './fmdsp/rightpane.js';
-  import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT, panToSprite } from './adapter.js';
+  import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT } from './adapter.js';
 
   const btnCompile = document.getElementById('btnCompile');
   const btnStop = document.getElementById('btnStop');
@@ -322,31 +322,23 @@
   }
 
   // 右半分のLEVELメーター列(19ch: FM1-6,SSG1-3,RHY,ADP,PPZ8x8)。
-  // MUCOMにはPPZ8/レベル生値(leveldata)相当のexportが無いため、level(音量バー)
-  // とFFTスペクトラムは常に0(空)のまま。PROG/KEY/パンポットのみPCHDATAから埋める。
-  // RHYTHM(index 9)はPCHDATAのch6を持つが、リズムには個別のtonenum/key概念が
-  // 無く(PMD側と同様の理由)、prog/keyは描かない(rightpane.js側もindex9は
-  // 元々PROG/KEY非表示)。パンは固定でOFF(5)にしておく。
-  function buildLevels(entryTracks, adapterOut) {
-    const levels = new Array(rightpane.FMDSP_LEVEL_COUNT);
-    for (let i = 0; i < rightpane.FMDSP_LEVEL_COUNT; i++) {
-      levels[i] = { level: 0, pan: 5, prog: 0, key: 0, playing: false };
-    }
-    // FMDSPスロット -> LEVEL列indexの対応。先頭9列(FM1-6, SSG1-3)+ADPCM(10)が
-    // PCHDATA由来で埋まる。PPZ8(11-18)はMUCOM88に相当機能が無いため常に空
-    // (確定方針、docs参照)。
-    const SLOT_TO_LEVEL = { 0: 0, 1: 1, 2: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7, 11: 8, 12: 10 };
-    for (const [slot, levelIndex] of Object.entries(SLOT_TO_LEVEL)) {
-      const data = entryTracks[slot];
-      if (!data) continue;
-      const pchCh = adapterOut.slotToCh[slot];
-      const pan = adapterOut.panByCh[pchCh];
-      levels[levelIndex] = {
-        level: 0, // leveldata相当なし(未実装、空のまま)
-        pan,
-        prog: data[6],   // FIELD.TONENUM
-        key: data[4],    // FIELD.KEY
-        playing: data[0] !== 0, // FIELD.PLAYING
+  // fmgenへピーク追従を後付けした(mucomweb/patches/0002-fmgen-leveldata.patch)
+  // ことで、level/pan/prog/key/playingの5フィールドすべてwasm側の
+  // BuildLevels()(MucomWeb.cpp)がそのまま埋めて供給する。JS側での
+  // 再構築(旧buildLevels())は不要になった。詳細はdocs/right-pane-data.md §6b。
+  // PPZ8(index 11-18)はMUCOM88に相当機能が無いため常に空(wasm側で0固定)。
+  function readLevels(entry) {
+    const levelBase = (entry.byteOffset + Module.getSnapshotLevelOffset()) / 4;
+    const fieldCount = Module.getLevelFieldCount();
+    const levels = new Array(Module.getLevelCount());
+    for (let c = 0; c < levels.length; c++) {
+      const o = levelBase + c * fieldCount;
+      levels[c] = {
+        level: Module.HEAP32[o + 0],
+        pan: Module.HEAP32[o + 1],
+        prog: Module.HEAP32[o + 2],
+        key: Module.HEAP32[o + 3],
+        playing: Module.HEAP32[o + 4] !== 0,
       };
     }
     return levels;
@@ -368,8 +360,6 @@
     const intCount = (entry[SNAPSHOT_HEADER.INT_COUNT] | 0) >>> 0;
     const maxCount = entry[SNAPSHOT_HEADER.MAX_COUNT] | 0;
     const entryTracks = [];
-    const slotToCh = {};
-    const panByCh = {};
     for (const [chStr, slot] of Object.entries(CH_TO_SLOT)) {
       const ch = Number(chStr);
       const pchData = entry.subarray(
@@ -378,8 +368,6 @@
       const chstatIdx = CH_TO_CHSTAT[ch];
       const chstatValue = chstatIdx !== undefined ? entry[CHSTAT_OFFSET + chstatIdx] : undefined;
       entryTracks[slot] = adapter.convertChannel(ch, pchData, chstatValue);
-      slotToCh[slot] = ch;
-      panByCh[ch] = panToSprite(pchData[9]); // PCH.PAN
     }
 
     if (fmdspFont) {
@@ -412,17 +400,15 @@
         frameCnt: rightPaneFrameCounter,
       });
 
-      const levels = buildLevels(entryTracks, { slotToCh, panByCh });
-      // FFTスペクトラム(70ビン)。MucomWeb.cppのProcessAudioRequest()内で
-      // ミックス後PCMをfft_write()に食わせ、約60Hzでfft_calc()した結果を
-      // スナップショットのfft[]に埋め込んでいる(docs/right-pane-data.md参照。
-      // pmdweb側と同じ形式・同じexport名)。levels(音量バー)側は
-      // leveldata相当が無いためスコープ外のまま。
+      // FFTスペクトラム(70ビン)とLEVELメーター(19ch)。どちらもMucomWeb.cpp側
+      // (docs/right-pane-data.md §6a/§6b)が算出してスナップショットへ
+      // 埋め込んでいるので、JS側はwasmメモリを読むだけでよい。
       // entry(HEAP32のsubarray)のbyteOffsetは、生成元snapshotAt()がHEAP32を
       // subarrayしただけの同一ArrayBuffer上のビューなので、絶対バイトアドレス
       // (=HEAPU8上のオフセット)としてそのまま使える。
       const fftBase = entry.byteOffset + Module.getSnapshotFftOffset();
       const fft = Module.HEAPU8.subarray(fftBase, fftBase + Module.getFftBinCount());
+      const levels = readLevels(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
       rightpane.drawLevelMeters(vram, levels, levelPeakState);
 

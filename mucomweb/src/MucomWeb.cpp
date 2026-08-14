@@ -79,6 +79,25 @@ static const int OpnaChannelCount = 16; // mucomvm.h の OPNACH_MAX
 static const int FftBinCount = FFTDISPLEN;        // 70 (fft/fft.h)
 static const int FftBinCountPadded = 72;          // 明示パディング(_Static_assert代わりのstatic_assertで検査)
 
+// レベルメーター(19ch)。docs/right-pane-data.md §4/§6bと同じ形式(PMD側
+// struct flat_level_status と同じ5フィールド)。出典は
+// upstream/98fmplayer/fmdsp/fmdsp-pacc.c:1660-1733 の levels[] 構築ロジック
+// (pmdweb/src/PmdCore.c build_levels() が既にこれをPMD側で移植済み)。
+// MUCOM側はfmgenにチャンネル単位のレベル追従が無いため、fmgenのミックス経路
+// (Mix6/MixSubS/MixSubSL, ADPCMBMix, PSG::Mix, OPNA::RhythmMix)に
+// mucomweb/patches/0002-fmgen-leveldata.patchでピーク追従を追加した。
+static const int LevelCount = 19;
+static const int LevelFieldCount = 5;
+
+struct LevelStatus
+{
+	int32_t level;   // leveldata相当(ピーク保持、読み出しでクリア)の値。0が無音
+	int32_t pan;     // 定位。PMD側と同じ table[]={5,4,0,2} 変換 + 非playing時は5固定
+	int32_t prog;    // 対応track(下記LevelToTrack参照)のvnum
+	int32_t key;     // 対応trackのcode(+0x10、休符時下位4bitを0xFへ。adapter.jsのkey計算と同じ)
+	int32_t playing; // 対応trackが今この瞬間鳴っているか
+};
+
 struct StatusSnapshot
 {
 	uint32_t frame;
@@ -88,16 +107,21 @@ struct StatusSnapshot
 	int32_t chstat[OpnaChannelCount];
 	TrackStatus tracks[MUCOM_MAXCH];
 	uint8_t fft[FftBinCountPadded]; // [0..FftBinCount)が有効値(0-31)。末尾2byteは常に0の明示パディング
+	LevelStatus levels[LevelCount];
 };
 
 static const int StatusSnapshotHeaderWordCount = 4 + OpnaChannelCount; // frame, passTick, intCount, maxCount, chstat[16]
 
 static_assert(std::is_standard_layout<TrackStatus>::value, "TrackStatus must stay flat");
 static_assert(sizeof(TrackStatus) == 15 * sizeof(int32_t), "TrackStatus layout changed");
+static_assert(std::is_standard_layout<LevelStatus>::value, "LevelStatus must stay flat");
+static_assert(sizeof(LevelStatus) == LevelFieldCount * sizeof(int32_t), "LevelStatus layout changed");
 static_assert(std::is_standard_layout<StatusSnapshot>::value, "StatusSnapshot must stay flat (offsetof requires this)");
 static_assert(FftBinCount == 70, "FFTDISPLEN changed");
+static_assert(LevelCount == 19, "LevelCount changed");
 static_assert(sizeof(StatusSnapshot) ==
-	(StatusSnapshotHeaderWordCount + MUCOM_MAXCH * 15) * sizeof(int32_t) + FftBinCountPadded,
+	(StatusSnapshotHeaderWordCount + MUCOM_MAXCH * 15) * sizeof(int32_t) + FftBinCountPadded
+	+ LevelCount * sizeof(LevelStatus),
 	"StatusSnapshot layout changed");
 
 std::unique_ptr<StreamingPlayer> g_player;
@@ -178,6 +202,125 @@ void ActivateSnapshotRing()
 	g_fftLastCalcFrame = 0;
 }
 
+// レベルメーター index(0-18) -> tracks[](MML part A-K, 0-10)の対応表。
+// MUCOMコンパイラのパート固定割り当て(A,B,C=FM1-3 / D,E,F=SSG1-3 / G=リズム /
+// H,I,J=FM4-6 / K=ADPCM。upstream/MucomWeb/mucom88/src/cmucom.h の
+// MUCOM_CH_FM1=0/MUCOM_CH_PSG=3/MUCOM_CH_RHYTHM=6/MUCOM_CH_ADPCM=10と一致)を
+// 反映したもの。単発パートMMLで実測して検証済み(docs/right-pane-data.md §6b)。
+// index 11-18(PPZ8)はMUCOMに存在しないので対応trackなし(-1)。
+static const int LevelToTrack[LevelCount] = {
+	0, 1, 2, 7, 8, 9,  // 0-5: FM1-6   -> A,B,C,H,I,J
+	3, 4, 5,           // 6-8: SSG1-3  -> D,E,F
+	6,                 // 9:   リズム  -> G
+	                   //      (PMD側は levels[9].t を明示せず暗黙にFM1流用する
+	                   //      上流の癖があるが、MUCOMには実在するリズム専用
+	                   //      パートGがあるため、そちらを使う方が正確と判断。
+	                   //      PMD側の癖はそのまま再現しない。詳細はdocs参照)
+	10,                // 10:  ADPCM   -> K
+	-1, -1, -1, -1, -1, -1, -1, -1, // 11-18: PPZ8(存在しない)
+};
+
+// pan生値(0-3, bit7<<1|bit6) -> FMDSP PANPOTスプライト番号(0-5)。
+// PMD側(pmdweb/src/PmdCore.c build_levels())・adapter.jsのPAN_TABLEと同じ表。
+static const int PanTable[4] = {5, 4, 0, 2};
+
+// FMDSP右半分レベルメーター(19ch)を構築する。
+// 出典・各経路の分離可否はmucomweb/patches/0002-fmgen-leveldata.patchの
+// コメントおよびdocs/right-pane-data.md参照。
+void BuildLevels(StatusSnapshot &snapshot, mucomvm *vm)
+{
+	FM::OPNA *opna = vm != nullptr ? vm->GetOpna() : nullptr;
+	if (opna == nullptr)
+	{
+		memset(snapshot.levels, 0, sizeof(snapshot.levels));
+		return;
+	}
+
+	const uint8_t *regmap = vm->GetRegisterMap();
+
+	unsigned rawLevel[LevelCount] = {0};
+	// FM 1-6 (index 0-5)
+	for (int c = 0; c < 6; ++c) rawLevel[c] = opna->GetFmLevel(c);
+	// SSG 1-3 (index 6-8)
+	for (int c = 0; c < 3; ++c) rawLevel[6 + c] = opna->GetSsgLevel(c);
+	// リズム(index 9): 6音の最大値(PMD側と同じ方針)
+	{
+		unsigned maxLevel = 0;
+		for (int d = 0; d < 6; ++d)
+		{
+			unsigned l = opna->GetRhythmLevel(d);
+			if (l > maxLevel) maxLevel = l;
+		}
+		rawLevel[9] = maxLevel;
+	}
+	// ADPCM(index 10)
+	rawLevel[10] = opna->GetAdpcmLevel();
+	// index 11-18(PPZ8)は0のまま(MUCOMに存在しない)
+
+	for (int c = 0; c < LevelCount; ++c)
+	{
+		LevelStatus &out = snapshot.levels[c];
+		int track = LevelToTrack[c];
+		if (track < 0)
+		{
+			out = {0, 0, 0, 0, 0};
+			continue;
+		}
+
+		out.level = static_cast<int32_t>(rawLevel[c]);
+
+		// playing: FM(0-5)とADPCM(10)はmucomvm::GetChStatus()実測値(register由来、
+		// リアルタイム。CH_TO_CHSTATと同じ考え方)を使う。OPNAハードウェアchの
+		// 並びはFM1-3=chstat[0-2]/FM4-6=chstat[4-6](3は未使用、YM2608の実チャンネル
+		// 番号付けそのまま)。SSG(6-8)とリズム(9)には対応するchstat[]が存在しない
+		// (adapter.jsのCH_TO_CHSTATコメント参照)ため、代わりに今回追加した
+		// 実測レベル(rawLevel>0)を「今鳴っているか」の判定に使う。これは
+		// sticky近似より正確(レベル自体が実際の音声出力そのものであるため)。
+		bool playing;
+		if (c < 6)
+		{
+			int chstatIndex = c < 3 ? c : c + 1;
+			playing = snapshot.chstat[chstatIndex] != 0;
+		}
+		else if (c == 10)
+		{
+			playing = snapshot.chstat[10] != 0; // OPNACH_ADPCM
+		}
+		else
+		{
+			playing = rawLevel[c] != 0; // SSG(6-8) / リズム(9)
+		}
+
+		// pan: FMとADPCMはOPNAレジスタから直接読む(adapter.jsのPAN_TABLE算出と
+		// 同じ式)。SSG/リズムはcmucom.cppがpan=3を無条件に返す実装(adapter.js
+		// コメント参照)に合わせ、rawpan=3固定(PanTable[3]=2)とする。
+		// ただしリズムは本来6音それぞれ個別のpanレジスタを持つため、この
+		// index9の値は「6音まとめての代表値」に過ぎない近似であることに注意
+		// (未解明として残す。個別に取りたければ6音分に分解する必要がある)。
+		int rawPan;
+		if (c < 3) rawPan = (regmap[0xB4 + c] >> 6) & 3;
+		else if (c < 6) rawPan = (regmap[0x1B4 + (c - 3)] >> 6) & 3;
+		else if (c == 10) rawPan = (regmap[0x101] >> 6) & 3; // ADPCM-B Control2
+		else rawPan = 3; // SSG(6-8) / リズム(9)
+		int pan = PanTable[rawPan & 3];
+		// PMD側 build_levels() と同じ仕様: 鳴っていないchはpan=5(無表示)固定。
+		if (!playing) pan = 5;
+		out.pan = pan;
+
+		out.prog = snapshot.tracks[track].vnum;
+		{
+			int32_t code = snapshot.tracks[track].code;
+			int32_t fnum1 = snapshot.tracks[track].fnum1;
+			int32_t fnum2 = snapshot.tracks[track].fnum2;
+			bool isRest = fnum1 == 0 && fnum2 == 0;
+			int32_t key = (code + 0x10) & 0xff;
+			if (isRest) key = (key & 0xf0) | 0xf;
+			out.key = key;
+		}
+		out.playing = playing ? 1 : 0;
+	}
+}
+
 void PushSnapshot()
 {
 	if (g_snapshotWriteIndex == InvalidSnapshotWriteIndex || g_mucom == nullptr) return;
@@ -205,6 +348,7 @@ void PushSnapshot()
 	static_assert(sizeof(snapshot.fft) == FftBinCountPadded, "fft field size mismatch");
 	memcpy(snapshot.fft, g_fftDisp.buf, FftBinCount);
 	memset(snapshot.fft + FftBinCount, 0, FftBinCountPadded - FftBinCount);
+	BuildLevels(snapshot, vm);
 	++g_snapshotWriteIndex;
 }
 
@@ -345,9 +489,8 @@ uint32_t GetSnapshotHeaderWordCount()
 	return StatusSnapshotHeaderWordCount;
 }
 
-// FMDSP右半分(FFTスペクトラム)。pmdweb側のgetSnapshotFftOffset/getFftBinCountと
-// 命名を揃える(docs/right-pane-data.md参照)。MUCOM側にはlevels[]相当の
-// leveldataが無いため(fmgenにレベル追従が無い、スコープ外)levelOffset等は無い。
+// FMDSP右半分(FFTスペクトラム/レベルメーター)。pmdweb側のexportと命名を揃える
+// (docs/right-pane-data.md参照)。
 uint32_t GetSnapshotFftOffset()
 {
 	return static_cast<uint32_t>(offsetof(StatusSnapshot, fft));
@@ -356,6 +499,21 @@ uint32_t GetSnapshotFftOffset()
 int GetFftBinCount()
 {
 	return FftBinCount;
+}
+
+uint32_t GetSnapshotLevelOffset()
+{
+	return static_cast<uint32_t>(offsetof(StatusSnapshot, levels));
+}
+
+int GetLevelCount()
+{
+	return LevelCount;
+}
+
+int GetLevelFieldCount()
+{
+	return LevelFieldCount;
 }
 
 emscripten::val GetChannelData()
@@ -404,9 +562,12 @@ EMSCRIPTEN_BINDINGS(mucom88)
 	emscripten::function("getSnapshotEntryByteSize", &GetSnapshotEntryByteSize);
 	emscripten::function("getSnapshotWriteIndex", &GetSnapshotWriteIndex);
 	emscripten::function("getSnapshotHeaderWordCount", &GetSnapshotHeaderWordCount);
-	// FMDSP右半分(FFT)。docs/right-pane-data.md参照。
+	// FMDSP右半分(FFT/レベルメーター)。docs/right-pane-data.md参照。
 	emscripten::function("getSnapshotFftOffset", &GetSnapshotFftOffset);
 	emscripten::function("getFftBinCount", &GetFftBinCount);
+	emscripten::function("getSnapshotLevelOffset", &GetSnapshotLevelOffset);
+	emscripten::function("getLevelCount", &GetLevelCount);
+	emscripten::function("getLevelFieldCount", &GetLevelFieldCount);
 	// テスト専用(tools/verify_right_pane_data.mjs)。pmdweb同様、Node環境からは
 	// AudioWorklet経由のProcessAudioRequest()に到達できないための直接レンダリング口。
 	emscripten::function("renderFramesForTest", &RenderFramesForTest);

@@ -132,10 +132,11 @@ for (let ch = 0; ch < Module.getLevelCount(); ch++) {
 違いのみここに記す(共通部分は §1-3 参照。命名も揃えてある: `getSnapshotFftOffset()` /
 `getFftBinCount()`)。
 
-- **レベルメーター(levels[])は無い。** fmgenにレベル追従(leveldata相当)が
-  無いため、スコープ外(今回の対応範囲外、別途判断)。`StatusSnapshot` は
-  `frame + passTick/intCount/maxCount + chstat[16] + tracks[MUCOM_MAXCH] + fft[72]`
-  という構成で、`fft[]`は末尾に置いた(PMD側は tracks の後に fft→levels の順)。
+- **レベルメーター(levels[])も実装した(2026-08-14)。** 当初「fmgenにレベル
+  追従が無いためスコープ外」としていたが、fmgen自体にPMD側`leveldata`相当の
+  ピーク追従を後付けした。詳細は§6b参照。`StatusSnapshot` は
+  `frame + passTick/intCount/maxCount + chstat[16] + tracks[MUCOM_MAXCH] + fft[72] + levels[19]`
+  という構成(PMD側と同じ順、tracksの後にfft→levels)。
 - **サンプル形式の食い違い。** MUCOMのミックス後PCM(`g_audioBuffer`)は
   `int32_t`のステレオ(fmgen の `FM_SAMPLETYPE=int32`、`fmgen.h`)。値のスケール
   自体は16bit相当だが(再生側 `mucom-worklet.js` が `sample/32768` でPCM化)、
@@ -161,3 +162,127 @@ for (let ch = 0; ch < Module.getLevelCount(); ch++) {
 
 検証: `tools/verify_right_pane_data_mucom.mjs`(PMD側の兄弟スクリプト)。
 故障注入の実施記録は `docs/verify_right_pane_data_mucom_fault_injection_log.txt`。
+
+## 6b. MUCOM側(mucomweb)のレベルメーター実装
+
+fmgen(`upstream/MucomWeb/mucom88/src/fmgen`)には98fmplayerの`leveldata`に
+相当するチャンネル単位のレベル出力が一切無い。そこで
+`mucomweb/patches/0002-fmgen-leveldata.patch`でfmgen自体のミックス処理に
+ピーク追従(read-and-clear、上流`leveldata_read()`/`leveldata_update()`と
+同じ意味論)を直接差し込んだ。単一スレッド(wasm/Node)なので上流の
+`stdatomic`(`atomic_flag`)は使わず、`unsigned`+`bool`の素朴な実装にしている。
+
+### 経路ごとの分離可否(全経路を確認済み。分離不能だった経路は無い)
+
+| 経路 | 対応チャンネル | 分離可否 | 差し込み位置 |
+|---|---|---|---|
+| `OPNABase::MixSubS`/`MixSubSL` | FM 1-6 | **可** | `ch[c].Calc()`/`CalcL()`の戻り値をステレオバッファへ加算する**前**に捕捉。元々1呼び出し=1チャンネル分離済み |
+| `PSG::Mix` | SSG 1-3 | **可(要変更)** | 3チャンネル分がオーバーサンプリングループ内でインライン合算されており中間値が無い。3並列のアキュムレータ`csample[0..2]`を追加し、既存の合算アキュムレータと並行して積算(ノイズ無効/有効/エンベロープ固定の3つのループ変種すべてに同じ変更を適用) |
+| `OPNA::RhythmMix` | リズム(6音) | **可** | 楽器ごとのループ内`sample`ローカル変数が既に1楽器分離済み。6音の最大値をindex9として採用(PMD側`build_levels()`と同じ方針) |
+| `OPNABase::ADPCMBMix` | ADPCM | **可** | モノラル1系統のみなので分離の必要すら無い。ループが3種類あるがどれも同じ`s`ローカルをタップ |
+
+### 並び順(index 0-18)。実測で確定(下記参照)
+
+| index | チャンネル | 対応track(A-K) | 備考 |
+|---|---|---|---|
+| 0-2 | FM 1-3 | A,B,C | |
+| 3-5 | FM 4-6 | H,I,J | MUCOMコンパイラのパート固定割り当て。fmgen `ch[]`配列上のindexは0-5でFM1-6と連番(PMD側と同じ) |
+| 6-8 | SSG 1-3 | D,E,F | |
+| 9 | リズム(6音の最大値) | G | ただし本フォークは構造的に常に0(後述) |
+| 10 | ADPCM | K | |
+| 11-18 | PPZ8 1-8 | (無し) | MUCOMにPPZ8チャンネルは存在しないため、5フィールド全て常に0 |
+
+track対応(`MucomWeb.cpp`の`LevelToTrack[]`)はMUCOMコンパイラのパート
+固定割り当て(`upstream/MucomWeb/mucom88/src/cmucom.h`の
+`MUCOM_CH_FM1=0`/`MUCOM_CH_PSG=3`/`MUCOM_CH_RHYTHM=6`/`MUCOM_CH_ADPCM=10`)
+と一致する。PMD側`build_levels()`はindex9(リズム)の`t`を明示せず暗黙に
+FM1を流用する上流の癖があるが、MUCOMには実在するリズム専用パートGがある
+ため、そちらを使うほうが正確と判断し、あえて同じ癖は再現していない。
+
+### フィールド(1chあたり5つのint32、PMD側と同じ意味)
+
+- `level`: fmgenへ追加したpeak-holdの値。0が無音、大きいほど大
+- `pan`: PMD側`build_levels()`と同じ`table[4]={5,4,0,2}`変換
+  (`docs/mucom-pchdata-mapping.md`で実測済みのFM/ADPCM pan register bit
+  との一致を流用)。**鳴っていないチャンネルは`pan=5`固定**(PMD側と同じ
+  上書き仕様、`fmdsp-pacc.c`の`if (!playing) levels[c].pan = 5;`をそのまま
+  再現)。SSG(6-8)とリズム(9)はcmucom.cppが`pan=3`を無条件に返す実装
+  (レジスタを読んですらいない)に合わせ、rawpan=3固定として扱う
+- `prog`: 対応trackの`vnum`
+- `key`: 対応trackの`code`に`+0x10`(MUCOM内部オクターブは0始まり、PMDは
+  1始まりのためオクターブぶんを補正)、休符時(`fnum1==0 && fnum2==0`)は
+  下位4bitを0xFへ上書き。`mucomweb/html/adapter.js`の既存key計算と同じ式
+- `playing`: FM(0-5)とADPCM(10)は`mucomvm::GetChStatus()`(レジスタ由来、
+  リアルタイム)を使う。SSG(6-8)とリズム(9)には対応するchstat[]が
+  存在しない(`adapter.js`の`CH_TO_CHSTAT`コメント参照)ため、代わりに
+  今回追加した実測`level`(>0か)を「今鳴っているか」の判定に使う。
+  これはPMD側の`track_status[].playing`より一段直接的で、sticky近似より
+  正確(レベル自体が実際の音声出力そのものであるため)
+
+### リズム(index9)が常に0であることについて(パッチ起因ではない既知の制約)
+
+`mucomvm::InitSoundSystem()`が`opn->Init(baseclock, 8000, 0)`と3引数で
+`OPNA::Init()`を呼んでおり、4番目の`rhythmpath`引数(デフォルト`nullptr`)を
+一度も指定していない。そのため`OPNA::RhythmMix()`の
+`if (rhythmtvol < 128 && rhythm[0].sample && ...)`ガードが常に`false`で
+早期returnし、**このMucomWebフォークはビルド全体を通じてリズムPCM
+サンプルを一度もロードしない**(実機YM2608のリズムサンプルROMデータを
+このOSSフォークが同梱していないため)。これは今回のパッチが原因ではなく、
+MucomWeb全体の既存の構造的制約。`UpdateRhythmLevel()`自体は正しい位置
+(サンプル計算直後)に差し込まれているため、将来リズムサンプルが
+ロードされるようになれば正しく動作する。
+
+### チャンネル対応表(実測)
+
+`tools/verify_right_pane_data_mucom.mjs`の(b)チェックで、1パートだけ
+鳴らすMMLを使い「鳴らしたパートに対応するindexだけが非0」を実測確認した
+(推測ではなく実測、過去に「ビット割当を推測して1024x848が212ラインに
+なった」失敗があるため)。
+
+| MMLパート | note | index | 実測level(参考値) |
+|---|---|---|---|
+| A(FM1) | `@1o4c1` | 0 | 75 |
+| B(FM2) | `@1o4c1` | 1 | 75 |
+| C(FM3) | `@1o4c1` | 2 | 75 |
+| H(FM4) | `@1o4c1` | 3 | 75 |
+| I(FM5) | `@1o4c1` | 4 | 75 |
+| J(FM6) | `@1o4c1` | 5 | 75 |
+| D(SSG1) | `@4v10o4c1` | 6 | 406 |
+| E(SSG2) | `@4v10o4c1` | 7 | 406 |
+| F(SSG3) | `@4v10o4c1` | 8 | 406 |
+| G(リズム) | `@8 v52,21,21,21,20,21,21 l16c1` | 9 | 0(常に。上記参照) |
+| K(ADPCM) | `#pcm <mucompcm.bin>` + `@1v50o1l16c1` | 10 | 121 |
+
+SSG(D,E,F)は`@4`(SSG用音色)を明示しないと無音のまま
+(`tools/probe_mucom_pchdata.mjs`のコメントにある「@省略で鳴らない」罠と
+同種)。ADPCM(K)は`#pcm`ディレクティブでPCMデータを実際に読み込まないと
+KeyOnが起きない(`docs/mucom-pchdata-mapping.md`既知の制約と同じ)ため、
+検証スクリプトは`upstream/MucomWeb/mucom88/package/mucompcm.bin`
+(既存パッケージ同梱アセット、無改変)を絶対パスで指定している。
+
+### 検証
+
+`tools/verify_right_pane_data_mucom.mjs`のレベルメーター系チェック:
+
+- (a) 各levelが非負、無音時は全19chが0
+- (b) 上記チャンネル対応表どおり、1パートだけ鳴らすと対応indexだけが非0
+  (リズムは常に0が期待値として別扱い)
+- (c) 音量を変えるとlevelが変わる(`v1`と`v15`でFM1のlevelが約27倍differ、
+  v1=255 vs v15=6868)
+- (d) `getSnapshotLevelOffset()`/`getLevelCount()`/`getLevelFieldCount()`と
+  `getSnapshotEntryByteSize()`の整合性
+- **故障注入**: `MucomWeb.cpp`の`PushSnapshot()`内`BuildLevels(snapshot, vm);`
+  呼び出しを一時的にコメントアウトして再ビルドし、(b)(c)の合計19件が
+  単独でFAILすることを確認してから元に戻した。実施記録は
+  `docs/verify_right_pane_data_mucom_fault_injection_log.txt`参照
+
+### ビルド上の変更点
+
+- `mucomweb/patches/0002-fmgen-leveldata.patch`: fmgen本体
+  (`opna.h`/`opna.cpp`/`psg.h`/`psg.cpp`)へのピーク追従差し込みと、
+  `mucomvm.h`への`GetOpna()`読み取り専用アクセサ追加。`mucomweb/CMakeLists.txt`
+  が0001と同じ仕組み(`git apply --reverse --check`で冪等判定、失敗時は
+  警告でなくビルド失敗)で自動適用する
+- `mucomweb/src/MucomWeb.cpp`: `LevelStatus`構造体・`BuildLevels()`・
+  export(`getSnapshotLevelOffset`/`getLevelCount`/`getLevelFieldCount`、
+  PMD側と同じ命名)を追加

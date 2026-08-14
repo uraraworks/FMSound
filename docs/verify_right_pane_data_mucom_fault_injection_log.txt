@@ -47,3 +47,67 @@ FftFeed()と独立なので影響を受けず、想定通りの切り分けに�
 ALL PASS
 
 結論: (b)は「常にPASSする検査」ではなく、実際の配線切断を検出できることを確認した。
+
+
+MUCOM側レベルメーター(19ch) 故障注入テスト実施記録
+====================================================
+(2026-08-14追記。fmgenへのpeak-hold追加、mucomweb/patches/0002-fmgen-leveldata.patch)
+
+目的: tools/verify_right_pane_data_mucom.mjs のレベルメーター系チェック
+(b)(単独パート再生で対応indexだけが非0)・(c)(v1とv15でlevelが有意に
+differ)が、実際に配線が切れたときに単independently FAILすることを確認する。
+
+手順:
+1. mucomweb/src/MucomWeb.cpp の PushSnapshot() 内、BuildLevels(snapshot, vm);
+   の呼び出し1行をコメントアウト。ビルドし、
+   node tools/verify_right_pane_data_mucom.mjs を実行。
+2. 結果を確認。
+3. コメントアウトを元に戻し、再ビルド・再実行してALL PASSに戻ることを確認。
+
+--- 手順1の結果(故障注入時、レベルメーター関連のみ抜粋) ---
+
+[PASS] (a) 無音時は全levelが0 - nonzero=          (levels[]が全0初期値のままなので当然PASSしてしまう。
+                                                     このチェック単体では検出力が無いことも分かる)
+[FAIL] (b) FM1(part A) 単独再生でindex0のみ非0 - nonZeroIdx=[] level[0]=0
+[FAIL] (b) FM2(part B) 単独再生でindex1のみ非0 - nonZeroIdx=[] level[1]=0
+[FAIL] (b) FM3(part C) 単独再生でindex2のみ非0 - nonZeroIdx=[] level[2]=0
+[FAIL] (b) FM4(part H) 単独再生でindex3のみ非0 - nonZeroIdx=[] level[3]=0
+[FAIL] (b) FM5(part I) 単独再生でindex4のみ非0 - nonZeroIdx=[] level[4]=0
+[FAIL] (b) FM6(part J) 単独再生でindex5のみ非0 - nonZeroIdx=[] level[5]=0
+[FAIL] (b) SSG1(part D) 単独再生でindex6のみ非0 - nonZeroIdx=[] level[6]=0
+[FAIL] (b) SSG2(part E) 単独再生でindex7のみ非0 - nonZeroIdx=[] level[7]=0
+[FAIL] (b) SSG3(part F) 単独再生でindex8のみ非0 - nonZeroIdx=[] level[8]=0
+[PASS] (b) Rhythm(part G) は本フォークでは構造的に常に無音(index9も含め全0) - nonZeroIdx=[]
+       (このケースはBuildLevels()の有無に関わらず0が期待値なので、故障注入でも
+       区別できない。これは検査項目自体の限界として認識しており、Rhythm経路の
+       配線そのものはコード査読(OPNA::RhythmMix内のUpdateRhythmLevel呼び出し)で
+       別途確認している)
+[FAIL] (b) ADPCM(part K) 単独再生でindex10のみ非0 - nonZeroIdx=[] level[10]=0
+[FAIL] (c) v15の音量がv1より有意に大きい(index0=FM1) - v1=0 v15=0
+
+21 CHECK(S) FAILED (うちレベルメーター関連が19件)
+
+--- 手順3の結果(復元後) ---
+
+[PASS] (b) FM1(part A) 単独再生でindex0のみ非0 - nonZeroIdx=[0] level[0]=75
+[PASS] (b) FM2(part B) 単独再生でindex1のみ非0 - nonZeroIdx=[1] level[1]=75
+[PASS] (b) FM3(part C) 単独再生でindex2のみ非0 - nonZeroIdx=[2] level[2]=75
+[PASS] (b) FM4(part H) 単独再生でindex3のみ非0 - nonZeroIdx=[3] level[3]=75
+[PASS] (b) FM5(part I) 単独再生でindex4のみ非0 - nonZeroIdx=[4] level[4]=75
+[PASS] (b) FM6(part J) 単独再生でindex5のみ非0 - nonZeroIdx=[5] level[5]=75
+[PASS] (b) SSG1(part D) 単独再生でindex6のみ非0 - nonZeroIdx=[6] level[6]=406
+[PASS] (b) SSG2(part E) 単独再生でindex7のみ非0 - nonZeroIdx=[7] level[7]=406
+[PASS] (b) SSG3(part F) 単独再生でindex8のみ非0 - nonZeroIdx=[8] level[8]=406
+[PASS] (b) Rhythm(part G) は本フォークでは構造的に常に無音(index9も含め全0) - nonZeroIdx=[]
+[PASS] (b) ADPCM(part K) 単独再生でindex10のみ非0 - nonZeroIdx=[10] level[10]=121
+[PASS] (c) v15の音量がv1より有意に大きい(index0=FM1) - v1=255 v15=6868
+
+ALL PASS
+
+結論: (b)(c)は「常にPASSする検査」ではなく、fmgenへのpeak-hold配線が切れると
+FM/SSG/ADPCMの9項目が単独でFAILすることを確認した。Rhythm(index9)の
+「常に0」チェックだけは、この故障注入方式では区別できない構造的な限界がある
+(このフォークにはリズムPCMサンプルが同梱されておらず、いずれにせよ常に0に
+なるため)。この項目についてはOPNA::RhythmMix()内でUpdateRhythmLevel()が
+正しい位置(サンプル計算直後、rhythmtl等でミュートされる前)に呼ばれている
+ことをコード査読で確認済み(mucomweb/patches/0002-fmgen-leveldata.patch参照)。

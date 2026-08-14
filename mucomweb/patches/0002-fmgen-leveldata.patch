@@ -1,0 +1,437 @@
+# FMSound patch: per-channel level peak-hold in fmgen, for FMDSP's 19ch
+# level meter (the right-pane display shared with pmdweb, see
+# docs/right-pane-data.md).
+#
+# Why: fmgen (upstream/MucomWeb/mucom88/src/fmgen) has no per-channel level
+# output at all -- unlike upstream/98fmplayer's libopna, which carries a
+# struct leveldata (upstream/98fmplayer/leveldata/leveldata.h) alongside
+# every channel. This patch adds an equivalent peak-hold (read-and-clear)
+# directly into fmgen's mixing code, at the point where each channel's own
+# sample is already computed individually, before it is summed into the
+# stereo mix:
+#   - FM 1-6:  OPNABase::MixSubS / MixSubSL (opna.cpp) -- ch[c].Calc()/
+#              CalcL() return value, tapped at the call site.
+#   - SSG 1-3: PSG::Mix (psg.cpp) -- the 3 channels are summed inline inside
+#              an oversampling loop with no per-channel intermediate value,
+#              so this patch adds 3 parallel accumulators (csample[0..2])
+#              that mirror the existing combined accumulator, in all 3 loop
+#              variants (noise-off / noise-on / envelope-locked).
+#   - Rhythm (6 instruments): OPNA::RhythmMix -- the per-instrument `sample`
+#              local is already isolated per drum before StoreSample.
+#   - ADPCM:   OPNABase::ADPCMBMix -- the per-sample `s` local is already the
+#              whole (mono) ADPCM stream; tapped in all 3 loop variants.
+#
+# All of the above are genuinely separable per-channel at the point of the
+# tap (verified by reading the surrounding mix code, not assumed). No mixing
+# path in fmgen was found where per-channel separation was impossible.
+#
+# Single-threaded (wasm/Node), so a plain unsigned+bool read/read-and-clear
+# pair is used instead of upstream 98fmplayer's leveldata.h (which uses
+# atomic_flag for a multi-threaded host); the peak-hold *semantics* are the
+# same (see comments at each accessor).
+#
+# Also exposes:
+#   - mucomvm::GetOpna() (mucomvm.h): read-only accessor to the private
+#     `opn` member, needed so MucomWeb.cpp can reach the new OPNA/PSG level
+#     accessors (opn was already exposed indirectly for other purposes via
+#     patch 0001's CMucom::GetVM(), but GetOpna() itself is new here).
+#
+# Applied automatically (idempotently) by mucomweb/CMakeLists.txt at build
+# time, the same way as 0001-cmucom-expose-vm.patch: a fatal CMake error
+# (not a silent warning) if the patch can no longer apply cleanly.
+#
+# Apply against upstream/MucomWeb/mucom88 (nested submodule at
+# upstream/MucomWeb/mucom88), e.g.:
+#   git -C upstream/MucomWeb/mucom88 apply mucomweb/patches/0002-fmgen-leveldata.patch
+diff --git a/src/fmgen/opna.cpp b/src/fmgen/opna.cpp
+index 11432ab..33dd488 100644
+--- a/src/fmgen/opna.cpp
++++ b/src/fmgen/opna.cpp
+@@ -395,7 +395,11 @@ OPNABase::OPNABase()
+ 	{
+ 		ch[i].SetChip(&chip);
+ 		ch[i].SetType(typeN);
++		fmlevel_[i] = 0;
++		fmlevelread_[i] = false;
+ 	}
++	adpcmlevel_ = 0;
++	adpcmlevelread_ = false;
+ }
+ 
+ OPNABase::~OPNABase()
+@@ -994,6 +998,7 @@ void OPNABase::ADPCMBMix(Sample* dest, uint count)
+ 						break;
+ 				}
+ 				int s = (adplc * apout0 + (8192-adplc) * apout1) >> 13;
++				UpdateAdpcmLevel(s);
+ 				StoreSample(dest[0], s & maskl);
+ 				StoreSample(dest[1], s & maskr);
+ 				dest += 2;
+@@ -1007,6 +1012,7 @@ void OPNABase::ADPCMBMix(Sample* dest, uint count)
+ 					adplc += 8192;
+ 				}
+ 				int s = (adplc * apout1) >> 13;
++				UpdateAdpcmLevel(s);
+ 				StoreSample(dest[0], s & maskl);
+ 				StoreSample(dest[1], s & maskr);
+ 				dest += 2;
+@@ -1029,6 +1035,7 @@ void OPNABase::ADPCMBMix(Sample* dest, uint count)
+ 				}
+ 				adplc -= 8192;
+ 				s >>= 13;
++				UpdateAdpcmLevel(s);
+ 				StoreSample(dest[0], s & maskl);
+ 				StoreSample(dest[1], s & maskr);
+ 				dest += 2;
+@@ -1081,22 +1088,54 @@ void OPNABase::FMMix(Sample* buffer, int nsamples)
+ 
+ void OPNABase::MixSubSL(int activech, ISample** dest)
+ {
+-	if (activech & 0x001) (*dest[0]  = ch[0].CalcL());
+-	if (activech & 0x004) (*dest[1] += ch[1].CalcL());
+-	if (activech & 0x010) (*dest[2] += ch[2].CalcL());
+-	if (activech & 0x040) (*dest[3] += ch[3].CalcL());
+-	if (activech & 0x100) (*dest[4] += ch[4].CalcL());
+-	if (activech & 0x400) (*dest[5] += ch[5].CalcL());
++	if (activech & 0x001) { ISample s = ch[0].CalcL(); UpdateFmLevel(0, s); (*dest[0]  = s); }
++	if (activech & 0x004) { ISample s = ch[1].CalcL(); UpdateFmLevel(1, s); (*dest[1] += s); }
++	if (activech & 0x010) { ISample s = ch[2].CalcL(); UpdateFmLevel(2, s); (*dest[2] += s); }
++	if (activech & 0x040) { ISample s = ch[3].CalcL(); UpdateFmLevel(3, s); (*dest[3] += s); }
++	if (activech & 0x100) { ISample s = ch[4].CalcL(); UpdateFmLevel(4, s); (*dest[4] += s); }
++	if (activech & 0x400) { ISample s = ch[5].CalcL(); UpdateFmLevel(5, s); (*dest[5] += s); }
+ }
+ 
+ inline void OPNABase::MixSubS(int activech, ISample** dest)
+ {
+-	if (activech & 0x001) (*dest[0]  = ch[0].Calc());
+-	if (activech & 0x004) (*dest[1] += ch[1].Calc());
+-	if (activech & 0x010) (*dest[2] += ch[2].Calc());
+-	if (activech & 0x040) (*dest[3] += ch[3].Calc());
+-	if (activech & 0x100) (*dest[4] += ch[4].Calc());
+-	if (activech & 0x400) (*dest[5] += ch[5].Calc());
++	if (activech & 0x001) { ISample s = ch[0].Calc(); UpdateFmLevel(0, s); (*dest[0]  = s); }
++	if (activech & 0x004) { ISample s = ch[1].Calc(); UpdateFmLevel(1, s); (*dest[1] += s); }
++	if (activech & 0x010) { ISample s = ch[2].Calc(); UpdateFmLevel(2, s); (*dest[2] += s); }
++	if (activech & 0x040) { ISample s = ch[3].Calc(); UpdateFmLevel(3, s); (*dest[3] += s); }
++	if (activech & 0x100) { ISample s = ch[4].Calc(); UpdateFmLevel(4, s); (*dest[4] += s); }
++	if (activech & 0x400) { ISample s = ch[5].Calc(); UpdateFmLevel(5, s); (*dest[5] += s); }
++}
++
++// ---------------------------------------------------------------------------
++//	FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch): per-channel
++//	level peak-hold (FM). See declaration in opna.h for rationale.
++//
++void OPNABase::UpdateFmLevel(int ch, ISample s)
++{
++	unsigned level = (unsigned)(s < 0 ? -s : s);
++	if (fmlevelread_[ch] || level > fmlevel_[ch]) fmlevel_[ch] = level;
++	fmlevelread_[ch] = false;
++}
++
++unsigned OPNABase::GetFmLevel(int ch)
++{
++	unsigned level = fmlevel_[ch];
++	fmlevelread_[ch] = true;
++	return level;
++}
++
++void OPNABase::UpdateAdpcmLevel(ISample s)
++{
++	unsigned level = (unsigned)(s < 0 ? -s : s);
++	if (adpcmlevelread_ || level > adpcmlevel_) adpcmlevel_ = level;
++	adpcmlevelread_ = false;
++}
++
++unsigned OPNABase::GetAdpcmLevel(void)
++{
++	unsigned level = adpcmlevel_;
++	adpcmlevelread_ = true;
++	return level;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -1182,6 +1221,8 @@ OPNA::OPNA()
+ 		rhythm[i].pos = 0;
+ 		rhythm[i].size = 0;
+ 		rhythm[i].volume = 0;
++		rhythmlevel_[i] = 0;
++		rhythmlevelread_[i] = false;
+ 	}
+ 	rhythmtvol = 0;
+ 	adpcmmask = 0x3ffff;
+@@ -1433,6 +1474,7 @@ void OPNA::RhythmMix(Sample* buffer, uint count)
+ 				for (Sample* dest = buffer; dest<limit && r.pos < r.size; dest+=2)
+ 				{
+ 					int sample = (r.sample[r.pos / 1024] * vol) >> 12;
++					UpdateRhythmLevel(i, sample);
+ 					r.pos += r.step;
+ 					StoreSample(dest[0], sample & maskl);
+ 					StoreSample(dest[1], sample & maskr);
+@@ -1442,6 +1484,24 @@ void OPNA::RhythmMix(Sample* buffer, uint count)
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++//	FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch): per-instrument
++//	rhythm level peak-hold. See declaration in opna.h for rationale.
++//
++void OPNA::UpdateRhythmLevel(int i, int s)
++{
++	unsigned level = (unsigned)(s < 0 ? -s : s);
++	if (rhythmlevelread_[i] || level > rhythmlevel_[i]) rhythmlevel_[i] = level;
++	rhythmlevelread_[i] = false;
++}
++
++unsigned OPNA::GetRhythmLevel(int i)
++{
++	unsigned level = rhythmlevel_[i];
++	rhythmlevelread_[i] = true;
++	return level;
++}
++
+ // ---------------------------------------------------------------------------
+ //	音量設定
+ //
+diff --git a/src/fmgen/opna.h b/src/fmgen/opna.h
+index d7953b0..8e3f16e 100644
+--- a/src/fmgen/opna.h
++++ b/src/fmgen/opna.h
+@@ -128,6 +128,19 @@ namespace FM
+ 		uint	ReadStatus() { return status & 0x03; }
+ 		uint	ReadStatusEx();
+ 		void	SetChannelMask(uint mask);
++
++		// FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch):
++		// per-channel level peak-hold for FMDSP level meters (FM 6ch + ADPCM).
++		// fmgen has no per-channel level output; we tap the point where each
++		// channel's sample is already computed individually (MixSubS/MixSubSL,
++		// before it's summed into the stereo mix) and the point where the
++		// ADPCM sample is computed (ADPCMBMix), and hold the peak until read
++		// (read-and-clear, mirrors upstream 98fmplayer's leveldata_read()/
++		// leveldata_update()). Single-threaded (wasm/Node), so plain
++		// unsigned+bool suffices; no stdatomic needed.
++		unsigned GetFmLevel(int ch);	// ch: 0-5
++		unsigned GetAdpcmLevel(void);
++		unsigned GetSsgLevel(int ch) { return psg.GetLevel(ch); }	// ch: 0-2 (psg is protected in OPNBase; expose read-only)
+ 	
+ 	private:
+ 		virtual void Intr(bool) {}
+@@ -213,6 +226,13 @@ namespace FM
+ 
+ 		Channel4 ch[6];
+ 
++		unsigned fmlevel_[6];
++		bool     fmlevelread_[6];
++		unsigned adpcmlevel_;
++		bool     adpcmlevelread_;
++		void     UpdateFmLevel(int ch, ISample s);
++		void     UpdateAdpcmLevel(ISample s);
++
+ 		static void	BuildLFOTable();
+ 		static int amtable[FM_LFOENTS];
+ 		static int pmtable[FM_LFOENTS];
+@@ -279,6 +299,11 @@ namespace FM
+ 
+ 		uint8*	GetADPCMBuffer() { return adpcmbuf; }
+ 
++		// FMSound patch 0002: per-instrument rhythm level (6 instruments; FMDSP
++		// index9 uses the max of these 6). See OPNABase declaration above for
++		// rationale.
++		unsigned GetRhythmLevel(int i);	// i: 0-5
++
+ 		int		dbgGetOpOut(int c, int s) { return ch[c].op[s].dbgopout_; }
+ 		int		dbgGetPGOut(int c, int s) { return ch[c].op[s].dbgpgout_; }
+ 		Channel4* dbgGetCh(int c) { return &ch[c]; }
+@@ -298,6 +323,9 @@ namespace FM
+ 		};
+ 	
+ 		void	RhythmMix(Sample* buffer, uint count);
++		void	UpdateRhythmLevel(int i, int s);
++		unsigned rhythmlevel_[6];
++		bool     rhythmlevelread_[6];
+ 
+ 	// リズム音源関係
+ 		Rhythm	rhythm[6];
+diff --git a/src/fmgen/psg.cpp b/src/fmgen/psg.cpp
+index 76ea794..472f531 100644
+--- a/src/fmgen/psg.cpp
++++ b/src/fmgen/psg.cpp
+@@ -17,6 +17,11 @@ PSG::PSG()
+ 	MakeNoiseTable();
+ 	Reset();
+ 	mask = 0x3f;
++	for (int i=0; i<3; i++)
++	{
++		level_[i] = 0;
++		level_read_[i] = false;
++	}
+ }
+ 
+ PSG::~PSG()
+@@ -208,6 +213,24 @@ inline void PSG::StoreSample(Sample& dest, int32 data)
+ 		dest += data;
+ }
+ 
++// ---------------------------------------------------------------------------
++//	FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch): per-channel
++//	level peak-hold (SSG). See declaration in psg.h for rationale.
++//
++void PSG::UpdateLevel(int ch, int32 v)
++{
++	unsigned level = (unsigned)(v < 0 ? -v : v);
++	if (level_read_[ch] || level > level_[ch]) level_[ch] = level;
++	level_read_[ch] = false;
++}
++
++unsigned PSG::GetLevel(int ch)
++{
++	unsigned level = level_[ch];
++	level_read_[ch] = true;
++	return level;
++}
++
+ // ---------------------------------------------------------------------------
+ //	PCM データを吐き出す(2ch)
+ //	dest		PCM データを展開するポインタ
+@@ -228,6 +251,7 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 		nenable[2]  = (r7 >> 5) & 1;
+ 		
+ 		int noise, sample;
++		int csample[3];	// FMSound patch 0002: per-channel accumulators for level meters
+ 		uint env;
+ 		uint* p1 = ((mask & 1) && (reg[ 8] & 0x10)) ? &env : &olevel[0];
+ 		uint* p2 = ((mask & 2) && (reg[ 9] & 0x10)) ? &env : &olevel[1];
+@@ -244,20 +268,24 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 				for (int i=0; i<nsamples; i++)
+ 				{
+ 					sample = 0;
++					csample[0] = csample[1] = csample[2] = 0;
+ 					for (int j=0; j < (1 << oversampling); j++)
+ 					{
+ 						int x, y, z;
+ 						x = (SCOUNT(0) & chenable[0]) - 1;
+-						sample += (olevel[0] + x) ^ x;
++						{ int t0 = (olevel[0] + x) ^ x; sample += t0; csample[0] += t0; }
+ 						scount[0] += speriod[0];
+ 						y = (SCOUNT(1) & chenable[1]) - 1;
+-						sample += (olevel[1] + y) ^ y;
++						{ int t1 = (olevel[1] + y) ^ y; sample += t1; csample[1] += t1; }
+ 						scount[1] += speriod[1];
+ 						z = (SCOUNT(2) & chenable[2]) - 1;
+-						sample += (olevel[2] + z) ^ z;
++						{ int t2 = (olevel[2] + z) ^ z; sample += t2; csample[2] += t2; }
+ 						scount[2] += speriod[2];
+ 					}
+ 					sample /= (1 << oversampling);
++					csample[0] /= (1 << oversampling); UpdateLevel(0, csample[0]);
++					csample[1] /= (1 << oversampling); UpdateLevel(1, csample[1]);
++					csample[2] /= (1 << oversampling); UpdateLevel(2, csample[2]);
+ 					StoreSample(dest[0], sample);
+ 					StoreSample(dest[1], sample);
+ 					dest += 2;
+@@ -269,6 +297,7 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 				for (int i=0; i<nsamples; i++)
+ 				{
+ 					sample = 0;
++					csample[0] = csample[1] = csample[2] = 0;
+ 					for (int j=0; j < (1 << oversampling); j++)
+ 					{
+ #ifdef _M_IX86
+@@ -282,16 +311,19 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 
+ 						int x, y, z;
+ 						x = ((SCOUNT(0) & chenable[0]) | (nenable[0] & noise)) - 1;		// 0 or -1
+-						sample += (olevel[0] + x) ^ x;
++						{ int t0 = (olevel[0] + x) ^ x; sample += t0; csample[0] += t0; }
+ 						scount[0] += speriod[0];
+ 						y = ((SCOUNT(1) & chenable[1]) | (nenable[1] & noise)) - 1;
+-						sample += (olevel[1] + y) ^ y;
++						{ int t1 = (olevel[1] + y) ^ y; sample += t1; csample[1] += t1; }
+ 						scount[1] += speriod[1];
+ 						z = ((SCOUNT(2) & chenable[2]) | (nenable[2] & noise)) - 1;
+-						sample += (olevel[2] + z) ^ z;
++						{ int t2 = (olevel[2] + z) ^ z; sample += t2; csample[2] += t2; }
+ 						scount[2] += speriod[2];
+ 					}
+ 					sample /= (1 << oversampling);
++					csample[0] /= (1 << oversampling); UpdateLevel(0, csample[0]);
++					csample[1] /= (1 << oversampling); UpdateLevel(1, csample[1]);
++					csample[2] /= (1 << oversampling); UpdateLevel(2, csample[2]);
+ 					StoreSample(dest[0], sample);
+ 					StoreSample(dest[1], sample);
+ 					dest += 2;
+@@ -314,6 +346,7 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 			for (int i=0; i<nsamples; i++)
+ 			{
+ 				sample = 0;
++				csample[0] = csample[1] = csample[2] = 0;
+ 				for (int j=0; j < (1 << oversampling); j++)
+ 				{
+ 					env = envelop[ecount >> (envshift+oversampling)];
+@@ -335,16 +368,19 @@ void PSG::Mix(Sample* dest, int nsamples)
+ 
+ 					int x, y, z;
+ 					x = ((SCOUNT(0) & chenable[0]) | (nenable[0] & noise)) - 1;		// 0 or -1
+-					sample += (*p1 + x) ^ x;
++					{ int t0 = (*p1 + x) ^ x; sample += t0; csample[0] += t0; }
+ 					scount[0] += speriod[0];
+ 					y = ((SCOUNT(1) & chenable[1]) | (nenable[1] & noise)) - 1;
+-					sample += (*p2 + y) ^ y;
++					{ int t1 = (*p2 + y) ^ y; sample += t1; csample[1] += t1; }
+ 					scount[1] += speriod[1];
+ 					z = ((SCOUNT(2) & chenable[2]) | (nenable[2] & noise)) - 1;
+-					sample += (*p3 + z) ^ z;
++					{ int t2 = (*p3 + z) ^ z; sample += t2; csample[2] += t2; }
+ 					scount[2] += speriod[2];
+ 				}
+ 				sample /= (1 << oversampling);
++				csample[0] /= (1 << oversampling); UpdateLevel(0, csample[0]);
++				csample[1] /= (1 << oversampling); UpdateLevel(1, csample[1]);
++				csample[2] /= (1 << oversampling); UpdateLevel(2, csample[2]);
+ 				StoreSample(dest[0], sample);
+ 				StoreSample(dest[1], sample);
+ 				dest += 2;
+diff --git a/src/fmgen/psg.h b/src/fmgen/psg.h
+index 859642c..3aab2cc 100644
+--- a/src/fmgen/psg.h
++++ b/src/fmgen/psg.h
+@@ -69,13 +69,24 @@ public:
+ 	void SetReg(uint regnum, uint8 data);
+ 	uint GetReg(uint regnum) { return reg[regnum & 0x0f]; }
+ 
++	// FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch):
++	// per-channel level peak-hold for FMDSP level meters (SSG 3ch).
++	// Read-and-clear semantics, mirrors upstream 98fmplayer's
++	// leveldata_read()/leveldata_update(). Single-threaded (wasm/Node),
++	// so plain unsigned+bool suffices; no stdatomic needed.
++	unsigned GetLevel(int ch);	// ch: 0-2
++
+ protected:
+ 	void MakeNoiseTable();
+ 	void MakeEnvelopTable();
+ 	static void StoreSample(Sample& dest, int32 data);
++	void UpdateLevel(int ch, int32 v);
+ 	
+ 	uint8 reg[16];
+ 
++	unsigned level_[3];
++	bool level_read_[3];
++
+ 	const uint* envelop;
+ 	uint olevel[3];
+ 	uint32 scount[3], speriod[3];
+diff --git a/src/mucomvm.h b/src/mucomvm.h
+index f922f1c..3d3ccf8 100644
+--- a/src/mucomvm.h
++++ b/src/mucomvm.h
+@@ -104,6 +104,10 @@ public:
+ 	bool GetChMute(int ch);
+ 	int GetChStatus(int ch);
+ 	uint8_t *GetRegisterMap(void) { return regmap;  }
++	// FMSound patch (mucomweb/patches/0002-fmgen-leveldata.patch):
++	// FMDSP level meters need the OPNA/PSG instance to read the per-channel
++	// peak-hold level accessors added there. Read-only, no state added here.
++	FM::OPNA *GetOpna(void) { return opn; }
+ 
+ 	//		デバッグ用
+ 	void Msgf(const char *format, ...);

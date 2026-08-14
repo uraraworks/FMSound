@@ -39,6 +39,29 @@ if (NOT CMUCOM_PATCH_ALREADY_APPLIED EQUAL 0)
     endif()
 endif()
 
+# fmgenにチャンネル単位のレベル追従(leveldata相当)が無いため、FMDSPのレベル
+# メーター(19ch、docs/right-pane-data.md参照)をMUCOM側で本物にするには
+# fmgen自体にピーク追従を差し込む必要がある。0001と同じ冪等適用の仕組み。
+set(FMGEN_LEVELDATA_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/0002-fmgen-leveldata.patch")
+execute_process(
+    COMMAND git apply --reverse --check "${FMGEN_LEVELDATA_PATCH}"
+    WORKING_DIRECTORY "${MUCOM88_DIR}"
+    RESULT_VARIABLE FMGEN_LEVELDATA_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET)
+if (NOT FMGEN_LEVELDATA_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND git apply "${FMGEN_LEVELDATA_PATCH}"
+        WORKING_DIRECTORY "${MUCOM88_DIR}"
+        RESULT_VARIABLE FMGEN_LEVELDATA_PATCH_APPLY_RESULT)
+    if (NOT FMGEN_LEVELDATA_PATCH_APPLY_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "0002-fmgen-leveldata.patch を ${MUCOM88_DIR} に適用できませんでした。"
+            "upstream/MucomWeb/mucom88/src/fmgen/{opna,psg}.{h,cpp} または "
+            "src/mucomvm.h が想定と異なる可能性があります。"
+            "手動確認してください（警告で済ませず失敗させています）。")
+    endif()
+endif()
+
 file(GLOB SOURCES
         ${MUCOM88_DIR}/src/*.c
         ${MUCOM88_DIR}/src/*.cpp
