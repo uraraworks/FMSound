@@ -50,6 +50,11 @@ export const ICONS = {
   },
   // フォルダを開く＝曲を開く(ローカルファイル選択)。
   open: 'M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z',
+  // 課題B: 折れ角付きの用紙+プラス＝新規作成(「曲を開く」「ダウンロード」と同じツールバー列に置く)。
+  newFile: {
+    path: 'M6 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M13 3v5h5',
+    extra: '<path d="M9 14.5h6 M12 11.5v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  },
   // スライダー3本(つまみ付き)＝設定。
   settings: {
     path: 'M4 6h16 M4 12h16 M4 18h16',

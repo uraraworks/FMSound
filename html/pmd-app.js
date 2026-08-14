@@ -43,6 +43,23 @@ import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
 
+// 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
+// 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
+// 最小音色を1個定義し、既定音量で音階を鳴らすだけ)。
+// PMDMML.MAN §11-1: `t`(テンポ絶対値)が指定するのは「2分音符=t(1分間)」であり、
+// 一般的な「テンポ=4分音符のBPM」の半分の値になる(t60はBPM120相当。html/sample_fur_elise.mml
+// のコメント・tools/verify_pmd_tempo_absolute.mjsで確認済み。実際にここで一度つまずいた実績があるため
+// 雛形にも明記する)。
+const PMD_NEW_MML_TEMPLATE = `; 新規作成ひな形: そのまま再生すると音が鳴ります(PMDMML.MAN §3-1準拠の最小音色1個)。
+; t は「2分音符=t」基準(一般的な4分音符BPMの半分の値)。t60はBPM120相当。
+@ 1 7 0
+31 10 5 8 2 10 1 1 0 0
+31 10 5 8 2 10 1 1 0 0
+31 10 5 8 2 10 1 1 0 0
+31 10 5 8 2 10 1 1 0 0
+A t60 @1 v12 o5 l4 cdefgab>c<
+`;
+
 export async function init(ctx) {
   const {
     canvas, consoleCard, toolbar,
@@ -119,9 +136,6 @@ export async function init(ctx) {
           <textarea id="mml" wrap="off" spellcheck="false"></textarea>
         </div>
       </div>
-      <div class="editor-actions">
-        <button id="btnClearMML" type="button">Clear MML</button>
-      </div>
       <div id="result"></div>
     </div>
     <details class="debug-table debug-only" id="debugTable">
@@ -143,6 +157,11 @@ export async function init(ctx) {
 
   const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
   toolbar.insertBefore(btnEditorMode, btnFullscreen);
+
+  // 課題B: 「Clear MML」(英語のまま・エディタ欄の下に浮いたボタン)を廃止し、
+  // ツールバーの「曲を開く」「ダウンロード」と同じ並びのアイコンボタンへ移す。
+  const btnNewMml = iconButton(ICONS.newFile, '新規作成');
+  toolbar.insertBefore(btnNewMml, btnDownload);
 
   let uiMode = 'player';
 
@@ -288,10 +307,10 @@ export async function init(ctx) {
   }
 
   // 課題A: 前回のコンパイル結果(上の1行要約+下の詳細ログ)を消す。実機報告の
-  // 「エラーが消えずに積み上がる」不具合の実体は「Clear MMLで編集欄を空にした後、
+  // 「エラーが消えずに積み上がる」不具合の実体は「新規作成でMMLを空にした後、
   // 一度もrenderCompileErrors()が呼ばれないまま古い表示が残ること」だった
   // (Clear MMLが#result/#mmlStatusに一切触れていなかった)。新しいコンパイルの
-  // 開始時・編集内容を消したとき・曲を読み込んだときの3箇所で呼ぶ。
+  // 開始時・編集内容を消した(新規作成)とき・曲を読み込んだときの3箇所で呼ぶ。
   function clearCompileStatus() {
     resultEl.replaceChildren();
     clearMmlStatus(mmlStatusEl);
@@ -304,23 +323,27 @@ export async function init(ctx) {
     setMmlStatus(mmlStatusEl, { ok: false, message: 'MMLが空です。何か入力してから再生してください。' });
   }
 
-  document.getElementById('btnClearMML').addEventListener('click', function() {
+  // 課題B: 「Clear MML」を「新規作成」に置き換える。空にするのではなく、押した直後に
+  // そのまま再生すれば音が鳴る最小の雛形(PMD_NEW_MML_TEMPLATE)を入れる。
+  // 既存の確認(内容があるときだけ)とCmd/Ctrl+Zでの取り消しの挙動はそのまま引き継ぐ。
+  btnNewMml.addEventListener('click', function() {
     const ta = mmlTextarea;
     if (ta.value.length > 0) {
       const ok = window.confirm(
-        '編集中のMMLを消去します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
+        '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
       );
       if (!ok) return;
     }
     ta.focus();
     ta.select();
     const undoable = typeof document.execCommand === 'function' &&
-      document.execCommand('insertText', false, '');
+      document.execCommand('insertText', false, PMD_NEW_MML_TEMPLATE);
     if (!undoable) {
-      ta.value = '';
+      ta.value = PMD_NEW_MML_TEMPLATE;
       ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    // 課題A: 編集内容を消したときも前回のエラー表示を残さない。
+    mmlEditorApi.render();
+    // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
     clearCompileStatus();
   });
 

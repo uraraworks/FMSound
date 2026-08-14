@@ -582,26 +582,6 @@ header.app-header .app-tagline {
   display: none;
 }
 
-.editor-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.editor-actions button {
-  padding: 6px 12px;
-  font-size: 12px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.editor-actions button:hover {
-  background: var(--border);
-}
-
 #result {
   font-size: 12px;
   white-space: pre-wrap;
