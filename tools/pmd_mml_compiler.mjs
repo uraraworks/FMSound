@@ -27,6 +27,7 @@ function sizeOfEvent(ev) {
     case 'note': case 'rest': return 2;
     case 'tie': return 1;
     case 'tone': return 2;
+    case 'volAbs': return 2;
     case 'tempoAbs': return ev.isTimerB ? 2 : 3;
     case 'tempoRel': return 3;
     case 'loopOpen': return 3;
@@ -62,6 +63,12 @@ function emitEvent(ev, out, offset) {
     case 'tone':
       out[offset] = 0xff;
       out[offset + 1] = ev.tonenum & 0xff;
+      return;
+    case 'volAbs':
+      // 音量絶対値セット(0xfd, doc 1.4節)。v/Vともパーサ側で最終的な生バイト値まで
+      // 解決済み(pmd_mml_parser.mjs)なので、ここでは単純に書き出すだけでよい。
+      out[offset] = 0xfd;
+      out[offset + 1] = ev.value & 0xff;
       return;
     case 'tempoAbs':
       out[offset] = 0xfc;
@@ -120,26 +127,34 @@ function layoutTrack(events, startAddr) {
 
 // MML全文 → `.M` バイト列。
 // tones: { [tonenum]: buildToneEntry()のoptions(tonenumを除く) } 。
-//   MML中で `@n` が参照する音色番号は必ずこのオブジェクトのキーとして与えること。
+//   MML本文中の音色定義ブロック(@ 音色番号 ALG FB ...、pmd_mml_parser.mjsが解析)と
+//   マージされる(同じ番号があればこの引数のほうが優先。第1段階からの後方互換用の経路)。
+//   `@n` が参照する音色番号は、本文中の定義かこの引数のどちらかに存在すればよい。
+//   どちらにも何も無ければ後方互換のため既定音色(@1, 全パラメータ既定値)を1つ用意する。
 // 戻り値: { file, errors, layout } (errorsが空でない場合 file は null)。
 // layout には検証スクリプトが使う各トラックの先頭アドレス・終端アドレス・
-// イベント列(アドレス付き)を含む(音長・ループ検証のため)。
-export function compileMml(source, { tones = { 1: {} }, opmFlag = 0 } = {}) {
-  const { tracks, errors: parseErrors } = parseMml(source);
+// イベント列(アドレス付き)・使用した音色テーブル(tones)を含む。
+export function compileMml(source, { tones, opmFlag = 0 } = {}) {
+  const { tracks, tones: parsedTones, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
+  const toneTable = {};
+  for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
+  if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)
+  if (Object.keys(toneTable).length === 0) toneTable[1] = {}; // 何も定義が無ければ既定音色1個(第1段階からの後方互換)
+
   const errors = [];
-  // MML中で使われている音色番号がすべて tones に存在するか検査
+  // MML中で使われている音色番号がすべて toneTable に存在するか検査
   for (const [part, events] of tracks) {
     for (const ev of events) {
-      if (ev.type === 'tone' && !(ev.tonenum in tones)) {
-        errors.push({ line: ev.line, message: `パート${part}: 音色番号 @${ev.tonenum} が tones オプションに未定義です` });
+      if (ev.type === 'tone' && !(ev.tonenum in toneTable)) {
+        errors.push({ line: ev.line, message: `パート${part}: 音色番号 @${ev.tonenum} が定義されていません(本文中の音色定義、またはtonesオプションのどちらにも無い)` });
       }
     }
   }
   if (errors.length > 0) return { file: null, errors, layout: null };
 
-  // トラックのレイアウト: ヘッダ直後に空トラック(0x80)、続けて使用中の A-F トラックを順に並べる。
+  // トラックのレイアウト: ヘッダ直後に空トラック(0x80)、続けて使用中の A-I トラックを順に並べる。
   let cursor = EMPTY_TRACK_OFF + 1;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
   for (const letter of PART_LETTERS) {
@@ -151,9 +166,9 @@ export function compileMml(source, { tones = { 1: {} }, opmFlag = 0 } = {}) {
     cursor = endAddr;
   }
 
-  const toneNums = Object.keys(tones).map(Number).sort((a, b) => a - b);
+  const toneNums = Object.keys(toneTable).map(Number).sort((a, b) => a - b);
   const toneOff = cursor;
-  const toneEntries = toneNums.map((tn) => buildToneEntry({ tonenum: tn, ...tones[tn] }));
+  const toneEntries = toneNums.map((tn) => buildToneEntry({ ...toneTable[tn], tonenum: tn }));
   const relLen = toneOff + toneEntries.length * 26;
 
   const rel = new Uint8Array(relLen);
@@ -162,13 +177,15 @@ export function compileMml(source, { tones = { 1: {} }, opmFlag = 0 } = {}) {
     rel[off + 1] = (val >> 8) & 0xff;
   }
 
-  // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)
-  for (let idx = 0; idx < 6; idx++) {
+  // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)。
+  // PART_LETTERS(pmd_mml_parser.mjs)の配列indexが、そのままこのヘッダindexと一致するよう設計してある
+  // (A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3)。
+  for (let idx = 0; idx < PART_LETTERS.length; idx++) {
     const letter = PART_LETTERS[idx];
     const layout = trackLayout[letter];
     w16(idx * 2, layout ? layout.startAddr : EMPTY_TRACK_OFF);
   }
-  for (let idx = 6; idx < 11; idx++) w16(idx * 2, EMPTY_TRACK_OFF); // SSG1-3/ADPCM/RHYTHM: v1未対応、空トラック
+  for (let idx = PART_LETTERS.length; idx < 11; idx++) w16(idx * 2, EMPTY_TRACK_OFF); // ADPCM/RHYTHM: v1未対応、空トラック
   w16(0x16, EMPTY_TRACK_OFF); // r_offset(未使用)
   w16(0x18, toneOff); // tone_ptr
 
