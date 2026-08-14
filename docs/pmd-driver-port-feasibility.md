@@ -1,0 +1,143 @@
+# PMD ドライバ(98fmplayer移植)の8086移植 実現性調査
+
+日付: 2026-08-14。目的: `upstream/98fmplayer/fmdriver/fmdriver_pmd.c`（BSD 2-Clause、6114行）を
+PC-98実機(8086/SmallerC small-model)へ移植する規模を実測で見積もる。**作り込みはしていない**（見積もりが目的）。
+
+## (1) 音源への書き込み層
+
+- 音源アクセスは全て `struct fmdriver_work`（`upstream/98fmplayer/fmdriver/fmdriver.h:77-88`）の
+  関数ポインタ経由: `opna_writereg`（96箇所中95がこの呼び出し）、`opna_readreg`（1箇所）、
+  `opna_status`（2箇所）。すべて `work->opna_writereg(work, addr, data)` の形で、
+  `fmdriver_pmd.c` 側は具体的な実装（メモリマップドかI/Oポートか）を一切知らない。
+  出典: `fmdriver.h:86-88`, `fmdriver_pmd.c` 全体grep。
+- PPZ8(PCM)も同様に `ppz8_functbl` という別の関数テーブル経由（`work->ppz8`, 22箇所）。
+- **判定: 薄いシムで差し替え可能。構造への食い込みは無い。** 実機ポートI/O版の
+  `opna_writereg`/`opna_readreg` を書いて `fmdriver_work` に差し込むだけで、
+  `fmdriver_pmd.c` 本体は無改変で音源アクセス層を満たせる。
+- **未確認（推測で書かない）**: PC-98の86音源(OPNA)のI/Oポート番号（`0188h`/`018Ah`系と
+  記憶にはあるが本調査では実測・一次資料確認をしていない）。シム実装時に別途要調査。
+
+## (2) SmallerCでの実コンパイル試行（最重要）
+
+`WorkbenchNP2/toolchain/compile-core.mjs` の内部API（`createSmlrpp`→`createSmlrc`→NASM→`createSmlrl`）を
+直接呼び出すスクリプトを scratchpad に作成し、`fmdriver_pmd.c` を実際にコンパイルした
+（`WorkbenchNP2` は読むのみ、変更なし。実行後 `git -C WorkbenchNP2 status` clean 確認済み）。
+
+### 2-1. プリプロセス段: ヘッダ欠落（機械的に解決可能）
+
+1回目: `fmdriver_pmd.h`/`fmdriver_common.h`/`pmd_ssgeff.h` が見つからない
+→ 同ディレクトリの `.h`/`.inc` を includeFiles に追加して解決。
+2回目: `stdbool.h`/`stdatomic.h`/`leveldata/leveldata.h` が **SmallerCのincludeに存在しない**
+（`toolchain/smallerc-src/v0100/include/` に `stdbool.h`/`stdatomic.h` は無い。`ls` で確認済み）。
+→ `ppz8.h:5-7`(`upstream/98fmplayer/fmdriver/ppz8.h`)が
+   `<stdbool.h>` `<stdatomic.h>` `"leveldata/leveldata.h"` を要求し、
+   `fmdriver.h:6`→`fmdriver_pmd.h:8`→`fmdriver_pmd.c:1` の連鎖で強制的に巻き込まれる
+   （PMD本体はPPZ8を関数ポインタ越しにしか使わないのに、型定義のためヘッダだけ引き込まれる）。
+→ scratchpad に最小シム（`bool`をintマクロ化、`atomic_flag`を非アトミックintに縮退、
+   `leveldata`をロック無しに単純化）を書いて解決。**これは機械的な作業**（C99機能を
+   シングルスレッドDOS向けに縮退するだけ）。
+
+この段階まではプリプロセス成功（`out.i` 168,418バイト）。
+
+### 2-2. コンパイル段: `long`型が -seg16 モードで一切通らない（設計変更が必要）
+
+`smlrc -seg16` でのエラー:
+```
+Error in "/include/ppz8.h" (20:11)
+Unexpected token uint32_t
+```
+`ppz8.h:20`（`struct ppz8_pcmvoice { uint32_t start; ... }`）。
+
+原因を切り分けるため、`long a, b` を含むだけの最小Cファイルを同じ `-seg16` で単体テストした
+（`scratchpad/pmdcompile/longtest.mjs`）:
+```
+Error in "in.c" (2:5)
+Unexpected token long
+```
+**`long`キーワード自体が16-bitモード(-seg16, `__SMALLER_C_16__`)でパースエラーになる。**
+`toolchain/smallerc-src/v0100/include/stdint.h` を確認すると、`uint32_t`/`int32_t` の
+typedefは `#ifdef __SMALLER_C_32__` の中にしかなく、`__SMALLER_C_16__`（small-modelが使う方）
+では**32bit整数型そのものが定義されていない**（`stdint.h:53-56`）。
+→ **これはヘッダ不足ではなく、SmallerCの16-bitモードの言語仕様上の制約。機械的な修正では
+  済まない。**
+
+`fmdriver_pmd.c` 本体だけでも `uint32_t`/`int32_t` の使用箇所は **24箇所**
+（`grep -n 'uint32_t\|int32_t' fmdriver_pmd.c`で実測）。単なるカウンタの拡張ではなく、
+FM周波数の block/fnum の16bit上位/下位合成（`fmdriver_pmd.c:1879`, `:2024`, `:3207` 等）や
+符号付き乗算・16bit右シフト（`:1811`, `:3107-3108`）など、**アルゴリズムの一部として
+32bit演算が使われている**。`ppz8.c`/`ppz8.h`（PCM再生のバッファ長・オフセット管理）は
+さらに広範囲に32bit値へ依存している。
+
+これを16-bitモードで通すには、`long`が使えない前提で
+- hi16/lo16の2つのunsigned(16bit)変数で32bit値を手動エミュレートする（桁上げ・シフトを
+  自前で書く）、または
+- 該当関数だけアセンブラで書き直す
+のどちらかが要り、**「移植」ではなく「該当ロジックの再設計」になる**。これは
+「どこまでが機械的な修正で、どこからが設計変更か」の境界線そのもの:
+- ヘッダ欠落・C99マクロ縮退（stdbool/stdatomic/leveldata） → **機械的**
+- 32bit整数を使うロジック（24箇所+ppz8側多数） → **設計変更**
+
+### 2-3. サイズ実測
+
+**コンパイルが32bit型の壁で止まったため、コード/テーブルサイズの実測（64KBとの比較）は
+できなかった。** 32bit演算の書き換えを済ませない限り `smlrc` が `.asm` を出力しないため、
+「small modelの64KBに収まるか」は本調査では判定不能（未確認のまま残す）。
+
+## (3) 割り込み・時間駆動
+
+- `pmd_opna_interrupt(struct fmdriver_work *work)`（`fmdriver_pmd.c:5893`）は
+  「呼ばれたらOPNAのタイマーステータスをポーリングして`pmd_timer`を回す」実装で、
+  **自前で壁時計を持たず、外側から叩かれる前提**（ヘッダのコメントも
+  `// set by opna, called by driver in the interrupt functions` と明記、`fmdriver.h:78-79`）。
+  → **実機のOPNA Timer B割り込みから直接呼ぶ設計と整合的**で、この点は移植の障害にならない。
+- ただし「誰が・どの割り込みベクタで・どの頻度で呼ぶか」の**グルーコード**（IRQハンドラの
+  登録、DS/SSの退避復帰、再入防止、スタック切替）は `fmdriver_pmd.c` の外の新規実装が要る。
+- **TSR/割り込みハンドラの実績確認**: `docs/pipeline-spike.md`(「TSR自体は...実際にTSR化して
+  常駐させた実績はWorkbenchNP2内に無く未検証」)を追認する形で `WorkbenchNP2/README.md` を
+  再検索したが、TSR・常駐ドライバに関する記述は見つからなかった（「常駐438KB」の1件は
+  文脈上無関係なメモリ使用量の話）。**WorkbenchNP2にTSR/割り込みハンドラの実績はゼロのまま**。
+
+## 結論: (b) は現実的か
+
+**現段階では「現実的」と断言できない。決定的な障害は32bit整数の欠如。**
+
+- 音源I/O層（(1)）は懸念どおり軽い: シム1枚で足りる。
+- しかし **SmallerCの16-bitモードが`long`を一切サポートしない**ため、`fmdriver_pmd.c`本体の
+  24箇所＋`ppz8.c`/`.h`の広範囲な32bit演算を、手書きhi/lo16 or アセンブラ書き換えで
+  全部潰さない限りコンパイルが完走しない。これは「移植作業」の範囲を大きく超え、
+  実質的に**該当ロジックをC言語のまま作り直す**規模になる（正確な工数は未計測。
+  該当関数を洗い出して1つずつ32bit演算を分解する必要があり、少なくとも週オーダーの
+  作業と見積もるのが妥当だが、根拠となる実測値は無い）。
+- 64KB制約についても「32bit演算を潰した後でないと測れない」ため、**サイズ面の見通しは
+  まだ立っていない**（ppz8.c等を含めるとさらに肥大する可能性が高いが未計測）。
+- 割り込み駆動の設計自体はドライバ側と整合しており障害にはならないが、
+  **TSR実績ゼロ**という別の未検証リスクが残っている。
+
+## (c)（PMD.ASM移植）に倒すべきか
+
+- (c)は元から8086アセンブラ（MASM方言、`docs/pmd-compiler-options.md`で確認済みの
+  KAJA氏公開ソース）であり、**32bit整数の壁がそもそも存在しない**（アセンブラなので
+  hi/lo16分割は最初から書かれている）。SmallerCの16-bit言語仕様制約を回避できる点で
+  (b)より実装難度の予測可能性は高い。
+- 一方で(b)を推した本来の理由（BSD 2-Clauseでの再配布のしやすさ）を捨てることになり、
+  (c)はKAJA氏の個人的許諾表明のみ（正式なOSSライセンス条項なし、
+  `docs/pmd-compiler-options.md`で既出）という利用者への負担が残る。
+- **判断材料**: (b)は「ライセンスは綺麗だが今回発見した32bit整数の壁で工数が大きく膨らむ
+  可能性が高い」、(c)は「工数は読みやすいがライセンスがグレー」というトレードオフ。
+  今回の実測で(b)側のコストが具体的に上がったため、**(c)、または(a)(利用者が公式PMD.COM持参)
+  との比較を本格的に見積もり直す価値がある**という以上の断定はできない
+  （(c)側の実装量そのものは本調査の対象外で未計測）。
+
+## 未確認のまま残った点
+
+- PC-98 OPNA(86音源)のI/Oポート番号（推測で書かないため未記載。シム実装時に別途要調査）。
+- 32bit演算を全て16bit分解に書き換えた後の実コンパイル結果・コードサイズ・64KBとの比較。
+- `ppz8.c`/`ppz8.h`（PCM再生）側の32bit依存箇所の総数（今回は`fmdriver_pmd.c`本体のみ実測、
+  ppz8は関数ポインタ越しの型定義部分しか見ていない）。
+- (c)（PMD.ASM移植）側の実装工数の実測（本調査は(b)のみが対象）。
+- SmallerCが `long` を全くサポートしないのか、何らかのフラグ/バージョンで対応する余地が
+  あるのか（`toolchain/smallerc-src/readme.txt`に「32-bit 80386+ assembly code」の記載があり、
+  `__SMALLER_C_32__`ビルドなら`long`が使える可能性はあるが、WorkbenchNP2の`compile.mjs`が
+  使っているのは`-seg16`（16bitモード）と確認しただけで、32bitモード自体を試していない）。
+- TSR/割り込みハンドラの最小サンプルをWorkbenchNP2上で実際に書いて動かす検証（本調査は
+  既存ドキュメントの再確認に留めた）。
