@@ -141,14 +141,16 @@
   const toolbar = document.getElementById('toolbar');
   const btnCompile = iconButton(ICONS.play, 'コンパイル&再生');
   const btnStop = iconButton(ICONS.stop, '停止');
+  const btnPause = iconButton(ICONS.pause, '一時停止');
   const btnOpenFile = iconButton(ICONS.open, '曲を開く(.muc)');
   const btnSettings = iconButton(ICONS.settings, '設定');
   const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
   const btnFullscreen = iconButton(ICONS.fullscreen, 'フルスクリーン');
-  toolbar.append(btnCompile, btnStop, btnOpenFile, btnSettings, btnEditorMode, btnFullscreen);
+  toolbar.append(btnCompile, btnStop, btnPause, btnOpenFile, btnSettings, btnEditorMode, btnFullscreen);
 
   btnCompile.disabled = true;
   btnStop.disabled = true;
+  btnPause.disabled = true;
 
   applyUiMode(currentUiMode());
   btnEditorMode.addEventListener('click', () => {
@@ -161,6 +163,59 @@
   const Module = await createMucomWeb();
   btnCompile.disabled = false;
   btnStop.disabled = false;
+  btnPause.disabled = false;
+
+  // --- PAUSE ---
+  // Stop()(g_player->Stop()/g_mucom->Stop())は呼ばない。曲の位置(g_renderFrame,
+  // snapshotリング, StreamingPlayerのgeneration/playFrame)を一切捨てず、
+  // AudioContext.suspend()/resume()だけで音声レンダリングを止める/再開する。
+  //   - suspend中はAudioWorkletProcessor.process()が呼ばれない
+  //     -> 'need'メッセージが来ない -> Module.audioWorkletRequest()が呼ばれない
+  //     -> wasm側のRenderAudio/PushSnapshotが進まない(スナップショットリング凍結)。
+  //   - context.currentTimeもsuspend中は進まない(Web Audio仕様)ため、
+  //     updateChannelStatus()内のestimatedPlayFrame計算(playFrame +
+  //     (currentTime - contextTime)*sampleRate)も自動的に凍結される。
+  //     frame基準の同期(二分探索)の仕組みには一切手を入れていない。
+  //   - resume()するとAudioWorkletProcessor側のthis.playFrameは(stopメッセージを
+  //     送っていないため)一時停止した地点からそのまま増え続ける
+  //     -> 頭出しされない。
+  let pausedFrameDrawn = false;
+  // 停止直後、STOPインジケータを反映する1回だけの再描画用フラグ(updateChannelStatus参照)。
+  let stoppedFrameDrawn = false;
+
+  function updatePauseButtonUI() {
+    const audioState = globalThis.mucomAudioState;
+    const paused = Boolean(audioState?.paused);
+    btnPause.classList.toggle('active', paused);
+    btnPause.title = paused ? '再開' : '一時停止';
+    btnPause.setAttribute('aria-label', btnPause.title);
+  }
+
+  function setAudioPaused(paused) {
+    const audioState = globalThis.mucomAudioState;
+    if (!audioState) return;
+    audioState.paused = paused;
+    // 一時停止に入った瞬間だけ、PAUSE/PLAYインジケータの点灯を反映するために
+    // updateChannelStatus()に1回だけ通常描画をさせる(次のrAFで消費するフラグ)。
+    // 以後はそのフラグがtrueのままなので、再開までdraw()が一切呼ばれない
+    // (=キャンバスのピクセルハッシュが完全に固定される)。
+    pausedFrameDrawn = false;
+    updatePauseButtonUI();
+  }
+
+  btnPause.addEventListener('click', () => {
+    const audioState = globalThis.mucomAudioState;
+    if (!audioState || !audioState.context) return;
+    if (audioState.paused) {
+      audioState.context.resume();
+      setAudioPaused(false);
+    } else {
+      if (!audioState.playback) return; // 再生中の曲が無い
+      audioState.context.suspend();
+      setAudioPaused(true);
+    }
+  });
+  updatePauseButtonUI();
 
   const channelTableBody = document.querySelector('#channelStatus tbody');
   const snapshotRingSize = 2048;
@@ -439,7 +494,9 @@
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
 
       const audioState = globalThis.mucomAudioState;
-      const rightPanePlaying = Boolean(audioState?.playback);
+      const rightPaneHasPlayback = Boolean(audioState?.playback);
+      const rightPanePaused = Boolean(audioState?.paused);
+      const rightPanePlaying = rightPaneHasPlayback && !rightPanePaused;
       rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
       // CLOCK COUNT = intCount(演奏開始からのINT3割り込み回数、生カウント)。
       // LOOP COUNT = floor(intCount / maxCount)。GetStatus(MUCOM_STATUS_COUNT)が
@@ -457,8 +514,8 @@
         timerbCntLoop: 0,
         loopTimerbCnt: 0,
         playing: rightPanePlaying,
-        stopped: !rightPanePlaying,
-        paused: false,
+        stopped: !rightPaneHasPlayback,
+        paused: rightPanePaused,
         frameCnt: rightPaneFrameCounter,
       });
 
@@ -479,12 +536,42 @@
   }
 
   function updateChannelStatus() {
+    // 一時停止中: 最初の1回だけ通常描画(PAUSE/PLAYインジケータの点灯反映)を
+    // 行わせ、以後はdraw()自体を呼ばずに完全に固定する(ピーク保持/減衰
+    // (stepPeak, fmdsp/rightpane.js)がrAFのたびに1歩ずつ進む副作用があり、
+    // 音声が止まっているのにスペクトラム/レベルの見た目だけ減衰してしまう
+    // のを防ぐため)。
+    if (Boolean(globalThis.mucomAudioState?.paused)) {
+      if (pausedFrameDrawn) {
+        requestAnimationFrame(updateChannelStatus);
+        return;
+      }
+      pausedFrameDrawn = true;
+      // フォールスルーして今回だけ通常の描画パスを実行する。
+    }
+
     if (typeof Module.getSnapshotWriteIndex === 'function' && Module.HEAP32) {
       const writeIndex = Module.getSnapshotWriteIndex() >>> 0;
       const debug = document.getElementById('snapshotDebug');
       if (writeIndex === invalidWriteIndex || writeIndex === 0) {
         debug.innerText = 'snapshot ring: inactive/empty';
+        // 停止中(スナップショットリング無効)はdraw()が一切呼ばれないため、
+        // このままでは以前流れていた最後の1フレームがキャンバスに残り続け、
+        // STOPインジケータが一度も点灯しない。停止直後の1回だけ、
+        // トランスポートアイコン(PLAY/STOP/PAUSE)とCIRCLEだけを上書きして
+        // STOP点灯を反映する(パート行/コメント欄等はそのまま最後の内容を残す。
+        // 曲全体を空白に戻すのは今回のスコープ外)。
+        if (!stoppedFrameDrawn) {
+          stoppedFrameDrawn = true;
+          if (fmdspFont) {
+            rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+            rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
+            rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
+            canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
+          }
+        }
       } else {
+        stoppedFrameDrawn = false;
         const pointerWords = Module.getSnapshotRingPointer() / 4;
         const entryWords = Module.getSnapshotEntryByteSize() / 4;
         const latest = snapshotAt(pointerWords, entryWords, writeIndex - 1);
@@ -557,12 +644,23 @@
     adapter.reset();
     setCommentFromMml(mml);
     document.getElementById('result').innerText = Module.compileMML(mml, selectedRate());
+    // 新規コンパイル&再生(g_player->Play()がcontext.resume()まで行う)なので、
+    // 一時停止フラグを引きずらないようにここでクリアする。
+    setAudioPaused(false);
   }
 
   btnCompile.addEventListener('click', compileAndPlay);
 
   btnStop.addEventListener('click', function() {
       Module.stopMusic();
+      // Stop()はStreamingPlayer::Stop()経由でAudioWorkletStop()を呼ぶだけで
+      // context自体はsuspendされたままになり得るため、次の再生に備えて
+      // resumeしておく(pause機能とは独立した後始末)。
+      const audioState = globalThis.mucomAudioState;
+      if (audioState?.context?.state === 'suspended') {
+        audioState.context.resume();
+      }
+      setAudioPaused(false);
   });
 
   document.getElementById('btnClearMML').addEventListener('click', function() {

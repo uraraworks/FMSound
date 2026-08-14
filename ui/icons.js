@@ -40,6 +40,14 @@ export function iconButton(icon, label, extraClass = '') {
 export const ICONS = {
   play: { path: '', extra: '<path d="M8 5l11 7-11 7V5z" fill="currentColor" stroke="none"/>' },
   stop: { path: '', extra: '<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>' },
+  // 縦棒2本＝一時停止(再開時は同じボタンをplayアイコンへ差し替える運用を想定せず、
+  // active状態(CSS .icon-btn.active)とtitle/aria-labelの文言切替だけで表す)。
+  pause: {
+    path: '',
+    extra:
+      '<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/>' +
+      '<rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/>',
+  },
   // フォルダを開く＝曲を開く(ローカルファイル選択)。
   open: 'M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z',
   // スライダー3本(つまみ付き)＝設定。
