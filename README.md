@@ -25,6 +25,7 @@ FMSound/
     MucomWeb/               # 上記の emscripten 移植。export は compileMML/stopMusic のみ
     98fmplayer/             # PMD/FMP をネイティブCで再実装 + libopna + FMDSP可視化
     pmdmini/                # PMD の小型実装（参考のみ。GPL なのでリンクしない）
+  net/                     # URL指定の曲データ取得層（ZIP/LZH展開・SJISファイル名・HTML誤取得検出）
 ```
 
 ## 各プロジェクトの要点
@@ -67,6 +68,16 @@ struct fmdriver_track_status {
 トラックは21本（FM1-6 + FM3拡張×3 + SSG×3 + ADPCM + PPZ8×8）。
 
 `fmdsp/` が目標そのものの可視化実装（PC-98フォントROM・東雲フォント同梱）。
+
+### net/（URL指定の曲データ取得層）
+
+`fmdsp/` `ui/` と同じ「素のES module・TypeScript/バンドラなし」の共有ディレクトリ。
+PC98/WebNP2 の `src/api/{disk-fetch,archive,zip,lzh,archive-util}.ts` の知見を移植したもの
+（HTMLページ誤取得の検出・ZIP/LZH展開・SJISファイル名変換）。ZIP/LZH展開後は
+`net/song-select.js` の `findSongCandidates()` で `.muc`(MUCOM)等の再生候補と、
+同ディレクトリ内の関連ファイル（`voice.dat`/`mucompcm.bin` 等）をまとめて取り出せる。
+中継サービスのURLは既定で空（＝中継しない）。有効化するには `net/fetch.js` の
+`NET_PROXY_BASE` 定数を書き換える（1箇所のみ）。UIへの配線は別タスクで行う。
 
 ## 設計方針
 
