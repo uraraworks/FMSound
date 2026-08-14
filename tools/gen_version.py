@@ -20,18 +20,26 @@
     ["YY","MM","DD"] の日付のみ(コミットハッシュは幅の制約でFMDSP側の3枠には
     入らない。docs/fmdsp-layout.md「VER_0/1/2_Xの逸脱」参照)。
   FMSOUND_VERSION_FOOTER: ページフッター用の完全な識別子。
-    "YYYY-MM-DD HH:MM UTC (ハッシュ7桁)"。同日に複数回コミットした場合に
-    区別するための一意な識別子として使う(不具合報告用)。
+    "YYYY-MM-DD HH:MM JST (ハッシュ7桁)"。同日に複数回コミットした場合に
+    区別するための一意な識別子として使う(不具合報告用)。国内利用者が多いため
+    日本時間(JST=UTC+9固定)で表示する(2026-08-14 変更。以前はUTC表示だった)。
   FMSOUND_VERSION_OK: 取得に成功したかどうかのbool。
 """
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DST = REPO_ROOT / "ui" / "version.js"
+
+# 日本時間(UTC+9)をtimezone.utc/localtime()に頼らず固定オフセットで表す。
+# datetime.now()やastimezone()なしのlocaltime相当は使わない: ビルドした
+# マシンのTZ設定次第で結果が変わってしまい、「同じコミットからは必ず同じ版が
+# 出る」性質(tools/verify_version_determinism.mjs)が壊れるため。日本には
+# 夏時間が無いのでUTC+9固定で年間を通じて正しい。
+JST = timezone(timedelta(hours=9))
 
 
 def run_git(args):
@@ -56,9 +64,12 @@ def main():
         if not commit_ts_str or not commit_hash:
             raise RuntimeError("git出力が空でした")
         commit_ts = int(commit_ts_str)
-        dt = datetime.fromtimestamp(commit_ts, tz=timezone.utc)
+        # fromtimestamp(ts, tz=JST) はUTC単位時刻(ts)からJST固定オフセットへの
+        # 変換であり、ホストのローカルタイムゾーン設定は一切参照しない
+        # (localtime()を使わない、上のJST定義のコメント参照)。
+        dt = datetime.fromtimestamp(commit_ts, tz=JST)
         fields = [dt.strftime("%y"), dt.strftime("%m"), dt.strftime("%d")]
-        footer = f"{dt.strftime('%Y-%m-%d %H:%M')} UTC ({commit_hash})"
+        footer = f"{dt.strftime('%Y-%m-%d %H:%M')} JST ({commit_hash})"
     except Exception as e:  # noqa: BLE001 - ビルドを止めず'unknown'で明示する方針
         ok = False
         error = str(e)
@@ -67,7 +78,7 @@ def main():
 
     js_lines = [
         "// 自動生成: tools/gen_version.py。手編集しないこと。",
-        "// git のコミット日時(UTC, コミッターdate)とコミットハッシュから生成する。",
+        "// git のコミット日時(JST=UTC+9固定, コミッターdate)とコミットハッシュから生成する。",
         "// ビルド時刻(壁時計)は使わない: 同じコミットから何度ビルドしても",
         "// 同じ文字列になることを保証するため(tools/verify_version_determinism.mjs参照)。",
         f"export const FMSOUND_VERSION_FIELDS = {json.dumps(fields)};",

@@ -65,6 +65,45 @@ async function main() {
   console.log('[本番] tools/gen_version.py を1.1秒間隔で2回実行し、出力が完全一致した:');
   console.log(run1);
   console.log('PASS: 同じコミットからのビルドは常に同じバージョン文字列になる(壁時計不使用)。');
+
+  // --- TZ環境変数を変えても同じ文字列になることを確認 ---
+  // JSTをdatetime.now()/localtime()相当で求めていると、ビルドマシンのTZ設定次第で
+  // 結果が変わってしまう(課題の要件)。TZ=UTCとTZ=America/New_Yorkの2通りで
+  // gen_version.pyを実行し、TZを設定しない場合と出力が完全一致することを確認する。
+  execFileSync('python3', [GEN_SCRIPT], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, TZ: 'UTC' },
+  });
+  const runTzUtc = readFileSync(VERSION_JS, 'utf8');
+  if (runTzUtc !== run1) {
+    console.error('FAIL: TZ=UTC で実行すると出力が変わった(localtime依存の疑い)。');
+    console.error('--- run1(TZ未指定) ---\n' + run1);
+    console.error('--- TZ=UTC ---\n' + runTzUtc);
+    process.exit(1);
+  }
+  console.log('[TZ差し替え] TZ=UTC でも出力が一致した。');
+
+  execFileSync('python3', [GEN_SCRIPT], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, TZ: 'America/New_York' },
+  });
+  const runTzNy = readFileSync(VERSION_JS, 'utf8');
+  if (runTzNy !== run1) {
+    console.error('FAIL: TZ=America/New_York で実行すると出力が変わった(localtime依存の疑い)。');
+    console.error('--- run1(TZ未指定) ---\n' + run1);
+    console.error('--- TZ=America/New_York ---\n' + runTzNy);
+    process.exit(1);
+  }
+  console.log('[TZ差し替え] TZ=America/New_York でも出力が一致した。');
+
+  if (!/JST \(/.test(run1)) {
+    console.error('FAIL: フッターに"JST"の明記が無い(基準タイムゾーンが分からない表記になっている)。');
+    console.error(run1);
+    process.exit(1);
+  }
+  console.log('PASS: TZ環境変数を変えてもgen_version.pyの出力は変わらない(JSTを固定オフセットで扱っている)。');
 }
 
 main().catch((e) => {

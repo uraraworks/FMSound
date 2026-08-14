@@ -436,9 +436,12 @@ upstreamの比率をそのまま2桁化して踏襲したもの。終端は`VER_
 
 ### 生成方法
 
-`tools/gen_version.py`がgitのコミット日時(UTC, コミッターdate)とコミットハッシュ
-から`ui/version.js`を生成する(ビルド時刻=壁時計は使わない。同じコミットから
-何度ビルドしても同じ文字列になることが要件)。`mucomweb/CMakeLists.txt`の
+`tools/gen_version.py`がgitのコミット日時(JST=UTC+9固定, コミッターdate)と
+コミットハッシュから`ui/version.js`を生成する(ビルド時刻=壁時計は使わない。
+同じコミットから何度ビルドしても同じ文字列になることが要件。localtime()は
+使わずJSTを固定オフセットで扱うため、ビルドマシンのタイムゾーン設定にも依存しない。
+`tools/verify_version_determinism.mjs`が`TZ`環境変数を変えても出力が変わらない
+ことを確認する)。`mucomweb/CMakeLists.txt`の
 `generate_version`ターゲット(ALL付き、`sync_html`より先に実行されるよう
 `add_dependencies`で順序付け)がビルドのたびに実行する。生成物は
 `.gitignore`対象(`/ui/version.js`)。
@@ -452,5 +455,6 @@ upstreamの比率をそのまま2桁化して踏襲したもの。終端は`VER_
 - FMDSPタイトル欄(`VER_0/1/2_X`): 日付のみ`YY.MM.DD`(`FMSOUND_VERSION_FIELDS`)。
   幅の制約により時刻・ハッシュは入らない。
 - ページフッター(`mucomweb/html/index.html`の`#fmsoundVersionFooter`):
-  完全な識別子`YYYY-MM-DD HH:MM UTC (ハッシュ7桁)`(`FMSOUND_VERSION_FOOTER`)。
+  完全な識別子`YYYY-MM-DD HH:MM JST (ハッシュ7桁)`(`FMSOUND_VERSION_FOOTER`)。
   同日に複数回コミットした場合に区別するための一意識別子として、不具合報告時に使う。
+  国内利用者が多いため日本時間(JST)で表示し、基準が分かるよう`JST`と明記する。
