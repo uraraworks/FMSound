@@ -38,7 +38,7 @@ import { setupMmlEditor } from './mml-editor.js';
 import { PMD_TOKEN_RULES, PMD_MACRO_HEADER_RE, PMD_PART_LETTER_RE } from './mml-tokens.js';
 import { compileMml } from './compiler/pmd_mml_compiler.mjs';
 import { loadMmlDraft, setupMmlAutosave, formatSavedAt } from './ui/mml-draft.js';
-import { setMmlStatus } from './ui/mml-status.js';
+import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
@@ -287,6 +287,23 @@ export async function init(ctx) {
     }
   }
 
+  // 課題A: 前回のコンパイル結果(上の1行要約+下の詳細ログ)を消す。実機報告の
+  // 「エラーが消えずに積み上がる」不具合の実体は「Clear MMLで編集欄を空にした後、
+  // 一度もrenderCompileErrors()が呼ばれないまま古い表示が残ること」だった
+  // (Clear MMLが#result/#mmlStatusに一切触れていなかった)。新しいコンパイルの
+  // 開始時・編集内容を消したとき・曲を読み込んだときの3箇所で呼ぶ。
+  function clearCompileStatus() {
+    resultEl.replaceChildren();
+    clearMmlStatus(mmlStatusEl);
+  }
+
+  // 課題A: 編集欄が空のまま再生されたとき、古いエラー表示を残さず案内を出す。
+  function showEmptyMmlNotice() {
+    resultEl.replaceChildren();
+    resultEl.textContent = 'MMLが空です。何か入力してから再生してください。';
+    setMmlStatus(mmlStatusEl, { ok: false, message: 'MMLが空です。何か入力してから再生してください。' });
+  }
+
   document.getElementById('btnClearMML').addEventListener('click', function() {
     const ta = mmlTextarea;
     if (ta.value.length > 0) {
@@ -303,6 +320,8 @@ export async function init(ctx) {
       ta.value = '';
       ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
+    // 課題A: 編集内容を消したときも前回のエラー表示を残さない。
+    clearCompileStatus();
   });
 
   rescale();
@@ -612,6 +631,15 @@ export async function init(ctx) {
   function compileAndPlay() {
     if (!moduleReady) return;
     const source = mmlTextarea.value;
+    // 課題A: 編集欄が空のまま再生された場合、古いエラー表示を残さず案内を出して終える。
+    if (source.trim().length === 0) {
+      showEmptyMmlNotice();
+      return;
+    }
+    // 課題A: 新しいコンパイルを開始するタイミングで前回の表示を消す(この直後
+    // renderCompileErrors()が今回の結果で上書きするが、「開始時に消す」という
+    // 要求どおりの箇所として明示的に置く)。
+    clearCompileStatus();
     const { file, errors } = compileMml(source);
     if (errors.length > 0) {
       renderCompileErrors(errors);
@@ -738,6 +766,10 @@ export async function init(ctx) {
   requestAnimationFrame(updateChannelStatus);
 
   async function playBytes(bytes, name) {
+    // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
+    // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
+    // compileAndPlay()側のclearCompileStatus()を通らない)。
+    clearCompileStatus();
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
     if (error) {

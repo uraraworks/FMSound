@@ -33,3 +33,15 @@ export function setMmlStatus(el, { ok, line = null, message = '', onJump }) {
     el.onclick = () => onJump(line);
   }
 }
+
+/**
+ * 課題A: 状態表示を「空」に戻す(前回のコンパイル結果を残さない)。
+ * 新しいコンパイルを開始したとき・編集内容を消したとき・曲を読み込んだときに呼ぶ。
+ * setMmlStatus({ok:true})の「コンパイル成功」とは違い、本当に何も表示しない状態にする。
+ */
+export function clearMmlStatus(el) {
+  el.onclick = null;
+  el.removeAttribute('title');
+  el.classList.remove('mml-status-error', 'mml-status-clickable');
+  el.textContent = '';
+}

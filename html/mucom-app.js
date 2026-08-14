@@ -21,7 +21,7 @@ import { setupMmlEditor, extractErrorLine } from './mml-editor.js';
 import { MUCOM_TOKEN_RULES, MUCOM_MACRO_HEADER_RE, MUCOM_PART_LETTER_RE } from './mml-tokens.js';
 import { FMSOUND_VERSION_FIELDS } from './ui/version.js';
 import { loadMmlDraft, setupMmlAutosave, formatSavedAt } from './ui/mml-draft.js';
-import { setMmlStatus } from './ui/mml-status.js';
+import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
@@ -214,6 +214,30 @@ export async function init(ctx) {
       ? { ok: false, line, message: summary, onJump: (l) => mmlEditorApi.jumpToLine(l) }
       : { ok: true });
   }
+
+  // 課題A: 前回のコンパイル結果(上の1行要約+下の詳細ログ)を消す。実機報告の
+  // 「エラーが消えずに積み上がる」不具合の実体は「Clear MMLで編集欄を空にした後、
+  // 一度もrenderCompileResult()が呼ばれないまま古い表示が残ること」だった
+  // (Clear MMLが#result/#mmlStatusに一切触れていなかった)。新しいコンパイルの
+  // 開始時・編集内容を消したとき・曲を読み込んだときの3箇所で呼ぶ。
+  function clearCompileStatus() {
+    resultEl.textContent = '';
+    resultEl.classList.remove('mml-compile-error', 'result-has-error-line');
+    resultEl.removeAttribute('title');
+    resultEl.onclick = null;
+    clearMmlStatus(mmlStatusEl);
+  }
+
+  // 課題A: 編集欄が空のまま再生されたとき、古いエラー表示を残さず案内を出す。
+  function showEmptyMmlNotice() {
+    const message = 'MMLが空です。何か入力してから再生してください。';
+    resultEl.textContent = message;
+    resultEl.classList.remove('mml-compile-error', 'result-has-error-line');
+    resultEl.removeAttribute('title');
+    resultEl.onclick = null;
+    setMmlStatus(mmlStatusEl, { ok: false, message });
+  }
+
   btnEditorMode.addEventListener('click', () => {
     const prevMode = currentUiMode();
     const next = prevMode === 'editor' ? 'player' : 'editor';
@@ -670,6 +694,15 @@ export async function init(ctx) {
   function compileAndPlay() {
     if (!moduleReady) return;
     const mml = document.getElementById('mml').value;
+    // 課題A: 編集欄が空のまま再生された場合、古いエラー表示を残さず案内を出して終える。
+    if (mml.trim().length === 0) {
+      showEmptyMmlNotice();
+      return;
+    }
+    // 課題A: 新しいコンパイルを開始するタイミングで前回の表示を消す(この直後
+    // renderCompileResult()が今回の結果で上書きするが、「開始時に消す」という
+    // 要求どおりの箇所として明示的に置く)。
+    clearCompileStatus();
     adapter.reset();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
@@ -715,6 +748,8 @@ export async function init(ctx) {
     }
     lastLoadedRawBytes = null;
     lastLoadedText = null;
+    // 課題A: 編集内容を消したときも前回のエラー表示を残さない。
+    clearCompileStatus();
   });
 
   const sjisDecoder = new TextDecoder('shift_jis');
