@@ -725,6 +725,15 @@ header.app-header .app-tagline {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* 課題C: #resultは「詳細ログ専用」。PMD側はコンパイラに詳細出力が無いため、成功時
+   (html/pmd-app.js renderCompileErrors())は何も書き込まない。中身が無いときは
+   領域ごと出さない(上の#mmlStatusの1行要約と同じ「コンパイル成功」が二重に
+   出ていた不具合の対処)。MUCOM側は常にコンパイラのバナー等を書き込むため、
+   このルールでは消えない。 */
+#result:empty {
+  display: none;
+}
+
 /* PMD側: エラーは{line, message}の構造化配列で複数返ってくる(html/pmd-app.js
    renderCompileErrors()参照)ため、#result直下に1エラー1行のdivを並べる。 */
 .mml-error-line {
