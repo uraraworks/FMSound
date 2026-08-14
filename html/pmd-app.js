@@ -156,7 +156,15 @@ export async function init(ctx) {
   }
 
   btnEditorMode.addEventListener('click', () => {
-    setUiMode(uiMode === 'editor' ? 'player' : 'editor');
+    const next = uiMode === 'editor' ? 'player' : 'editor';
+    // 課題E: 「編集OFF→ON」の遷移のときだけ、再生中の曲を頭出しで止める
+    // (一時停止ではない)。編集ONで再生ボタンを押すのは普通に鳴らす通常操作なので
+    // ここでは止めない。編集から戻るときも何もしない(moduleReadyが立つ前の
+    // クリックではModuleが無いのでstopPlayback()自体を呼ばない)。
+    if (next === 'editor' && uiMode !== 'editor' && moduleReady) {
+      stopPlayback();
+    }
+    setUiMode(next);
   });
 
   // --- MMLエディタ(行番号ガター+構文色つけ+現在行ハイライト)。トークン定義だけ
@@ -580,14 +588,18 @@ export async function init(ctx) {
     }
   });
 
-  btnStop.addEventListener('click', () => {
+  // 課題E: 停止処理を名前付き関数に切り出す。btnStopクリックだけでなく、
+  // 編集モードOFF→ON遷移(下のbtnEditorModeクリック)でも同じ「頭出し停止」を使う。
+  function stopPlayback() {
     Module.stopMusic();
     const audioState = globalThis.pmdAudioState;
     if (audioState?.context?.state === 'suspended') {
       audioState.context.resume();
     }
     setAudioPaused(false);
-  });
+  }
+
+  btnStop.addEventListener('click', stopPlayback);
 
   updateTransportButtonUI();
 

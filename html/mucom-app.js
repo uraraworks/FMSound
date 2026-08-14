@@ -197,7 +197,15 @@ export async function init(ctx) {
       : { ok: true });
   }
   btnEditorMode.addEventListener('click', () => {
-    setUiMode(currentUiMode() === 'editor' ? 'player' : 'editor');
+    const prevMode = currentUiMode();
+    const next = prevMode === 'editor' ? 'player' : 'editor';
+    // 課題E: 「編集OFF→ON」の遷移のときだけ、再生中の曲を頭出しで止める
+    // (一時停止ではない)。編集ONで再生ボタンを押すのは普通に鳴らす通常操作なので
+    // ここでは止めない。編集から戻るときも何もしない。
+    if (next === 'editor' && prevMode !== 'editor' && moduleReady) {
+      stopPlayback();
+    }
+    setUiMode(next);
   });
 
   rescale();
