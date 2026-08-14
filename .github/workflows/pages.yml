@@ -38,7 +38,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Load pinned upstream revisions
-        run: cat upstream-revisions.env >> "$GITHUB_ENV"
+        # GITHUB_ENV へ流し込むファイルはコメント行(#...)や空行を許さない
+        # (`Invalid format`で落ちる。実際にCIで踏んだ)。upstream-revisions.env
+        # 側は人が読むファイルとしてコメントを残したいので、ここで除外して渡す。
+        run: grep -v '^#' upstream-revisions.env | grep -v '^[[:space:]]*$' >> "$GITHUB_ENV"
 
       - name: Clone upstream sources (pinned revisions)
         run: |
