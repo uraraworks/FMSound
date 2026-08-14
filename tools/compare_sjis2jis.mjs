@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sjisIsMbStart, sjis2jis } from '../pmdweb/html/fmdsp/cp932.js';
+import { sjisIsMbStart, sjis2jis } from '../fmdsp/cp932.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');

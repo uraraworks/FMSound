@@ -11,8 +11,8 @@
 //
 // 実行: node tools/verify_trackrow.mjs
 
-import { Vram, PC98_W, PC98_H } from '../pmdweb/html/fmdsp/vram.js';
-import { TRACK_H, TRACK_DISP_TABLE_OPNA, drawTrackRow as drawTrackRowRef } from '../pmdweb/html/fmdsp/trackrow.js';
+import { Vram, PC98_W, PC98_H } from '../fmdsp/vram.js';
+import { TRACK_H, TRACK_DISP_TABLE_OPNA, drawTrackRow as drawTrackRowRef } from '../fmdsp/trackrow.js';
 
 const FIELD_COUNT = 26;
 

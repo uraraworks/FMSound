@@ -14,15 +14,15 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Vram, PC98_W, PC98_H } from '../pmdweb/html/fmdsp/vram.js';
-import { FmdspFont, drawTextCp932 } from '../pmdweb/html/fmdsp/font.js';
-import * as cp932 from '../pmdweb/html/fmdsp/cp932.js';
-import { PALETTES } from '../pmdweb/html/fmdsp/palette.js';
+import { Vram, PC98_W, PC98_H } from '../fmdsp/vram.js';
+import { FmdspFont, drawTextCp932 } from '../fmdsp/font.js';
+import * as cp932 from '../fmdsp/cp932.js';
+import { PALETTES } from '../fmdsp/palette.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
 
-const romBytes = new Uint8Array(readFileSync(join(REPO_ROOT, 'pmdweb/html/shinonome.rom')));
+const romBytes = new Uint8Array(readFileSync(join(REPO_ROOT, 'fmdsp/shinonome.rom')));
 const font = new FmdspFont(romBytes);
 
 // CP932バイト列。事前に手動で確認したバイト表現(Shift_JISの一般的な符号化):
@@ -212,9 +212,9 @@ function writePng(path, width, height, rgba) {
 
 // コメント欄を含むフルプレビュー: パート行は空、コメント欄(PMDメモモード)に
 // タイトル/作曲者/編曲者/メモをCP932で描く。
-const { drawComment } = await import('../pmdweb/html/fmdsp/comment.js');
-const { SmallFont } = await import('../pmdweb/html/fmdsp/font.js');
-const { FONT_SMALL } = await import('../pmdweb/html/fmdsp/font_small.js');
+const { drawComment } = await import('../fmdsp/comment.js');
+const { SmallFont } = await import('../fmdsp/font.js');
+const { FONT_SMALL } = await import('../fmdsp/font_small.js');
 const smallFont = new SmallFont(FONT_SMALL);
 
 const previewVram = new Vram(PC98_W, PC98_H);

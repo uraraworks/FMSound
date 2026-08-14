@@ -39,7 +39,10 @@ add_custom_target(sync_html ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/html"
         "${CMAKE_CURRENT_BINARY_DIR}"
-    COMMENT "html/ を build-web/ へ同期")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../fmdsp"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmdsp"
+    COMMENT "html/ と fmdsp/ を build-web/ へ同期")
 
 target_include_directories(pmdweb PRIVATE "${UPSTREAM_DIR}")
 

@@ -21,9 +21,9 @@
 
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
-import { Vram, PC98_W, PC98_H } from '../pmdweb/html/fmdsp/vram.js';
-import { PALETTES } from '../pmdweb/html/fmdsp/palette.js';
-import * as rightpane from '../pmdweb/html/fmdsp/rightpane.js';
+import { Vram, PC98_W, PC98_H } from '../fmdsp/vram.js';
+import { PALETTES } from '../fmdsp/palette.js';
+import * as rightpane from '../fmdsp/rightpane.js';
 
 function writePng(path, width, height, rgba) {
   const raw = Buffer.alloc((width * 4 + 1) * height);

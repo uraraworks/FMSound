@@ -112,7 +112,7 @@
     let rightPaneFrameCounter = 0;
 
     let fmdspFont = null;
-    FmdspFont.load('./shinonome.rom').then((font) => { fmdspFont = font; })
+    FmdspFont.load('./fmdsp/shinonome.rom').then((font) => { fmdspFont = font; })
       .catch((error) => console.error('failed to load shinonome.rom:', error));
     const commentSmallFont = new SmallFont(FONT_SMALL);
 

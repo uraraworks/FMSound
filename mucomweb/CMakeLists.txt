@@ -56,7 +56,10 @@ add_custom_target(sync_html ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/html"
         "${CMAKE_CURRENT_BINARY_DIR}"
-    COMMENT "html/ を build-web/ へ同期")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../fmdsp"
+        "${CMAKE_CURRENT_BINARY_DIR}/fmdsp"
+    COMMENT "html/ と fmdsp/ を build-web/ へ同期")
 
 # サンプル MML。README には「ビルド後に毎回手でコピー」とあったがこの機会に自動化。
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD

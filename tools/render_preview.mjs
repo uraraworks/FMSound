@@ -6,11 +6,11 @@
 
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
-import { Vram, PC98_W, PC98_H } from '../pmdweb/html/fmdsp/vram.js';
-import { SmallFont } from '../pmdweb/html/fmdsp/font.js';
-import { FONT_SMALL } from '../pmdweb/html/fmdsp/font_small.js';
-import { PALETTES } from '../pmdweb/html/fmdsp/palette.js';
-import { TRACK_DISP_TABLE_OPNA, drawTrackRows } from '../pmdweb/html/fmdsp/trackrow.js';
+import { Vram, PC98_W, PC98_H } from '../fmdsp/vram.js';
+import { SmallFont } from '../fmdsp/font.js';
+import { FONT_SMALL } from '../fmdsp/font_small.js';
+import { PALETTES } from '../fmdsp/palette.js';
+import { TRACK_DISP_TABLE_OPNA, drawTrackRows } from '../fmdsp/trackrow.js';
 
 const FIELD_COUNT = 26;
 
