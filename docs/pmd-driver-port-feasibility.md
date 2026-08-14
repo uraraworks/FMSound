@@ -659,3 +659,190 @@ B:\>
   実行ファイルサイズ実測。
 - **`ppz8.c`本体側の`uint64_t`依存**: 引き続き未着手（5-1節から変化なし）。
 - **(c)（PMD.ASM移植）との工数比較**: 引き続き未着手。
+
+## 8. 実ポート駆動・薄いAPI・実測での発音確認（2026-08-14）
+
+前節までは音源への書き込みをシムでカウントするだけだった。ここでは
+(1) OPNAの実ポート番号・割り込みベクタを一次情報（NP2kai）で確認し、
+(2) ゲーム側から見る薄いAPI（`pmdapi.h`）を1枚かぶせ、
+(3) シムを実ポートI/Oに差し替えて実際にWebNP2で走らせ、
+(4) 音が出ているかを数値で測る、という一連を実測した。
+作業ファイルは全て`scratchpad/pmdport/`（このセッションのscratchpad、
+`/private/tmp/.../scratchpad/pmdport/`）に置き、`NP2kai`/`WorkbenchNP2`/`WebNP2`は
+読むだけ（作業後いずれも`git status`でclean確認済み）。`.M`ファイルは
+`upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`をローカル実験専用に再利用し、
+リポジトリにも配布物にも含めていない。
+
+### 8-1. OPNA（86音源）のI/Oポート番号（一次情報: NP2kai）
+
+出典: `PC98/NP2kai/cbus/board86.c:15-190`。
+
+| ポート | 役割 | 出典行 |
+|---|---|---|
+| `0x188` | 書込み=レジスタアドレス（下位）ラッチ、読出し=ステータス | `board86.c:15-20`（`opna_o188`）, `:54-58`（`opna_i188`） |
+| `0x18A` | 書込み=レジスタデータ（基本レジスタ0x00-0xFFへ反映）、読出し=レジスタ0-0x0Fの読み戻し | `board86.c:22-30`（`opna_o18a`）, `:60-80`（`opna_i18a`） |
+| `0x18C` | 拡張レジスタのアドレス（上位）ラッチ、読出し=拡張ステータス | `board86.c:32-41`（`opna_o18c`）, `:82-91`（`opna_i18c`） |
+| `0x18E` | 拡張レジスタ（0x100以上）のデータ | `board86.c:43-52`（`opna_o18e`）, `:93-109`（`opna_i18e`） |
+
+ベースアドレスは`0x188 + g_opna[0].s.base`で、`cbuscore_attachsndex()`により
+実際にI/Oバスへアタッチされる（`board86.c:183`）。`s.base`はDIPスイッチ相当の
+設定（`snd86opt`）依存で、既定は`0x000`（つまり上表のとおり）。
+`fmdriver_pmd.c`側は`work->opna_writereg(work, addr, data)`の`addr`のbit0x100が
+立っていれば拡張レジスタ、という規約（`fmdriver_pmd.c:91`
+`work->opna_writereg(work, addr | (pmd->opna_a1 ? 0x100:0), data)`）なので、
+実装は「bit0x100があれば0x18C/0x18E、無ければ0x188/0x18A」の2分岐で足りる。
+
+### 8-2. Timer B割り込みベクタ（一次情報: NP2kai）。**既定設定では発火しないことが判明**
+
+- `sound/opntimer.c:116-144`（`fmport_b`）がTimer B満了時に
+  `pic_setirq(opna->s.irq)`を呼ぶ実装（`opna->s.irq != 0xff`の場合のみ）。
+- `opna->s.irq`は`board86_reset()`（`board86.c:150,156`）内の
+  `nIrq = (pConfig->snd86opt & 0x10) | ...`を経て`opna_timer()`
+  （`sound/opntimer.c:153-165`）に渡され、`nIrq & 0x10`が立っているときだけ
+  `s_irqtable[nIrq>>6] = {0x03,0x0d,0x0a,0x0c}`（IRQ3/13/10/12）から選ばれる
+  （`opntimer.c:13,156-159`）。**立っていなければ`opna_reset()`が設定した既定値
+  `0xff`のまま**（`sound/opna.c:136`）。
+- WebNP2が使う`sdl/ini.c:651`のiniテーブル定義`{"opt86BRD", ..., &np2cfg.snd86opt, 0}`
+  の第4引数（既定値）は`0`。iniファイルが無い場合（WebNP2はブラウザ内なので無い）、
+  `snd86opt`は`0`のまま。**`0 & 0x10 == 0`なので`opna->s.irq`は`0xff`のまま
+  = 実機のIRQ線は一度も上がらない。**
+- IRQベクタそのもの（参考、`io/pic.c:48-54`のICW2から算出）: マスタPICは
+  ベクタ基底`0x08`（IRQ0-7 → INT08h-0Fh）、スレーブは基底`0x10`
+  （IRQ8-15 → INT(0x10+irq-8)）。仮にIRQ12が選ばれていればINT14h、IRQ10なら
+  INT12h、IRQ3（マスタ側）ならINT0Bh。**ただし今回の既定設定では上記の理由で
+  そもそも選ばれない/発火しないため、この換算は参考情報にとどまる。**
+- WebNP2のURLクエリに`snd86opt`相当を上書きする仕組みは`grep`で探した範囲では
+  見つからなかった（無いと断定はしない、「見つからなかった」に留める）。
+- **結論**: 今回の環境では、正規のOPNA Timer B→ハードウェア割込みベクタ経由の
+  駆動は**一次情報で裏付けられた理由により到達不能**（WebNP2側の設定を書き換える
+  権限が無い限り）。したがって(3)は「実ポートへの本物の書き込み」は行うが、
+  「駆動」は本物のOPNAステータスレジスタ（`0x188`）を**ソフトウェアポーリング**する
+  方式で代替した（後述8-4）。これはハードウェア割込みそのものではないが、
+  シムではなく実ポートの実ステータスを読んで判定している点は同じ。
+
+### 8-3. 薄いAPI（`pmdapi.h`）
+
+利用者がBSD版PMDドライバから将来「公式PMD.COM（常駐・INT経由）」へ差し替えたく
+なった場合にゲーム側コードを変えずに済むよう、関数5本だけの薄い抽象を置いた。
+全文は`scratchpad/pmdport/build/pmdapi.h`（実験用、配布物ではない）。
+
+```c
+void pmdapi_init(void);
+int  pmdapi_set_song(const unsigned char *data, unsigned length);
+void pmdapi_play(void);
+void pmdapi_stop(void);
+int  pmdapi_tick(void); /* 戻り値: 今回内部処理が走ったら非0 */
+unsigned pmdapi_write_count(void); /* デバッグ用 */
+```
+
+- バックエンド(a) `pmd_backend_bsd.c`（今回実装）: `fmdriver_pmd.c`を直接リンクし、
+  `fmdriver_work.opna_writereg/opna_readreg/opna_status`を8-1の実ポートI/Oへ
+  結線する。`pmdapi_tick()`は`work.driver_opna_interrupt`（=`pmd_opna_interrupt`）を
+  呼ぶだけで、内部でステータスをポーリングして処理する（8-2で説明した代替駆動）。
+- バックエンド(b) 公式PMD.COM（常駐）をINT経由で呼ぶ実装: **未実装**。
+  ヘッダのシグネチャ自体はバックエンド非依存にしてあるので、差し替えは
+  この5関数の中身だけで済むはず、という設計意図をコメントで明記した。
+- `pmdapi_stop()`は今回「tick呼び出しを止めるだけ」の最小実装で、実際の
+  キーオフ（`pmd_mstop`相当）は未接続（8-5で実測結果として言及）。
+
+### 8-4. 実装: ポートI/Oの命令列とcalling conventionの実測
+
+`-huge`モデルではグローバル変数への直接アクセスがfar pointer解決を伴う
+リロケーション経由になる（`.relod`セクション+`mov ds,si`）ことをコンパイラ出力の
+実測（`scratchpad/pmdport/probe.asm`）で確認したため、素朴に
+`asm("mov dx,[_変数]")`とは書けない。一方、**関数引数はスタック（bp相対）に
+乗るため単純なアドレッシングで足りる**ことも実測で確認した
+（`scratchpad/pmdport/probe2.asm`: 2引数関数で第1引数=`[bp+8]`、
+第2引数=`[bp+12]`、`push ebp; movzx ebp,sp`という32bitレジスタ・16bitモード
+混在のプロローグ）。これに基づき:
+
+```c
+void port_outb(unsigned short port, unsigned char value) {
+  asm("mov dx, [bp+8]\n"
+      "mov al, [bp+12]\n"
+      "out dx, al\n");
+}
+unsigned char port_inb(unsigned short port) {
+  asm("mov dx, [bp+8]\n"
+      "in al, dx\n"
+      "movzx eax, al\n");
+}
+```
+
+**実測で検証**: `scratchpad/pmdport/build/io_test.c`をこの関数で組み立て、
+OPNAレジスタ0番（周波数下位、基本セットで読み戻し可能）へ`0x55`→読み戻し、
+`0xA3`→読み戻しを行うプログラムを`-huge`でビルド・リンクし（既存の
+`build_and_link.mjs`パターンを流用、`scratchpad/pmdport/build_io_test.mjs`）、
+WebNP2上で`window.np2debug.call('type_text'/'screen_text')`経由で実行した結果:
+
+```
+io-test: status before=0x03
+io-test: reg00 wrote 0x55, read back 0x55
+io-test: reg00 wrote 0xA3, read back 0xA3
+io-test: status after=0x03
+io-test: done
+```
+
+**書いた値と読み戻した値が完全一致**。実ポート（0x188/0x18A）経由の
+読み書きが本物のOPNAレジスタストレージに届いていることを実測で確認した。
+
+### 8-5. 実測: 音が出たか
+
+**出た。数値で確認した。** 測定方法と結果:
+
+- WebNP2の音声出力には2経路ある: SDLの`ScriptProcessorNode`（既定では
+  `coreAudioExternal(true)`により**意図的に無音化**され、実際の出力は
+  `AudioWorkletNode`側が担う、`WebNP2/src/core/audio.ts:113-196`）と、
+  AudioWorklet経路。**最初SDL側をタップして計測しmax=0が続いたのは、この
+  無音化されている側を見ていたため**（切り分けに時間を要した）。URLクエリ
+  `worklet=0`（`WebNP2/src/main.ts:129-130`、既存の公式オプション、
+  ソース改変なし）でAudioWorklet経路を無効化しSDL経路に固定したところ、
+  SDL側`scriptProcessorNode`の`audioprocess`イベントに実データが流れる
+  ことを確認した。
+- **陽性対照（直接トーン生成）**: PMDドライバを介さず、教科書的なFM音源
+  キーオン手順（算法7・TL=0・AR最大・周波数設定・レジスタ0x28でキーオン）を
+  直接レジスタへ書く`scratchpad/pmdport/build/tone_test.c`を実行したところ、
+  2243回の`audioprocess`呼び出しにわたり**最大振幅 1.0029**（ほぼフルスケール、
+  わずかにクリップ）を実測した。実ポート書き込み→音源合成→Web Audio出力の
+  経路全体が機能していることの確認。
+- **本題（PMDドライバ経由の演奏）**: `pmdapi`経由で`pmd_load`→`pmd_play`→
+  `pmdapi_tick()`をDOS時計（`INT 21h AH=2Ch`）基準で約12秒回した
+  `scratchpad/pmdport/build/pmdplay_main.c`を実行し、`audioprocess`の
+  RMS振幅を時系列で記録した（`scratchpad/pmdport/`各実行時にブラウザ
+  コンソールから`window.__spnHist`として採取）。結果:
+  - 再生開始直後（`t=0s`、レジスタ書込み累計17回時点）は**RMS=0が継続**
+    （無音）。
+  - 曲が進行するにつれ（`t=1s`以降、レジスタ書込み累計が562→6713へ増加）
+    **RMS約0.02〜0.2、最大振幅0.53**の範囲で**時間とともに変動する**音量が
+    観測された（単発ノイズや初期化音ではなく、複数時点で継続的に変動する
+    値であることを複数回のサンプリングで確認）。
+  - `pmdplay_main`終了（`pmdapi_stop()`呼び出し）後も**RMS約0.024の残留音**が
+    観測された。これは`pmdapi_stop()`が今回「tick呼び出しを止めるだけ」
+    （8-3節）でキーオフを送っていない実装のためで、**対照実験としては
+    「完全な無音に戻る」ことは確認できなかった**（不完全な停止実装が原因と
+    特定できているので、無音化に失敗した=バグではなく未実装機能として記録）。
+- **注意（混同しないこと）**: 「レジスタへ書けた」（8-4）・「音源が合成して
+  Web Audioへ非ゼロサンプルを出した」（8-5トーン試験・本題とも）は別の事実として
+  それぞれ実測した。両方が揃って初めて「鳴った」と言える。
+
+### 8-6. 常駐化に向けて分かったこと（追加）
+
+- 8-2で判明した「既定設定ではOPNA Timer BのハードウェアIRQが一度も
+  発火しない」という制約は、TSR化以前の壁である。将来IRQベースの駆動を
+  実現するには、WebNP2側の`snd86opt`（bit0x10=割込み許可、bit6-7=IRQ選択）を
+  何らかの手段で書き換える経路が必要（現状は見つかっていない）。
+- 今回の代替（ステータスレジスタのソフトウェアポーリング）は、TSR化の要否とは
+  独立に機能する（常駐せずフォアグラウンドで動くプログラムでも成立する）ため、
+  TSR化を後回しにする判断の妥当性を追認した。
+- `-huge`はDPMI不要・通常のMZ EXEとして起動/終了できることを7節に続き
+  再確認した（TSR化そのものは今回も未着手）。
+
+### 8-7. 次に確かめるべきこと（更新）
+
+- `snd86opt`（IRQ許可・IRQ番号）をWebNP2側から変更する手段の有無の確認、
+  または本物のIVTフック（`INT 21h AH=25h`でベクタ差し替え、PIC（0x21ポート）の
+  マスク解除、ISR内でのEOI送出）を実装し、IRQが発火する設定下で実際に
+  動くかの検証。
+- `pmdapi_stop()`の完全実装（`pmd_mstop`相当のキーオフ）。
+- `ppz8.c`（PCM）側の`uint64_t`依存は引き続き未着手。
+- (c)（PMD.ASM移植）との工数比較は引き続き未着手。
