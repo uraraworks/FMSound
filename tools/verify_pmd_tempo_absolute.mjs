@@ -79,7 +79,7 @@ function readTrack(Module, trackIndex) {
   const ringPtr = Module.getSnapshotRingPointer();
   const idx = (writeIndex - 1) % SNAPSHOT_RING_SIZE;
   const base = ringPtr + idx * entryBytes;
-  const trackBase = base + 4 + trackIndex * FIELD_COUNT * 4;
+  const trackBase = base + Module.getSnapshotHeaderWordCount() * 4 + trackIndex * FIELD_COUNT * 4;
   const words = new Int32Array(FIELD_COUNT);
   const base32 = trackBase / 4;
   for (let i = 0; i < FIELD_COUNT; i++) words[i] = Module.HEAP32[base32 + i];

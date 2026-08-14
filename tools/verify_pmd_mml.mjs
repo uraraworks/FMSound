@@ -49,7 +49,7 @@ function readTrack(Module, trackIndex) {
   const ringPtr = Module.getSnapshotRingPointer();
   const idx = (writeIndex - 1) % SNAPSHOT_RING_SIZE;
   const base = ringPtr + idx * entryBytes;
-  const tracksBase = base + 4; // frame(uint32)の直後 = tracks[0]
+  const tracksBase = base + Module.getSnapshotHeaderWordCount() * 4; // ヘッダ(frame+timerb系)の直後 = tracks[0]
   const trackBase = tracksBase + trackIndex * FIELD_COUNT * 4;
   const words = new Int32Array(FIELD_COUNT);
   const base32 = trackBase / 4;
