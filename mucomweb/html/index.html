@@ -135,19 +135,23 @@
   // 旧実装(fitCanvasScale、当時はここより下のFMDSP描画準備の直後にあった)は
   // 横幅だけを見て倍率を決めていたため、フルスクリーン中にツールバー
   // (.console-footer)の高さぶん縦にはみ出し、.console-card の overflow:hidden で
-  // 上下が見切れていた(このファイルを直したissueの本題)。対策として、
-  // CSS(object-fit等)でのサイズ決めはやめ、幅と高さの両方の実測値から640x400の
-  // 縦横比を保ったまま収まる倍率をここ(JS)で一括計算し、canvas.style.width/height
-  // にpx直書きする方式に一本化する。通常表示・ネイティブ全画面・疑似全画面
-  // (body.pseudo-fullscreen)の3つとも、このrescale()だけがサイズを決める。
+  // 上下が見切れていた。対策として、CSS(object-fit等)でのサイズ決めはやめ、
+  // 幅と高さの両方の実測値から640x400の縦横比を保ったまま収まる倍率をここ(JS)で
+  // 一括計算し、canvas.style.width/heightにpx直書きする方式に一本化する。
+  //
+  // ただし通常表示(ネイティブ全画面でも疑似全画面でもないとき)は「使える高さ」で
+  // 縛ってはいけない: header/footerを固定しコンテンツ領域(#app)だけがスクロールする
+  // アプリシェル型レイアウト(styles.css body参照)にしたため、ページの縦の混雑度
+  // (エディタ欄の有無等)は#appのスクロールで吸収され、キャンバスを縮める理由には
+  // ならない。通常表示は幅だけで倍率を決め(高さは無視、はみ出した分は#appが
+  // スクロールする)、ネイティブ全画面/疑似全画面のときだけ従来どおり幅と高さの
+  // 両方で「使える領域に収まる倍率」を計算する(この2モードは#appがスクロールしない
+  // 全画面表示のため、縦にはみ出すと本当に見切れてしまう)。
   //
   // 注意: canvasにmax-width/max-heightを付けてはいけない。width指定はインラインが
   // スタイルシートより強い(仕様通り)が、max-widthは別プロパティなのでこの優先規則が
   // 効かず、後からCSS側のmax-*がインライン値をクランプして縦横比が崩れる
   // (WebX68k src/style.css 244行目付近のコメントに実際に踏んだ事例が残っている)。
-  const pageHeaderEl = document.querySelector('header.app-header');
-  const pageFooterEl = document.querySelector('footer.app-footer');
-  const sampleLinksEl = document.getElementById('sampleLinks');
   const consoleFooterEl = document.querySelector('.console-footer');
 
   function elHeight(el) {
@@ -163,13 +167,18 @@
     return document.fullscreenElement === consoleCard || document.webkitFullscreenElement === consoleCard;
   }
 
-  // 「カードに使える幅・高さ」を測る。ネイティブ全画面中は .console-card 自体が
-  // CSS(:fullscreen{width:100vw;height:100vh})で既に画面いっぱいに固定されているので、
+  function isPseudoFullscreen() {
+    return document.body.classList.contains('pseudo-fullscreen');
+  }
+
+  // 「カードに使える幅・高さ」を測る(高さ制約ありモード=ネイティブ全画面/疑似全画面
+  // でのみ呼ぶ)。ネイティブ全画面中は .console-card 自体がCSS
+  // (:fullscreen{width:100vw;height:100vh})で既に画面いっぱいに固定されているので、
   // その実測値をそのまま使う(ヘッダー等はブラウザのトップレイヤーの下に隠れているだけで
-  // getBoundingClientRect() 上は非ゼロのままなため、通常表示と同じ「各要素の高さを
-  // 積み上げて引く」方式は使えない)。通常表示・疑似全画面では、疑似全画面がheader/
-  // footer/sample-linksをdisplay:noneにする(styles.css参照)ため、同じ積み上げ式で
-  // 自動的に0として扱われ、結果的に3モードとも同じ計算経路を通る。
+  // getBoundingClientRect() 上は非ゼロのままなため、積み上げて引く方式は使えない)。
+  // 疑似全画面はheader/footer/sample-links/editorPaneをdisplay:noneにする
+  // (styles.css参照)ため、#appの矩形(=window全体からpaddingを引いたもの)を
+  // そのまま使ってよい。
   function computeAvailable() {
     if (isNativeFullscreen()) {
       const rect = consoleCard.getBoundingClientRect();
@@ -179,21 +188,38 @@
     const paddingH = parseLenOrZero(appStyle.paddingLeft) + parseLenOrZero(appStyle.paddingRight);
     const paddingV = parseLenOrZero(appStyle.paddingTop) + parseLenOrZero(appStyle.paddingBottom);
     const availWidth = Math.max(1, window.innerWidth - paddingH);
-    const reservedHeight =
-      elHeight(pageHeaderEl) + elHeight(pageFooterEl) + elHeight(sampleLinksEl) + elHeight(editorPane) + paddingV;
-    const availHeight = Math.max(1, window.innerHeight - reservedHeight);
+    const availHeight = Math.max(1, window.innerHeight - paddingV);
     return { width: availWidth, height: availHeight };
   }
 
   function rescale() {
     const dpr = window.devicePixelRatio || 1;
-    const avail = computeAvailable();
-    const cardStyle = getComputedStyle(consoleCard);
-    const cardGap = parseLenOrZero(cardStyle.rowGap || cardStyle.gap);
-    const stageAvailHeight = Math.max(1, avail.height - elHeight(consoleFooterEl) - cardGap);
-    const stageAvailWidth = Math.max(1, avail.width);
+    const heightConstrained = isNativeFullscreen() || isPseudoFullscreen();
 
-    const fit = Math.min(stageAvailWidth / PC98_W, stageAvailHeight / PC98_H);
+    let fit;
+    if (heightConstrained) {
+      const avail = computeAvailable();
+      const cardStyle = getComputedStyle(consoleCard);
+      const cardGap = parseLenOrZero(cardStyle.rowGap || cardStyle.gap);
+      const stageAvailHeight = Math.max(1, avail.height - elHeight(consoleFooterEl) - cardGap);
+      const stageAvailWidth = Math.max(1, avail.width);
+      fit = Math.min(stageAvailWidth / PC98_W, stageAvailHeight / PC98_H);
+    } else {
+      // 通常表示: 高さでは縛らない(#appのスクロールに任せる)。幅だけで
+      // 「640:400を保ったまま収まる倍率」を決める。
+      //
+      // 幅の測定元はcomputeAvailable()のwidth(window.innerWidthから#appの左右
+      // paddingを引いたもの)を使う。.stage/.console-cardのgetBoundingClientRect()
+      // は使わない: これらの要素はcanvasのCSSサイズにあわせて自分の幅も決まる
+      // (line-height:0のflex要素で、幅を明示指定していないため子=canvasの現在の
+      // 表示幅に追従する)ため、rescale()の入力に使うと「前回設定したcanvas幅を
+      // 見て次のcanvas幅を決める」循環になり、一度小さく描画されると二度と
+      // 大きく戻れなくなる(実測で確認済みの罠)。#appの幅はcanvasのサイズに
+      // 一切依存しないので、循環を断ち切れる。
+      const avail = computeAvailable();
+      fit = Math.max(1, avail.width) / PC98_W;
+    }
+
     // 等倍以上のときだけ物理px単位に丸める(5x6ドットのfont_fmdsp_smallが非整数倍だと
     // 不均等に潰れて滲む対策。pmdweb/html/index.htmlの同種コメント参照)。等倍未満は
     // そのまま使う(丸めると1倍に張り付き、狭い画面で画面外へはみ出すため)。
@@ -217,13 +243,12 @@
     btnEditorMode.classList.toggle('active', mode === 'editor');
     btnEditorMode.title = mode === 'editor' ? 'プレイヤーモードへ切替' : 'エディタモードへ切替';
     btnEditorMode.setAttribute('aria-label', btnEditorMode.title);
-    // エディタ欄(rows相当で縦に長い)がページ全体を押し広げてフッター(ライセンス表記、
-    // 表示はライセンス要件)を画面外に出してしまわないよう、エディタモード中はbodyの
-    // 高さを100vhに固定して内部(エディタ欄)だけがスクロールする構成にする
-    // (styles.css body.mode-editor参照)。rescale()はeditorPaneの高さ変化を
-    // 即座にキャンバスサイズへ反映するために呼ぶ(呼ばないと次のwindow.resizeまで
-    // 古いサイズのまま)。
-    document.body.classList.toggle('mode-editor', mode === 'editor');
+    // header/footerは常に固定・#appだけがスクロールするアプリシェル型レイアウト
+    // (styles.css body参照、モードに関わらず常時有効)なので、エディタ欄が縦に
+    // 長くてもフッター(ライセンス表記、表示はライセンス要件)が画面外に出ることは
+    // ない。rescale()は通常表示では幅のみで倍率を決めるためエディタ欄の高さ変化に
+    // 左右されないが、フルスクリーン系(高さ制約あり)の状態からの復帰直後などに
+    // 備えて呼んでおく。
     rescale();
   }
 

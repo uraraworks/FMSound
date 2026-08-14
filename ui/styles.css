@@ -60,13 +60,24 @@ html {
   text-size-adjust: 100%;
 }
 
+/*
+ * アプリシェル型レイアウト: header(固定)/footer(固定)は常に画面に留まり、
+ * その間の#app(コンテンツ領域)だけが縦スクロールする(body自体はスクロールしない)。
+ * 以前はエディタモードのときだけ body.mode-editor でこの構成にしていたが、
+ * それだと通常表示ではbodyごとスクロールする一方でrescale()がページ高さから
+ * キャンバスの上限を計算しており、エディタを開くとエディタ欄の高さぶんだけ
+ * 利用可能高さが減ってキャンバスが縮んでいた。プレイヤー/エディタの両モードで
+ * 常にこの構成にすることで、キャンバスのサイズ計算(rescale())からページの
+ * 縦方向の混雑度を切り離す。
+ */
 body {
   margin: 0;
   padding: 0;
   background: var(--page-bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
-  min-height: 100%;
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -108,6 +119,9 @@ header.app-header .app-tagline {
   flex-direction: column;
   align-items: center;
   flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
   gap: 12px;
 }
@@ -119,6 +133,13 @@ header.app-header .app-tagline {
   overflow: hidden;
   background: var(--header-bg);
   max-width: 100%;
+  /* #appがflex-direction:columnなので、既定のflex-shrink:1のままだと#appの高さが
+     足りないとき(縦の狭い画面、エディタ欄が開いた分など).console-cardが縮められ、
+     overflow:hiddenでcanvasが見切れる(#appをスクロール領域化した意味が無くなる、
+     アプリシェル化の主目的そのものが壊れる)。flex-shrink:0で「自分の内容(=キャンバス
+     本来のサイズ)より縮まない」ことを保証し、収まらない分は#appのoverflow-y:autoに
+     スクロールとして処理させる。 */
+  flex-shrink: 0;
   box-shadow:
     0 18px 40px rgba(0, 0, 0, 0.2),
     0 4px 14px rgba(0, 0, 0, 0.15);
@@ -283,6 +304,8 @@ header.app-header .app-tagline {
   color: var(--text-dim);
   text-align: center;
   line-height: 1.8;
+  /* .console-cardと同じ理由でflex-shrinkを止める(#app flex-shrink既定値対策)。 */
+  flex-shrink: 0;
 }
 
 .sample-links a {
@@ -301,6 +324,11 @@ header.app-header .app-tagline {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* .console-cardと同じ理由でflex-shrinkを止める(#app flex-shrink既定値対策)。
+     .mml-editor自体はclamp(140px,30vh,420px)の固定高で内部スクロールするため、
+     ここが縮んでも中身が壊れはしないが、.console-cardと足並みを揃えて
+     「#appのスクロールに委ねる」方式に統一する。 */
+  flex-shrink: 0;
 }
 
 .editor-pane.hidden {
@@ -505,29 +533,6 @@ details.debug-table summary {
   font-family: monospace;
   font-size: 12px;
   color: var(--text-dim);
-}
-
-/*
- * エディタモード中は、縦に長いエディタ欄(内部スクロール式、.mml-editor参照)を
- * 含めてヘッダー・console-card・エディタ欄・ページフッターの4者が1画面(100vh)に
- * 収まるようにする。フッターにはライセンス表記があり非表示は許容できないため、
- * position:fixed/sticky でフッターだけ浮かせる方式ではなく、body の高さを
- * ビューポートに固定して #app 側を縮める(rescale()がキャンバスを可変フィットさせる
- * 既存の仕組みと同じ経路に乗せる)。
- */
-body.mode-editor {
-  height: 100vh;
-  overflow: hidden;
-}
-
-body.mode-editor #app {
-  /* rescale()の積み上げ計算(#appのgap分は含まれない)が完全に一致しない場合の保険として
-     hiddenではなくautoにする: フッター(#appの外、兄弟要素)は#appがflex:1 min-height:0で
-     縮む限りビューポート内に収まり続けるので、#app内部だけが必要に応じて微小スクロールする
-     ほうが「フッターは常に見える」という要件に対して安全。 */
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-height: 0;
 }
 
 /* ページ最下部の全幅帯。body が flex column + #app が flex:1 で伸びるため、
