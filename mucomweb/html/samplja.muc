@@ -4,6 +4,6 @@
 #author うらら太郎
 #voice voice.dat
 #date 2026/08/14
-#comment これは日本語コメントの表示確認用サンプルです(旋律は確認用に自作した単純な音階フレーズです)
+#comment これは日本語コメント表示確認用サンプルです(自作の単純な音階フレーズ)
 
 A C120 o5 l4 v10 cdefgab>c<bagfedc1
