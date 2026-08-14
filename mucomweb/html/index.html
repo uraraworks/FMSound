@@ -78,6 +78,7 @@
   <a href="javascript:void(0);" id="dlSampl1">sampl1.muc(ローカル,動作確認用)</a>
   <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
   <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
+  <a href="javascript:void(0);" id="dlSamplJa">samplja.muc(ローカル,日本語コメント確認用)</a>
   Copyright(C) by Yuzo Koshiro
 </div>
 <div id="result"></div>
@@ -104,6 +105,10 @@
   const channelTableBody = document.querySelector('#channelStatus tbody');
   const snapshotRingSize = 2048;
   const invalidWriteIndex = 0xffffffff;
+  // StatusSnapshotの先頭(frame, passTick, intCount, maxCount)のワード数。
+  // MucomWeb.cppのGetSnapshotHeaderWordCount()と一致させる(ハードコード禁止)。
+  const snapshotHeaderWordCount = Module.getSnapshotHeaderWordCount();
+  const SNAPSHOT_HEADER = { FRAME: 0, PASS_TICK: 1, INT_COUNT: 2, MAX_COUNT: 3 };
   const calibrationInput = document.getElementById('calibrationMs');
   const synchronizedCheckbox = document.getElementById('useSynchronizedStatus');
   for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
@@ -153,9 +158,23 @@
   // MUCOM88のCMucomクラスにはtitle/composer取得の公開APIが無い
   // (upstream/mucom88/src/cmucom.h の public: 一覧を確認したが該当メソッドなし)。
   // そのためコンパイルに使った生MMLテキストをJS側で正規表現走査して取り出す。
-  // CP932/Shift_JISのままのファイルをfetchで読むとUTF-8として誤解釈されうる
-  // ため(既知の罠、docs参照)、非ASCII文字が混ざっている行は「化けたものを
-  // 描くくらいなら空欄にする」方針で諦める(捏造しない)。
+  //
+  // 描画層(fmdsp/comment.js -> drawTextCp932)はCP932の生バイト列を要求する
+  // (PMD側もそう作られている、docs/mucom-pchdata-mapping.md参照)。一方で
+  // .mucファイルの実体はCP932/Shift_JISであり、fetchしたバイト列を単純に
+  // response.text()で読むとUTF-8として誤解釈される既知の罠がある。
+  //
+  // そこで2系統を使い分ける:
+  //   1) downloadMML()でダウンロードした直後で、textareaの中身がダウンロード
+  //      直後から変更されていない場合 -> ダウンロード時に保持しておいた
+  //      「生のCP932バイト列」から直接ヘッダ行を切り出す(extractMmlHeaderBytes)。
+  //      デコード・再エンコードを経由しないので文字化けが原理的に起きない。
+  //   2) 利用者がtextareaを編集した場合(またはダウンロードなしで手入力した場合)
+  //      -> 生バイト列との対応が取れないため、JS文字列からのASCII安全変換に
+  //      フォールバックする(非ASCII混入時は「化けたものを描くくらいなら
+  //      空欄にする」方針、従来通り)。ブラウザにShift_JISエンコーダが無く
+  //      (TextEncoderはUTF-8専用)、正しいCP932バイト列を再構成する手段が
+  //      無いための制約。docs/mucom-pchdata-mapping.md に明記する。
   function extractMmlHeader(mmlText) {
     const lines = mmlText.split(/\r\n|\r|\n/);
     const header = { title: null, composer: null, comment: null };
@@ -178,8 +197,69 @@
     for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
     return bytes;
   }
+
+  // バイト列版ヘッダ抽出。CP932の2バイト文字の先頭バイトは0x81-0x9F/0xE0-0xFC、
+  // 2バイト目は0x40-0xFC(0x7F除く)の範囲であり、いずれも改行(0x0A)や復帰(0x0D)
+  // と値が重ならないため、生バイト列を0x0Aで単純分割しても2バイト文字の
+  // 途中を切ってしまうことはない。
+  const HEADER_KEYWORDS = ['title', 'composer', 'comment'];
+  function isAsciiSpaceByte(c) {
+    return c === 0x20 || c === 0x09;
+  }
+  function matchesAsciiKeywordBytes(bytes, i, end, keyword) {
+    if (i + keyword.length > end) return false;
+    for (let k = 0; k < keyword.length; k++) {
+      let c = bytes[i + k];
+      if (c >= 0x41 && c <= 0x5a) c += 0x20; // ASCII toLowerCase
+      if (c !== keyword.charCodeAt(k)) return false;
+    }
+    return true;
+  }
+  function parseHeaderLineBytes(bytes, start, end, header) {
+    let i = start;
+    while (i < end && isAsciiSpaceByte(bytes[i])) i++;
+    if (i >= end || bytes[i] !== 0x23 /* '#' */) return;
+    i++;
+    while (i < end && isAsciiSpaceByte(bytes[i])) i++;
+    for (const keyword of HEADER_KEYWORDS) {
+      if (!matchesAsciiKeywordBytes(bytes, i, end, keyword)) continue;
+      const afterKeyword = i + keyword.length;
+      if (afterKeyword < end && !isAsciiSpaceByte(bytes[afterKeyword])) continue; // 部分一致除外
+      let valueStart = afterKeyword;
+      while (valueStart < end && isAsciiSpaceByte(bytes[valueStart])) valueStart++;
+      let valueEnd = end;
+      while (valueEnd > valueStart && isAsciiSpaceByte(bytes[valueEnd - 1])) valueEnd--;
+      if (header[keyword] === null) header[keyword] = bytes.slice(valueStart, valueEnd);
+      return;
+    }
+  }
+  function extractMmlHeaderBytes(bytes) {
+    const header = { title: null, composer: null, comment: null };
+    let lineStart = 0;
+    for (let i = 0; i <= bytes.length; i++) {
+      if (i === bytes.length || bytes[i] === 0x0a) {
+        let lineEnd = i;
+        if (lineEnd > lineStart && bytes[lineEnd - 1] === 0x0d) lineEnd--;
+        parseHeaderLineBytes(bytes, lineStart, lineEnd, header);
+        lineStart = i + 1;
+      }
+    }
+    return header;
+  }
+
+  // downloadMML()が最後に取得した生バイト列/デコード後テキスト。textareaが
+  // それと一致している間だけバイト列ルートを使う(setCommentFromMml参照)。
+  let lastDownloadedRawBytes = null;
+  let lastDownloadedText = null;
+
   let commentBytesCache = [null, null, null];
   function setCommentFromMml(mmlText) {
+    if (lastDownloadedRawBytes && mmlText === lastDownloadedText) {
+      const header = extractMmlHeaderBytes(lastDownloadedRawBytes);
+      commentBytesCache = [header.title, header.composer, header.comment];
+      return;
+    }
+    // 編集済み、または手入力(ダウンロード未経由)の場合のフォールバック。
     const header = extractMmlHeader(mmlText);
     commentBytesCache = [
       asciiOnlyCp932Bytes(header.title),
@@ -223,7 +303,9 @@
 
   function displaySnapshot(entry) {
     for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
-      const track = entry.subarray(1 + ch * PCH_FIELD_COUNT, 1 + (ch + 1) * PCH_FIELD_COUNT);
+      const track = entry.subarray(
+        snapshotHeaderWordCount + ch * PCH_FIELD_COUNT,
+        snapshotHeaderWordCount + (ch + 1) * PCH_FIELD_COUNT);
       const cells = channelTableBody.rows[ch].cells;
       cells[1].innerText = track[1];
       cells[2].innerText = track[2];
@@ -265,13 +347,29 @@
     return levels;
   }
 
+  // PASSTICK(vm->time_master、1ms=1024単位の固定小数、docs実測)をfmdspの
+  // drawPassedTime()が要求する「55467Hz換算の生成フレーム数」へ変換する。
+  // fmdsp-pacc.c側は実際の出力サンプルレートに関わらず55467を固定係数として
+  // 使っているため(frames % 55467の由来、fmdsp/rightpane.js drawPassedTime
+  // のコメント参照)、ここでもサンプルレートではなく55467を使う。
+  function passTickToGeneratedFrames55467(passTick) {
+    const ms = Math.max(0, passTick) / 1024;
+    const frames = Math.round((ms * 55467) / 1000);
+    return BigInt(frames);
+  }
+
   function draw(entry) {
+    const passTick = entry[SNAPSHOT_HEADER.PASS_TICK] | 0;
+    const intCount = (entry[SNAPSHOT_HEADER.INT_COUNT] | 0) >>> 0;
+    const maxCount = entry[SNAPSHOT_HEADER.MAX_COUNT] | 0;
     const entryTracks = [];
     const slotToCh = {};
     const panByCh = {};
     for (const [chStr, slot] of Object.entries(CH_TO_SLOT)) {
       const ch = Number(chStr);
-      const pchData = entry.subarray(1 + ch * PCH_FIELD_COUNT, 1 + (ch + 1) * PCH_FIELD_COUNT);
+      const pchData = entry.subarray(
+        snapshotHeaderWordCount + ch * PCH_FIELD_COUNT,
+        snapshotHeaderWordCount + (ch + 1) * PCH_FIELD_COUNT);
       entryTracks[slot] = adapter.convertChannel(ch, pchData);
       slotToCh[slot] = ch;
       panByCh[ch] = panToSprite(pchData[9]); // PCH.PAN
@@ -286,11 +384,17 @@
       const audioState = globalThis.mucomAudioState;
       const rightPanePlaying = Boolean(audioState?.playback);
       rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+      // CLOCK COUNT = intCount(演奏開始からのINT3割り込み回数、生カウント)。
+      // LOOP COUNT = floor(intCount / maxCount)。GetStatus(MUCOM_STATUS_COUNT)が
+      // 「intCount % maxCount」を返す実装(cmucom.cpp:534-538)であることから
+      // 導いた式(名前からの推測ではない、docs参照)。maxCount=0(曲未確定)の
+      // 間は0のまま。
+      // TIMER B CYCLE / CPU / FPS は対応物なし・スコープ外のため0のまま。
       rightpane.drawDynamic(vram, {
-        generatedFrames: 0n,
-        timerbCnt: 0,
+        generatedFrames: passTickToGeneratedFrames55467(passTick),
+        timerbCnt: intCount,
         timerb: 0,
-        loopCnt: 0,
+        loopCnt: maxCount > 0 ? Math.floor(intCount / maxCount) : 0,
         cpuUsage: 0,
         fps: 0,
         timerbCntLoop: 0,
@@ -351,11 +455,18 @@
         displaySnapshot(selected);
         draw(selected);
 
-        const t = selected.subarray(1, 16);
+        const t = selected.subarray(snapshotHeaderWordCount, snapshotHeaderWordCount + 15);
+        const dbgPassTick = selected[SNAPSHOT_HEADER.PASS_TICK] | 0;
+        const dbgIntCount = (selected[SNAPSHOT_HEADER.INT_COUNT] | 0) >>> 0;
+        const dbgMaxCount = selected[SNAPSHOT_HEADER.MAX_COUNT] | 0;
         debug.innerText = `${syncText}\n` +
           `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}\n` +
           `track0 length=${t[0]} vnum=${t[1]} volume=${t[2]} quantize=${t[3]} ` +
-          `detune=${t[4]} fnum=${t[5]}/${t[6]} flag=${t[8]}`;
+          `detune=${t[4]} fnum=${t[5]}/${t[6]} flag=${t[8]}\n` +
+          `counters: passTick=${dbgPassTick} (${(dbgPassTick / 1024).toFixed(1)}ms) ` +
+          `intCount=${dbgIntCount} maxCount=${dbgMaxCount} ` +
+          `loopCnt=${dbgMaxCount > 0 ? Math.floor(dbgIntCount / dbgMaxCount) : 0} ` +
+          `audioContextTime=${(audioState?.context?.currentTime ?? 0).toFixed(3)}s`;
       }
     }
 
@@ -392,14 +503,22 @@
 
   document.getElementById('btnClearMML').addEventListener('click', function() {
       document.getElementById('mml').value = '';
+      lastDownloadedRawBytes = null;
+      lastDownloadedText = null;
   });
 
+  // .mucはCP932(Shift_JIS)。生バイト列をarrayBufferのまま保持し(コメント欄
+  // 描画用)、textareaの表示用テキストはTextDecoder('shift_jis')でデコードする
+  // (以前はresponse.text()でUTF-8として誤解釈していた既知の罠、docs参照)。
+  const sjisDecoder = new TextDecoder('shift_jis');
   function downloadMML(url) {
       fetch(url)
-          .then(response => {
-              return response.text()
-          })
-          .then(text => {
+          .then(response => response.arrayBuffer())
+          .then(buffer => {
+              const rawBytes = new Uint8Array(buffer);
+              const text = sjisDecoder.decode(buffer);
+              lastDownloadedRawBytes = rawBytes;
+              lastDownloadedText = text;
               document.getElementById('mml').value = text;
           });
   }
@@ -414,6 +533,10 @@
 
   document.getElementById('dlSampl3').addEventListener('click', function() {
       downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl3.muc');
+  });
+
+  document.getElementById('dlSamplJa').addEventListener('click', function() {
+      downloadMML('./samplja.muc');
   });
 </script>
 </body>

@@ -292,23 +292,24 @@ PMD側はドライバが直接boolを持っている)に相当する単一のフ
   取得する公開APIが無い(`cmucom.h`の`public:`宣言を確認したが該当メソッド
   なし)ため、コンパイルに使った生MMLテキストをJS側で正規表現走査し
   `#title`/`#composer`/`#comment`行を抽出している。`fmdsp/comment.js`の
-  `commentModePmd=false`(MML流儀の3行固定表示)を使用。非ASCII文字が
-  混ざっている行は、CP932/UTF-8取り違えで化けた文字を描くくらいなら
-  空欄にする方針で描画をスキップする(捏造しない。今回のsampl1.mucヘッダは
-  全てASCIIだったため実際に描画できることを確認済み)。
+  `commentModePmd=false`(MML流儀の3行固定表示)を使用。
+  **【2026-08-14更新、詳細は§13】** 当初は非ASCII文字が混ざっている行を
+  「化けたものを描くくらいなら空欄にする」方針で描画スキップしていたが、
+  これは`response.text()`がCP932の生バイト列をUTF-8として誤解釈していた
+  ことが原因だった。`response.arrayBuffer()`で生バイト列を保持する方式に
+  改め、ダウンロード直後(未編集)であれば生バイト列から直接CP932バイト列を
+  切り出して描画できるようにした(§13)。
 
-## 9. カウンタ類(PASSED TIME/CLOCK/LOOP)について
+## 9. カウンタ類(PASSED TIME/CLOCK/LOOP)について【実装前の調査メモ。実装後は§12参照】
 
 親からの指摘どおり、公開`CMucom::GetStatus()`には
 `MUCOM_STATUS_INTCOUNT`(1)/`MUCOM_STATUS_PASSTICK`(2)/`MUCOM_STATUS_COUNT`(5)/
 `MUCOM_STATUS_MAXCOUNT`(6)(`cmucom.h:52-57`)が存在し、MUCOM側では
 FMDSP右半分のカウンタ類(経過時間/CLOCK/LOOP)に相当する値を**取得可能**
 である(PMD側は対応するwasm exportが無く0固定のまま、`pmdweb/src/PmdWeb.cpp`
-参照)。**今回のタスクでは実装していない**(`rightpane.drawDynamic()`は
-pmdweb同様、全て0/false固定で呼んでいる)。理由は主にスコープ都合で、
-技術的な障害があるわけではない。実装するなら`MucomWeb.cpp`に
-`GetStatus(MUCOM_STATUS_xxx)`をラップするexportを追加し、
-`mucomweb/html/index.html`の`rightpane.drawDynamic()`呼び出しへ渡す形になる。
+参照)。実装するなら`MucomWeb.cpp`に`GetStatus(MUCOM_STATUS_xxx)`をラップする
+exportを追加し、`mucomweb/html/index.html`の`rightpane.drawDynamic()`呼び出しへ
+渡す形になる(→ 2026-08-14に実装、§12)。
 
 ## 10. 調査時の注意: cmucom.h/cmucom.cpp はCP932+NEL改行
 
@@ -351,3 +352,144 @@ LC_ALL=C tr '\205' '\n' < cmucom.h | LC_ALL=C grep -n '検索語'
   劣化させたものではない)。
 - `node tools/verify_trackrow.mjs` / `node tools/verify_cp932_render.mjs`は
   いずれもPASS(`fmdsp/`配下は無変更)。
+
+## 12. カウンタ類(経過時間/CLOCK/LOOP)の実装と実測【2026-08-14】
+
+### 実装
+
+`mucomweb/src/MucomWeb.cpp`の`StatusSnapshot`にグローバルカウンタ3つを追加した
+(既存の`static_assert`によるレイアウト固定の作法を踏襲):
+
+```cpp
+struct StatusSnapshot
+{
+    uint32_t frame;
+    int32_t passTick;   // GetStatus(MUCOM_STATUS_PASSTICK)
+    int32_t intCount;   // GetStatus(MUCOM_STATUS_INTCOUNT)
+    int32_t maxCount;   // 曲の総tick数(下記「maxCountの罠」参照、GetStatusでは取れない)
+    TrackStatus tracks[MUCOM_MAXCH];
+};
+```
+
+`PushSnapshot()`で毎フレーム(256サンプル毎)詰めており、リング経由なので
+表示側の同期(二分探索によるオーディオ時刻とのスナップショット照合)を壊さない。
+embind export `getSnapshotHeaderWordCount()`を追加し、JS側が
+`frame`に続くヘッダのワード数(=4)をハードコードしなくて済むようにした
+(既存の`getSnapshotEntryByteSize()`系の命名に揃えた)。
+描画は`fmdsp/rightpane.js`の既存`drawDynamic()`をそのまま使用しており、
+描画層(`fmdsp/`配下)は無変更(`verify_trackrow.mjs`/`verify_cp932_render.mjs`
+がPASSすることを確認済み、§11末尾)。
+
+### maxCountの罠(実測で発覚)
+
+`GetStatus(MUCOM_STATUS_MAXCOUNT)`は`CMucom::maxcount`メンバをそのまま返すが、
+このメンバは**`CMucom::Compile()`内でのみ計算・代入される**
+(`cmucom.cpp:1283`でリセット、`1303`で計算)。`MucomWeb.cpp`の再生用インスタンス
+`g_mucom`は`LoadMusic()`+`Play()`だけを呼び、`Compile()`は一度も呼ばないため、
+**`g_mucom->GetStatus(MUCOM_STATUS_MAXCOUNT)`は常に0を返す**ことを実測で確認した
+(sampl1.muc再生中に確認、コンパイルログには`#MaxCount:3072`と出るのに
+スナップショット上のmaxCountは0のままだった)。
+対策として、コンパイル専用インスタンス`mucomCompiler`がCompile成功直後に
+確定させた`GetStatus(MUCOM_STATUS_MAXCOUNT)`の値をグローバル`g_maxCount`へ
+退避し、以後`PushSnapshot()`ではそちらを使うようにした
+(`CompileMML()`内、`mucomCompiler.Compile()`成功直後)。
+
+### 実測(壁時計時間との突き合わせ、宣言通り「名前からの推測」はしていない)
+
+sampl1.mucを実際に再生し、`AudioContext.currentTime`(壁時計)と
+デバッグ表示上の`passTick`(=`vm->time_master`、`TICK_SHIFT=10`により
+`osdep.h:12`で1ms=1024単位の固定小数、`CMucom::RenderAudio()`が
+描画済みオーディオ時間をそのまま`vm->UpdateTime()`へ渡している実装
+`cmucom.cpp:355-362`)を約2分間、複数時点で比較した:
+
+| 経過(概算) | passTick/1024 (ms) | AudioContext.currentTime (ms) | 差 |
+|---|---|---|---|
+| ~5s | 4855.0 | 4883 | 28ms |
+| ~17s | 16809.0 | 16832 | 23ms |
+| ~36s | 35773.0 | 35804 | 31ms |
+| ~54s | 54290.0 | 54316 | 26ms |
+| ~117s | 116823.0 | 116849 | 26ms |
+| ~141s | 141488.0 | 141514 | 26ms |
+
+差はほぼ一定(23-31ms、AudioWorkletの出力レイテンシ相当)で、傾き(進み方)が
+壁時計と一致することを確認した。**よって`passTick`は「オーディオレンダリング
+済み時間(ms)×1024」であり、`/1024`すれば経過時間(ms)になる**という理解を採用した。
+`fmdsp/rightpane.js`の`drawPassedTime(frames)`は実サンプルレートに関わらず
+「55467Hz換算の生成フレーム数」を要求する(本家定数、同ファイルのコメント参照)
+ため、`round(passTickMs * 55467 / 1000)`をBigIntにして渡す変換関数
+(`passTickToGeneratedFrames55467`、`mucomweb/html/index.html`)を実装した。
+実際の表示値も検算した(141488ms時点): `frames=7847915` →
+`02:21.48`と算出され、実際の経過時間(141.488s = 2分21.488秒)と一致する。
+
+`intCount`(`MUCOM_STATUS_INTCOUNT`)は演奏開始からのINT3(音楽用割り込み)
+回数の生カウントで、単調増加することを確認した(296 → 1036 → 2210 → 3356 →
+7227 → 8754、上記と同一セッションで経過時間とともに増加)。これを
+CLOCK COUNTへそのまま採用した。
+
+`maxCount`(曲の総tick数、上記「maxCountの罠」参照)は再生中一定
+(sampl1.mucで3072)であることを確認した。`GetStatus(MUCOM_STATUS_COUNT)`の
+実装が`intCount % maxCount`を返す(`cmucom.cpp:534-538`)ことから、
+`floor(intCount / maxCount)`がループ回数に相当すると導いた
+(名前からの推測ではなく、ソースの剰余演算の定義から機械的に導出した式)。
+実測でも`intCount`が`maxCount`(3072)を超えた直後に`loopCnt`が0→1→2と
+正しく増分することを確認した(intCount=3356で1、intCount=7227で2、
+`floor(7227/3072)=2`で一致)。
+
+### スコープ外のまま残したもの
+
+- **TIMER B CYCLE / CPU POWER COUNT / FRAMES PER SECOND**: タスク指示により
+  今回は対応しない。`0`固定のまま。
+- 上記いずれも「単位不一致で採用できず0のまま残した」項目ではない
+  (すべて実測で意味を確認したうえで採用、または最初からスコープ外)。
+
+## 13. MML の CP932/Shift_JIS 読み込み【2026-08-14】
+
+### 問題と対応
+
+`downloadMML()`が`response.text()`でfetchしていたため、`.muc`(CP932/Shift_JIS)
+がUTF-8として誤解釈され、日本語の`#comment`/`#title`等が文字化けしていた
+(sampl1.mucはcommentが空のため表面化していなかった)。
+
+- `response.arrayBuffer()`で**生バイトのまま**保持するよう変更。
+- textareaの表示用テキストは`new TextDecoder('shift_jis')`でデコード。
+- コメント欄描画(`fmdsp/comment.js`の`drawTextCp932`)には**生のCP932バイト列**
+  を渡す設計方針を踏襲。ダウンロード直後(textareaが未編集)であれば、保持した
+  生バイト列を0x0Aで行分割し(CP932の2バイト文字は先頭0x81-0x9F/0xE0-0xFC・
+  2バイト目0x40-0xFCの範囲で0x0A/0x0Dと重ならないため、素朴な分割で安全)、
+  `#title`/`#composer`/`#comment`行を**デコード・再エンコードを経由せず**
+  直接切り出す(`extractMmlHeaderBytes`、`mucomweb/html/index.html`)。
+
+### 動作確認
+
+`upstream/MucomWeb/mucom88/package/sampl2.muc`/`sampl3.muc`はcommentが空
+だったため、日本語コメントを含むローカルサンプル`mucomweb/html/samplja.muc`
+(CP932でエンコード、`#title 日本語コメント確認用` / `#composer 米原正和` /
+`#comment これは日本語コメントの表示確認用サンプルです`)を新規作成し、
+`sampl1.muc`と同様「ローカル,確認用」のリンクとして常設した。
+実際にダウンロード→Compile/Playし、FMDSP画面下部のコメント欄3行すべてに
+上記の日本語テキストが文字化けせずに描画されることをスクリーンショットで確認した。
+
+### textarea編集経路(利用者がMMLを書き換えた場合)
+
+`Module.compileMML(mml, rate)`は`std::string`引数であり、emscripten
+(embind)がJS文字列をUTF-8へ変換してC++へ渡す。ここは変更していない。
+調査の結果、これは**問題ではなくむしろ意図的な設計だった**ことが判明した:
+`upstream/MucomWeb/mucom88/src/mucom88config.h`で`MUCOM88WIN`が未定義の
+ビルド(=このWebビルド)では`MUCOM88UTF8`マクロが有効になっており
+(`cmucom.cpp:CMucom::ProcessHeader()`のコメントにも
+`text = MML書式のテキストデータ(UTF8)`と明記されている)、
+`CMucom::GetMultibyteCharacter()`はUTF-8の継続バイト規則で多バイト文字を
+スキップする実装に切り替わる。**つまりこのフォークのMML compileMMLは
+最初からUTF-8入力を前提に作られている**。今回の修正で
+textareaの中身が(誤デコードでなく)正しくデコードされたJS文字列になった
+ことで、`compileMML`が受け取るUTF-8バイト列も副作用的に正しくなった
+(以前は「CP932バイト列をUTF-8として誤読した文字列」を再度UTF-8化して
+渡していたため、二重に破損した中身がC++側へ渡っていた)。
+compileMML側は今回変更しておらず、ズレは解消済みで残っていない。
+
+一方、**コメント欄描画(CP932生バイトが必要)側は編集後の文字列からは
+正しいCP932バイト列を再構成できない**。ブラウザの`TextEncoder`はUTF-8専用で
+Shift_JISエンコーダが無いため。textareaを編集した場合(またはダウンロード
+なしで手入力した場合)は、従来どおり「非ASCII混入時は空欄にする」
+ASCII安全フォールバック(`asciiOnlyCp932Bytes`)を使う。これは制約として
+残す(捏造しない方針を優先した)。
