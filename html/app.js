@@ -20,12 +20,12 @@ import { ICONS, iconButton } from './ui/icons.js';
 import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER } from './ui/version.js';
 
-const VALID_DRIVERS = ['mucom', 'pmd'];
-// 既定ドライバ: mucom。理由(報告にも記載): MUCOM88側は本タスク以前から
-// エディタ機能まで含めて完成しており実績が長い。既定を変えると
-// 「素のURL(?driverなし)でアクセスした既存ユーザー」の体験が変わってしまうため、
-// 後方互換の意味でもmucomを既定にする。
-const DEFAULT_DRIVER = 'mucom';
+const VALID_DRIVERS = ['pmd', 'mucom'];
+// 既定ドライバ: pmd。このツール一式の目的は「Webで PC-98 のゲームを作る」ことで、
+// PC-98の音源ドライバはPMD。MUCOM88はPC-88用で本来は側枝にあたる
+// (以前の既定がmucomだったのは、単にPMDよりMUCOM88側のエディタ機能が先に
+// 完成していたからで、狙って選んだ既定ではなかった。課題C)。
+const DEFAULT_DRIVER = 'pmd';
 
 const params = new URLSearchParams(location.search);
 const requestedDriver = params.get('driver');
