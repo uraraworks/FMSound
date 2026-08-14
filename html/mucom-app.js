@@ -27,6 +27,7 @@ import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
 import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
+import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 //
@@ -576,10 +577,22 @@ export async function init(ctx) {
   encodingBadgeEl.className = 'net-encoding-badge hidden';
   netStatusEl.insertAdjacentElement('afterend', encodingBadgeEl);
 
+  // 課題D: #voice/#pcm(同梱以外は読み込めない)・リズム(G)パート使用の告知。
+  // 控えめだが気づける表示にする(ui/mml-caveats.js参照。検出のみ、読み込み機能は作らない)。
+  const mmlCaveatEl = document.createElement('div');
+  mmlCaveatEl.className = 'mml-caveat-note hidden';
+  encodingBadgeEl.insertAdjacentElement('afterend', mmlCaveatEl);
+
   function setNetStatus(message, isError) {
     netStatusEl.textContent = message;
     netStatusEl.classList.toggle('net-status-error', Boolean(isError));
     netStatusEl.classList.toggle('hidden', !message);
+  }
+
+  function updateMmlCaveat(mmlText) {
+    const message = formatMmlCaveatMessage(detectMmlCaveats(mmlText));
+    mmlCaveatEl.textContent = message ?? '';
+    mmlCaveatEl.classList.toggle('hidden', !message);
   }
 
   function updateEncodingBadge() {
@@ -913,6 +926,8 @@ export async function init(ctx) {
     lastLoadedText = null;
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
     clearCompileStatus();
+    // 課題D: 新規作成の雛形には#voice/#pcm/リズムが無いため、告知も消す。
+    updateMmlCaveat('');
   });
 
   // 課題(net配線): 文字コードは決め打ちしない(以前はshift_jis固定だった)。
@@ -932,6 +947,9 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     updateEncodingBadge();
+    // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
+    // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
+    updateMmlCaveat(text);
   }
 
   function downloadMML(url) {
