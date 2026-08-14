@@ -195,7 +195,8 @@ export async function init(ctx) {
   const mmlRestoreNoteEl = document.getElementById('mmlRestoreNote');
   const mmlStatusEl = document.getElementById('mmlStatus');
   const draft = loadMmlDraft(MML_DRAFT_KEY);
-  if (draft && draft.text.length > 0) {
+  const hasDraft = Boolean(draft && draft.text.length > 0);
+  if (hasDraft) {
     mmlTextarea.value = draft.text;
     mmlEditorApi.render();
     const savedLabel = formatSavedAt(draft.savedAt);
@@ -1080,7 +1081,19 @@ export async function init(ctx) {
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
   }
 
+  // 課題E: ?mml=の指定も下書きも無い初見時は、同梱サンプル(エリーゼのために)を
+  // 読み込んだ状態にしておく(自動再生はしない。applyMmlBytes()はテキストを
+  // textareaへ入れるだけでcompileAndPlay()を呼ばないため、そのまま流用できる)。
+  // 下書きがあるときは絶対に上書きしない(hasDraftで分岐)。
+  async function loadDefaultSample() {
+    const response = await fetch('./sample_fur_elise_mucom.muc');
+    const buffer = await response.arrayBuffer();
+    applyMmlBytes(buffer);
+  }
+
   if (ctx.songUrl) {
     loadSongFromUrlParam(ctx.songUrl);
+  } else if (!hasDraft) {
+    loadDefaultSample();
   }
 }

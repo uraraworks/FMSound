@@ -231,7 +231,8 @@ export async function init(ctx) {
   const mmlRestoreNoteEl = document.getElementById('mmlRestoreNote');
   const mmlStatusEl = document.getElementById('mmlStatus');
   const draft = loadMmlDraft(MML_DRAFT_KEY);
-  if (draft && draft.text.length > 0) {
+  const hasDraft = Boolean(draft && draft.text.length > 0);
+  if (hasDraft) {
     mmlTextarea.value = draft.text;
     mmlEditorApi.render();
     const savedLabel = formatSavedAt(draft.savedAt);
@@ -970,7 +971,30 @@ export async function init(ctx) {
     updateTransportButtonUI();
   }
 
+  // 課題E: ?mml=の指定も下書きも無い初見時は、同梱サンプル(エリーゼのために)を
+  // 読み込んだ状態にしておく(自動再生はしない)。AudioContextはユーザー操作を
+  // 要求するため、URL指定読み込みと同じ「pendingUrlSong に置くだけ」の仕組みを使う
+  // (再生は既存のbtnPlayPauseクリックへ委ねる)。並行してMMLソースも編集欄へ
+  // 静かに反映しておく(dlSampleFurElise クリックハンドラのプレイヤーモード分岐と
+  // 同じ考え方。エディタへ切り替えても空に見えないようにする)。
+  // 下書きがあるときは絶対に上書きしない(hasDraftで分岐)。
+  async function loadDefaultSample() {
+    const [mResponse, mmlResponse] = await Promise.all([
+      fetch('./sample_fur_elise.M'),
+      fetch('./sample_fur_elise.mml'),
+    ]);
+    const buffer = await mResponse.arrayBuffer();
+    const text = await mmlResponse.text();
+    mmlTextarea.value = text;
+    mmlEditorApi.render();
+    mmlDirty = false;
+    pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M' };
+    updateTransportButtonUI();
+  }
+
   if (ctx.songUrl) {
     loadSongFromUrlParam(ctx.songUrl);
+  } else if (!hasDraft) {
+    loadDefaultSample();
   }
 }
