@@ -34,23 +34,50 @@ struct TrackStatus
 	int32_t vol_org;
 };
 
+// frame に続くグローバルカウンタ群。CMucom::GetStatus()由来(cmucom.h:45-56)。
+// 単位は実測で確認したもののみ採用する(docs/mucom-pchdata-mapping.md参照):
+//   passTick = GetStatus(MUCOM_STATUS_PASSTICK) そのもの。実体はvm->time_master
+//     (osdep.h `TICK_SHIFT=10`により1ms=1024単位の固定小数)。CMucom::RenderAudio()
+//     が描画したオーディオ時間をそのままUpdateTime()へ渡して進めているため、
+//     「オーディオレンダリング済み時間(ms)×1024」に一致することを実測済み。
+//     JS側で /1024.0 すればmsになる。
+//   intCount = GetStatus(MUCOM_STATUS_INTCOUNT)。演奏開始からのINT3(音楽用割り込み)
+//     回数の生カウント(曲末尾でループしても0に戻らず増え続ける)。
+//   maxCount = GetStatus(MUCOM_STATUS_MAXCOUNT)。曲の総tick数(コンパイル時に
+//     全チャンネルの最大tickカウントとして確定する定数、cmucom.cpp:1303)。
+//     GetStatus(MUCOM_STATUS_COUNT)が「intCount % maxCount」を返す実装
+//     (cmucom.cpp:534-538)であることから、floor(intCount / maxCount)が
+//     ループ回数に相当する(JS側でmaxCount>0のときのみ計算する)。
 struct StatusSnapshot
 {
 	uint32_t frame;
+	int32_t passTick;
+	int32_t intCount;
+	int32_t maxCount;
 	TrackStatus tracks[MUCOM_MAXCH];
 };
 
+static const int StatusSnapshotHeaderWordCount = 4; // frame, passTick, intCount, maxCount
+
 static_assert(std::is_standard_layout<TrackStatus>::value, "TrackStatus must stay flat");
 static_assert(sizeof(TrackStatus) == 15 * sizeof(int32_t), "TrackStatus layout changed");
-static_assert(sizeof(StatusSnapshot) == (1 + MUCOM_MAXCH * 15) * sizeof(int32_t),
+static_assert(sizeof(StatusSnapshot) ==
+	(StatusSnapshotHeaderWordCount + MUCOM_MAXCH * 15) * sizeof(int32_t),
 	"StatusSnapshot layout changed");
 
 std::unique_ptr<StreamingPlayer> g_player;
 std::unique_ptr<CMucom> g_mucom;
+// 曲の総tick数(MUCOM_STATUS_MAXCOUNT)。実測で判明した制約:再生に使う g_mucom は
+// LoadMusic()+Play() だけを呼び、Compile()を呼ばないため、g_mucom->GetStatus
+// (MUCOM_STATUS_MAXCOUNT) は常に0を返す(maxcountはCMucom::Compile()内でのみ
+// 更新されるメンバ、cmucom.cpp:1283,1303)。コンパイル専用インスタンス
+// mucomCompiler が確定させた値をCompileMML()内でここへ退避し、以後の
+// PushSnapshot()で使い回す。
 std::array<int32_t, FramesPerBlock * ChannelCount> g_audioBuffer;
 std::array<StatusSnapshot, SnapshotRingSize> g_snapshotRing{};
 uint32_t g_snapshotWriteIndex = InvalidSnapshotWriteIndex;
 uint32_t g_renderFrame = 0;
+int32_t g_maxCount = 0;
 
 int main()
 {
@@ -76,6 +103,9 @@ void PushSnapshot()
 
 	StatusSnapshot& snapshot = g_snapshotRing[g_snapshotWriteIndex & (SnapshotRingSize - 1)];
 	snapshot.frame = g_renderFrame;
+	snapshot.passTick = g_mucom->GetStatus(MUCOM_STATUS_PASSTICK);
+	snapshot.intCount = g_mucom->GetStatus(MUCOM_STATUS_INTCOUNT);
+	snapshot.maxCount = g_maxCount; // g_mucom->GetStatus(MUCOM_STATUS_MAXCOUNT)は常に0(上のコメント参照)
 	for (int ch = 0; ch < MUCOM_MAXCH; ++ch)
 	{
 		PCHDATA data{};
@@ -118,11 +148,16 @@ std::string CompileMML(const std::string& mml, int sampleRate)
 {
 	static const char *mubPath = "/mucom.mub";
 
+	g_maxCount = 0;
+
 	CMucom mucomCompiler;
 	mucomCompiler.Init();
 	mucomCompiler.Reset(2);
 	if (mucomCompiler.Compile(const_cast<char *>(mml.c_str()), mubPath) >= 0)
 	{
+		// maxcountはこのコンパイル専用インスタンス側にしか確定しない(上のコメント参照)。
+		g_maxCount = mucomCompiler.GetStatus(MUCOM_STATUS_MAXCOUNT);
+
 		if (g_player == nullptr)
 		{
 			g_player = std::make_unique<StreamingPlayer>(&ProcessAudioRequest);
@@ -171,6 +206,14 @@ uint32_t GetSnapshotWriteIndex()
 	return g_snapshotWriteIndex;
 }
 
+// StatusSnapshotの先頭(frame, passTick, intCount, maxCount)のワード数。
+// JS側はこの値だけ知っていれば、tracks[]の開始位置をハードコードせずに
+// 済む(GetSnapshotEntryByteSize()等、既存exportと同じ命名に揃えた)。
+uint32_t GetSnapshotHeaderWordCount()
+{
+	return StatusSnapshotHeaderWordCount;
+}
+
 emscripten::val GetChannelData()
 {
 	emscripten::val channels = emscripten::val::array();
@@ -216,4 +259,5 @@ EMSCRIPTEN_BINDINGS(mucom88)
 	emscripten::function("getSnapshotRingPointer", &GetSnapshotRingPointer);
 	emscripten::function("getSnapshotEntryByteSize", &GetSnapshotEntryByteSize);
 	emscripten::function("getSnapshotWriteIndex", &GetSnapshotWriteIndex);
+	emscripten::function("getSnapshotHeaderWordCount", &GetSnapshotHeaderWordCount);
 }
