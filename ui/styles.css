@@ -1,0 +1,446 @@
+/*
+ * WebNP2 (PC98/WebNP2/src/ui/styles.css) / WebX68k (X68K/WebX68k/src/style.css) と
+ * 同じ「WebMSX風コンソール」構造の共有スタイル。
+ *   .console-card = .stage(キャンバス) + .console-footer(グレーのツールバー)
+ *   黒いページヘッダー(header.app-header)とページフッター(footer.app-footer)は
+ *   .console-card とは独立した全幅の別要素。
+ *
+ * FMSound での違い: バーチャルパッドが無いため、ページ地(--page-bg)は本家2つのように
+ * 暗くする必要がない。WebNP2/WebX68kが --page-bg を暗くしているのは白背景だとパッドの
+ * 半透明ノブ等が見えなくなるためで、FMSoundにその制約は無い。ここでは元の明るい配色
+ * (#fafafa系)のまま。バーチャルパッド/ソフトキーボード/ディスク関連のスタイルは
+ * 移植しない(このアプリに存在しない機能のため)。
+ */
+
+:root {
+  color-scheme: light;
+  --page-bg: #fafafa;
+  --page-text-dim: #666666;
+  --page-danger: #c62828;
+  --bg: #fafafa;
+  --bg-panel: #ffffff;
+  --border: #d5d5d5;
+  --text: #1a1a1a;
+  --text-dim: #666666;
+  --accent: #4a90d9;
+  --accent-dim: #2c5a86;
+  --danger: #d32f2f;
+
+  /* WebMSX風コンソール(ヘッダー黒 + 画面 + フッターグレー)のカラー。
+     コンソール自体は明るいページの上でも「黒い実行画面の器」として据わりが良いため
+     WebNP2/WebX68kと同じ配色を踏襲する。 */
+  --header-bg: #0c0c0c;
+  --header-text: #f2f2f2;
+  --header-tagline-text: #a8a8a8;
+  --footer-bg-top: #3a3a3a;
+  --footer-bg-bottom: #2b2b2b;
+  --footer-border: rgba(0, 0, 0, 0.4);
+  --footer-text: #e6e6e6;
+  --footer-text-dim: #a8a8a8;
+  --footer-btn-bg: #4a4a4a;
+  --footer-btn-bg-hover: #5c5c5c;
+  --footer-btn-border: #202020;
+  --footer-disabled-bg: #333333;
+  --footer-disabled-text: #6c6c6c;
+  /* ページ最下部の全幅フッター。ページ地が明るいので、ヘッダーと対にする黒帯のまま
+     (ライセンス表記は視認性優先でここに置く)。 */
+  --page-footer-bg: #1a1a1a;
+  --page-footer-text: #b0b0b0;
+  --page-footer-border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  background: var(--page-bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ページ最上部の全幅黒バー。#app/.console-card とは独立したページヘッダー。 */
+header.app-header {
+  flex: 0 0 auto;
+  text-align: center;
+  background: var(--header-bg);
+  padding: 10px 16px;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+header.app-header .app-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+header.app-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--header-text);
+  letter-spacing: 0.03em;
+}
+
+header.app-header .app-tagline {
+  font-size: 11px;
+  margin: 2px 0 0;
+  color: var(--header-tagline-text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+/* カードは実行画面(キャンバス) + グレーのコンソールバー(ツールバー)のみ。 */
+.console-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--header-bg);
+  max-width: 100%;
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.2),
+    0 4px 14px rgba(0, 0, 0, 0.15);
+}
+
+.stage {
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  line-height: 0;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+#fmdsp-canvas {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  display: block;
+  background: #000;
+  touch-action: none;
+}
+
+/* ドラッグ&ドロップで曲を開く際の受け皿ハイライト(ディスク専用ではない汎用のドロップ表示)。 */
+.dropzone-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+.console-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(var(--footer-bg-top), var(--footer-bg-bottom));
+  border-top: 1px solid var(--footer-border);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.toolbar button.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 5px;
+  padding: 6px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+
+.toolbar button.icon-btn:hover:not(:disabled) {
+  background: var(--footer-btn-bg-hover);
+}
+
+.toolbar button.icon-btn:disabled {
+  background: var(--footer-disabled-bg);
+  color: var(--footer-disabled-text);
+  border-color: var(--footer-border);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.toolbar button.icon-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.toolbar button.icon-btn.active:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.icon-btn {
+  position: relative;
+}
+
+/* 曲を開く用の隠しファイル入力。 */
+.file-input-hidden {
+  display: none;
+}
+
+/* 設定ポップオーバー(WebNP2の .library-menu と同じ「ボタンの下に固定配置」方式)。 */
+.settings-popover {
+  position: fixed;
+  z-index: 60;
+  min-width: 240px;
+  max-width: min(320px, 90vw);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.settings-popover.hidden {
+  display: none;
+}
+
+.settings-popover-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-row label {
+  flex: 1 1 auto;
+}
+
+.settings-row select,
+.settings-row input[type='number'] {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* サンプルMMLリンク。カード直下の控えめな一行。 */
+.sample-links {
+  width: 100%;
+  max-width: 640px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.8;
+}
+
+.sample-links a {
+  color: var(--accent-dim);
+  margin: 0 4px;
+}
+
+.sample-links a:hover {
+  color: var(--accent);
+}
+
+/* エディタモードでのみ見える領域。 */
+.editor-pane {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editor-pane.hidden {
+  display: none;
+}
+
+.editor-pane textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-actions button {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.editor-actions button:hover {
+  background: var(--border);
+}
+
+#result {
+  font-size: 12px;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+details.debug-table {
+  font-size: 12px;
+}
+
+details.debug-table summary {
+  cursor: pointer;
+  font: 12px monospace;
+  color: var(--text-dim);
+}
+
+#channelStatus {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font: 12px monospace;
+  width: 100%;
+}
+
+#channelStatus th,
+#channelStatus td {
+  border: 1px solid var(--border);
+  padding: 0.2em 0.5em;
+  text-align: right;
+}
+
+#snapshotDebug,
+#audioDebug {
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ページ最下部の全幅帯。body が flex column + #app が flex:1 で伸びるため、
+   コンテンツが短くても viewport 下端に張り付く。 */
+footer.app-footer {
+  flex: 0 0 auto;
+  width: 100%;
+  font-size: 11px;
+  color: var(--page-footer-text);
+  text-align: center;
+  padding: 8px 16px;
+  background: var(--page-footer-bg);
+  border-top: 1px solid var(--page-footer-border);
+}
+
+footer.app-footer a {
+  color: var(--page-footer-text);
+}
+
+/* フルスクリーン化の対象は .stage ではなく .console-card(ツールバーを内包するカード全体)。
+   .stage だけを対象にするとフルスクリーン中にツールバーが外へ置き去りになり操作不能に
+   なる(WebX68k src/style.css の該当コメント参照)。 */
+.console-card:fullscreen,
+.console-card:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  background: #000;
+  justify-content: center;
+}
+
+.console-card:fullscreen .stage,
+.console-card:-webkit-full-screen .stage {
+  flex: 1 1 auto;
+}
+
+/* ネイティブFullscreen APIが使えない/拒否された環境向けの疑似フルスクリーン。
+   ページ側のクロームを畳んで実行画面へ面積を明け渡す。ツールバーは解除操作に必要なので残す。 */
+body.pseudo-fullscreen header.app-header,
+body.pseudo-fullscreen footer.app-footer,
+body.pseudo-fullscreen .sample-links,
+body.pseudo-fullscreen .editor-pane {
+  display: none;
+}
+
+body.pseudo-fullscreen #app {
+  padding: 0;
+  gap: 0;
+}
+
+body.pseudo-fullscreen .console-card {
+  box-shadow: none;
+}
+
+@media (max-width: 640px) {
+  #app {
+    padding: 8px 4px;
+    gap: 8px;
+  }
+  header.app-header {
+    padding: 6px 10px;
+  }
+  header.app-header .app-tagline {
+    display: none;
+  }
+  .console-footer {
+    padding: 8px 6px;
+  }
+}

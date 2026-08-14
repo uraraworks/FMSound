@@ -2,86 +2,95 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MUCOM88 on Web</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 1.5rem; }
-  a:link { color: #0000ff; }
-  a:visited { color: #0000ff; }
-  a:hover { color: #0000ff; }
-  a:active { color: #0000ff; }
-  #channelStatus { border-collapse: collapse; margin: 1em 0; font: 12px monospace; }
-  #channelStatus th, #channelStatus td { border: 1px solid #999; padding: 0.2em 0.5em; text-align: right; }
-  #snapshotDebug, #audioDebug { white-space: pre-wrap; font-family: monospace; font-size: 12px; }
-  #syncControls { margin: 0.7em 0; }
-  details.debug-table { margin-top: .8rem; }
-  details.debug-table summary { cursor: pointer; font: 12px monospace; }
-  #fmdsp-canvas {
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
-    background: #000;
-    display: block;
-    margin-top: 1rem;
-    outline: 1px solid #444;
-    box-sizing: content-box;
-  }
-</style>
+<link rel="stylesheet" href="./ui/styles.css">
 </head>
 <body>
-<h1 style="font-size: 125%">MUCOM88 on Web</h1>
-<textarea id="mml" cols="80" rows="20"></textarea>
-<p/>
-<button id="btnCompile">Compile / Play</button>
-<button id="btnStop">Stop</button>
-<p/>
-<input type="radio" name="srate" value="55467" checked="checked">55kHz</input>
-<input type="radio" name="srate" value="48000">48kHz</input>
-<input type="radio" name="srate" value="44100">44kHz</input>
-<input type="radio" name="srate" value="24000">24kHz</input>
-<input type="radio" name="srate" value="22050">22kHz</input>
-<input type="radio" name="srate" value="12000">12kHz</input>
-<div id="syncControls">
-  <label>同期較正:
-    <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0"> ms
-  </label>
-  <label><input id="useSynchronizedStatus" type="checkbox" checked> 同期表示</label>
+<header class="app-header">
+  <div class="app-title-row">
+    <h1>MUCOM88 on Web</h1>
+  </div>
+  <p class="app-tagline">MML compiler + FM synth player</p>
+</header>
+
+<div id="app">
+  <div class="console-card" id="consoleCard">
+    <div class="stage" id="stage">
+      <!-- FMDSP描画(共有描画層 fmdsp/ をmucomweb/adapter.js経由で駆動する)。
+           pmdweb/html/index.html と同じ「スナップショットリング+frame基準の二分探索」
+           という同期方式をそのまま踏襲する(同期ロジックの新規発明はしない)。 -->
+      <canvas id="fmdsp-canvas" width="640" height="400"></canvas>
+    </div>
+    <div class="console-footer">
+      <div class="toolbar" id="toolbar">
+        <!-- ツールバーの実体ボタンはJSで組み立てる(WebNP2/WebX68kのiconButton()と同じ流儀)。 -->
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept=".muc" class="file-input-hidden">
+
+  <div class="settings-popover hidden" id="settingsPopover">
+    <p class="settings-popover-title">設定</p>
+    <div class="settings-row">
+      <label for="srateSelect">サンプルレート</label>
+      <select id="srateSelect">
+        <option value="55467" selected>55kHz</option>
+        <option value="48000">48kHz</option>
+        <option value="44100">44kHz</option>
+        <option value="24000">24kHz</option>
+        <option value="22050">22kHz</option>
+        <option value="12000">12kHz</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label for="calibrationMs">同期較正(ms)</label>
+      <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0">
+    </div>
+    <label class="settings-checkbox-row">
+      <input id="useSynchronizedStatus" type="checkbox" checked> 音声に同期して描画する
+    </label>
+  </div>
+
+  <div class="sample-links" id="sampleLinks">
+    Sample MML:
+    <a href="javascript:void(0);" id="dlSampl1">sampl1.muc</a>
+    <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
+    <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
+    <a href="javascript:void(0);" id="dlSamplJa">samplja.muc</a>
+    <span style="opacity:.7">(Copyright(C) by Yuzo Koshiro)</span>
+  </div>
+
+  <!-- エディタモードでのみ表示する領域。プレイヤーモード(既定)では非表示。 -->
+  <div class="editor-pane hidden" id="editorPane">
+    <textarea id="mml" cols="80" rows="20" spellcheck="false"></textarea>
+    <div class="editor-actions">
+      <button id="btnClearMML" type="button">Clear MML</button>
+    </div>
+    <div id="result"></div>
+    <details class="debug-table" open>
+      <summary>デバッグ用テーブル(生のPCHDATA、切り分け用に残す)</summary>
+      <table id="channelStatus">
+        <thead>
+          <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </details>
+    <div id="snapshotDebug">snapshot ring: inactive</div>
+    <div id="audioDebug">AudioWorklet: inactive</div>
+  </div>
 </div>
 
-<!-- FMDSP描画(共有描画層 fmdsp/ をmucomweb/adapter.js経由で駆動する)。
-     pmdweb/html/index.html と同じ「スナップショットリング+frame基準の二分探索」
-     という同期方式をそのまま踏襲する(同期ロジックの新規発明はしない)。 -->
-<canvas id="fmdsp-canvas" width="640" height="400"></canvas>
+<footer class="app-footer">
+  <a href="https://github.com/onitama/mucom88" target="_blank" rel="noopener">OPEN MUCOM88</a>
+  <a href="https://github.com/onitama/mucom88/blob/master/package/license.txt" target="_blank" rel="noopener">(LICENSE)</a> |
+  <a href="https://github.com/aosoft/MucomWeb" target="_blank" rel="noopener">MUCOM88 on Web</a>
+  <a href="https://github.com/aosoft/MucomWeb/blob/master/LICENSE" target="_blank" rel="noopener">(LICENSE)</a> /
+  <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>
+</footer>
 
-<details class="debug-table" open>
-  <summary>デバッグ用テーブル(生のPCHDATA、切り分け用に残す)</summary>
-  <table id="channelStatus">
-    <thead>
-      <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</details>
-<div id="snapshotDebug">snapshot ring: inactive</div>
-<div id="audioDebug">AudioWorklet: inactive</div>
-<p/>
-<div style="font-size: small;">
-  <a href="https://github.com/onitama/mucom88" target="_blank">OPEN MUCOM88</a>
-  <a href="https://github.com/onitama/mucom88/blob/master/package/license.txt" target="_blank">(LICENSE)</a> |
-  <a href="https://github.com/aosoft/MucomWeb" target="_blank">MUCOM88 on Web</a>
-  <a href="https://github.com/aosoft/MucomWeb/blob/master/LICENSE" target="_blank">(LICENSE)</a> /
-  <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank">CC BY-NC-SA 4.0</a>
-</div>
-<p/>
-<div>
-  <button id="btnClearMML">Clear MML</button>
-  <p/>
-  Sample MML
-  <a href="javascript:void(0);" id="dlSampl1">sampl1.muc(ローカル,動作確認用)</a>
-  <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
-  <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
-  <a href="javascript:void(0);" id="dlSamplJa">samplja.muc(ローカル,日本語コメント確認用)</a>
-  Copyright(C) by Yuzo Koshiro
-</div>
-<div id="result"></div>
 <script type="module">
   import createMucomWeb from './mucom88.js';
   import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
@@ -92,11 +101,55 @@
   import { drawComment } from './fmdsp/comment.js';
   import * as rightpane from './fmdsp/rightpane.js';
   import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT } from './adapter.js';
+  import { ICONS, iconButton } from './ui/icons.js';
+  import { setupFullscreen, setupPopover } from './ui/shell.js';
 
-  const btnCompile = document.getElementById('btnCompile');
-  const btnStop = document.getElementById('btnStop');
+  // --- モード(player/editor)。localStorageに保存し、次回も同じモードで開く ---
+  const UI_MODE_KEY = 'fmsound-mucom-ui-mode';
+  const editorPane = document.getElementById('editorPane');
+  const consoleCard = document.getElementById('consoleCard');
+
+  function applyUiMode(mode) {
+    editorPane.classList.toggle('hidden', mode !== 'editor');
+    btnEditorMode.classList.toggle('active', mode === 'editor');
+    btnEditorMode.title = mode === 'editor' ? 'プレイヤーモードへ切替' : 'エディタモードへ切替';
+    btnEditorMode.setAttribute('aria-label', btnEditorMode.title);
+  }
+
+  function currentUiMode() {
+    try {
+      const saved = localStorage.getItem(UI_MODE_KEY);
+      return saved === 'editor' ? 'editor' : 'player';
+    } catch {
+      return 'player';
+    }
+  }
+
+  function setUiMode(mode) {
+    try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* ignore (private mode等) */ }
+    applyUiMode(mode);
+  }
+
+  // --- ツールバー組み立て ---
+  const toolbar = document.getElementById('toolbar');
+  const btnCompile = iconButton(ICONS.play, 'コンパイル&再生');
+  const btnStop = iconButton(ICONS.stop, '停止');
+  const btnOpenFile = iconButton(ICONS.open, '曲を開く(.muc)');
+  const btnSettings = iconButton(ICONS.settings, '設定');
+  const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
+  const btnFullscreen = iconButton(ICONS.fullscreen, 'フルスクリーン');
+  toolbar.append(btnCompile, btnStop, btnOpenFile, btnSettings, btnEditorMode, btnFullscreen);
+
   btnCompile.disabled = true;
   btnStop.disabled = true;
+
+  applyUiMode(currentUiMode());
+  btnEditorMode.addEventListener('click', () => {
+    setUiMode(currentUiMode() === 'editor' ? 'player' : 'editor');
+  });
+
+  setupFullscreen(consoleCard, btnFullscreen, { enter: 'フルスクリーン', exit: 'フルスクリーン解除' });
+  setupPopover(btnSettings, document.getElementById('settingsPopover'));
 
   const Module = await createMucomWeb();
   btnCompile.disabled = false;
@@ -170,11 +223,11 @@
   // response.text()で読むとUTF-8として誤解釈される既知の罠がある。
   //
   // そこで2系統を使い分ける:
-  //   1) downloadMML()でダウンロードした直後で、textareaの中身がダウンロード
-  //      直後から変更されていない場合 -> ダウンロード時に保持しておいた
-  //      「生のCP932バイト列」から直接ヘッダ行を切り出す(extractMmlHeaderBytes)。
-  //      デコード・再エンコードを経由しないので文字化けが原理的に起きない。
-  //   2) 利用者がtextareaを編集した場合(またはダウンロードなしで手入力した場合)
+  //   1) loadMmlBytes()でロードした直後で、textareaの中身がロード直後から
+  //      変更されていない場合 -> ロード時に保持しておいた「生のCP932バイト列」
+  //      から直接ヘッダ行を切り出す(extractMmlHeaderBytes)。デコード・再エンコード
+  //      を経由しないので文字化けが原理的に起きない。
+  //   2) 利用者がtextareaを編集した場合(またはロードなしで手入力した場合)
   //      -> 生バイト列との対応が取れないため、JS文字列からのASCII安全変換に
   //      フォールバックする(非ASCII混入時は「化けたものを描くくらいなら
   //      空欄にする」方針、従来通り)。ブラウザにShift_JISエンコーダが無く
@@ -252,19 +305,19 @@
     return header;
   }
 
-  // downloadMML()が最後に取得した生バイト列/デコード後テキスト。textareaが
+  // loadMmlBytes()が最後に取得した生バイト列/デコード後テキスト。textareaが
   // それと一致している間だけバイト列ルートを使う(setCommentFromMml参照)。
-  let lastDownloadedRawBytes = null;
-  let lastDownloadedText = null;
+  let lastLoadedRawBytes = null;
+  let lastLoadedText = null;
 
   let commentBytesCache = [null, null, null];
   function setCommentFromMml(mmlText) {
-    if (lastDownloadedRawBytes && mmlText === lastDownloadedText) {
-      const header = extractMmlHeaderBytes(lastDownloadedRawBytes);
+    if (lastLoadedRawBytes && mmlText === lastLoadedText) {
+      const header = extractMmlHeaderBytes(lastLoadedRawBytes);
       commentBytesCache = [header.title, header.composer, header.comment];
       return;
     }
-    // 編集済み、または手入力(ダウンロード未経由)の場合のフォールバック。
+    // 編集済み、または手入力(ロード未経由)の場合のフォールバック。
     const header = extractMmlHeader(mmlText);
     commentBytesCache = [
       asciiOnlyCp932Bytes(header.title),
@@ -483,45 +536,51 @@
   }
   requestAnimationFrame(updateChannelStatus);
 
-  document.getElementById('btnCompile').addEventListener('click', function() {
-      var radios = document.getElementsByName('srate');
-      var rate = 44100;
-      for (var i = 0; i < radios.length; i++) {
-          if (radios[i].checked) {
-            rate = parseInt(radios[i].value);
-            break;
-          }
-      }
+  function selectedRate() {
+    const select = document.getElementById('srateSelect');
+    const rate = parseInt(select.value, 10);
+    return Number.isFinite(rate) ? rate : 44100;
+  }
 
-      var mml = document.getElementById('mml').value;
-      adapter.reset();
-      setCommentFromMml(mml);
-      document.getElementById('result').innerText = Module.compileMML(mml, rate);
-  });
+  function compileAndPlay() {
+    if (btnCompile.disabled) return;
+    const mml = document.getElementById('mml').value;
+    adapter.reset();
+    setCommentFromMml(mml);
+    document.getElementById('result').innerText = Module.compileMML(mml, selectedRate());
+  }
 
-  document.getElementById('btnStop').addEventListener('click', function() {
+  btnCompile.addEventListener('click', compileAndPlay);
+
+  btnStop.addEventListener('click', function() {
       Module.stopMusic();
   });
 
   document.getElementById('btnClearMML').addEventListener('click', function() {
       document.getElementById('mml').value = '';
-      lastDownloadedRawBytes = null;
-      lastDownloadedText = null;
+      lastLoadedRawBytes = null;
+      lastLoadedText = null;
   });
 
   // .mucはCP932(Shift_JIS)。生バイト列をarrayBufferのまま保持し(コメント欄
   // 描画用)、textareaの表示用テキストはTextDecoder('shift_jis')でデコードする
-  // (以前はresponse.text()でUTF-8として誤解釈していた既知の罠、docs参照)。
+  // (response.text()で読むとUTF-8として誤解釈される既知の罠がある)。
   const sjisDecoder = new TextDecoder('shift_jis');
+
+  function applyMmlBytes(buffer) {
+    const rawBytes = new Uint8Array(buffer);
+    const text = sjisDecoder.decode(buffer);
+    lastLoadedRawBytes = rawBytes;
+    lastLoadedText = text;
+    document.getElementById('mml').value = text;
+  }
+
   function downloadMML(url) {
-      fetch(url)
+      return fetch(url)
           .then(response => response.arrayBuffer())
           .then(buffer => {
-              const rawBytes = new Uint8Array(buffer);
-              const text = sjisDecoder.decode(buffer);
-              lastDownloadedRawBytes = rawBytes;
-              lastDownloadedText = text;
-              document.getElementById('mml').value = text;
+              applyMmlBytes(buffer);
+              compileAndPlay();
           });
   }
 
@@ -539,6 +598,42 @@
 
   document.getElementById('dlSamplJa').addEventListener('click', function() {
       downloadMML('./samplja.muc');
+  });
+
+  // --- 曲を開く(ローカルの.mucファイル選択 / ドラッグ&ドロップ) ---
+  const fileInput = document.getElementById('fileInput');
+  function openMmlFile(file) {
+    if (!file) return;
+    file.arrayBuffer().then((buffer) => {
+      applyMmlBytes(buffer);
+      compileAndPlay();
+    });
+  }
+
+  btnOpenFile.addEventListener('click', () => {
+    fileInput.value = '';
+    fileInput.click();
+  });
+  fileInput.addEventListener('change', () => {
+    openMmlFile(fileInput.files && fileInput.files[0]);
+  });
+
+  for (const evt of ['dragenter', 'dragover']) {
+    consoleCard.addEventListener(evt, (e) => {
+      e.preventDefault();
+      consoleCard.classList.add('dropzone-active');
+    });
+  }
+  for (const evt of ['dragleave', 'dragend']) {
+    consoleCard.addEventListener(evt, () => {
+      consoleCard.classList.remove('dropzone-active');
+    });
+  }
+  consoleCard.addEventListener('drop', (e) => {
+    e.preventDefault();
+    consoleCard.classList.remove('dropzone-active');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    openMmlFile(file);
   });
 </script>
 </body>
