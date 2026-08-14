@@ -245,3 +245,109 @@ PMD側はドライバが直接boolを持っている)に相当する単一のフ
 - `vnum`/`vnum_org`とMMLの`@`(音色番号)の正確な対応式(複数音色を使うMMLでの検証が必要)
 - SSGの`ssg_tone`/`ssg_noise`相当値の導出式
 - FMの`fnum2`の内部ビット配置(block/F-Number上位3bitの分離)
+
+## 8. 実装(`mucomweb/html/adapter.js` / `mucomweb/html/index.html`)【2026-08-14】
+
+上記の設計案(§6)を元に実装した確定版。ソースは `mucomweb/html/adapter.js`
+(コメントに根拠を書き込んである)。差分・追加のみここに記す。
+
+- **チャンネル→FMDSPスロット対応**: §1実測どおり
+  `{0:0,1:1,2:2, 7:6,8:7,9:8, 3:9,4:10,5:11, 10:12}`。ch6(リズム)は
+  左10行パートに対応する表示行が無いため写像先なし。
+- **key/actual_key**: `code+0x10`(§2実測)。休符(`fnum1===0 && fnum2===0`)
+  時は下位4bitを`0xF`に上書き。`actual_key`は`key`と同値(LFO/ベンド適用後の
+  実効値に対応するMUCOM側フィールドが無いため。未解明のまま)。
+- **volume/gate/detune/tonenum**: `vol_org`/`quantize`/`detune(符号付き16bit)`/`vnum`。
+  いずれも§4実測どおりで、近似ではなく直接対応。
+- **`playing`(近似・sticky)**: 「この曲でそのパートが一度でも
+  `code!==0 || fnum1!==0`を出したか」を曲コンパイル毎にリセットされる
+  stickyフラグとして保持。**実機テスト(sampl1.muc)で判明した既知の限界**:
+  ADPCM(ch10, Kパート)は再生中もPCHDATAの`code`/`fnum1`が常に0のままであり、
+  この近似では常に「未使用パート」(`playing=false`、パート行は`S`表示)と
+  誤判定される。ADPCMは音程をFM/SSGと同じcode/fnumの仕組みで表現していない
+  (`cmucom.cpp`のADPCM分岐は`chwork`からpan/volを作るだけで、code/fnumに
+  関する処理が無い)ためで、単純な取り違えではなく構造的な限界。
+  ADPCM用に別のplaying判定式を作る調査は今回のスコープでは実施していない
+  (**未解明として残す**)。FM/SSGの各パートについては実測(スクリーンショット、
+  下記§9参照)でsticky近似が実際に機能していることを確認済み。
+- **`ticks`/`ticks_left`(近似)**: `ticks_left`は`length`(LENGTH COUNTER)を
+  そのまま使用。`ticks`は「直前のノート開始(=keyの変化を検出したタイミング)
+  以降に観測した`length`の最大値」で代用(対応物なし)。より素性の良い取り方は
+  見つからなかった。
+- **info/status[9]/fmslotmask[4]/ppz8_ch/ssg_tone/ssg_noise**: すべて0固定
+  (対応物なし、§6の方針どおり)。
+- **右半分(レベルメーター、PROG/KEY/PAN列)**: `fmdsp/rightpane.js`の
+  `drawLevelMeters`をそのまま使用。levelバー本体とFFTスペクトラムは
+  leveldata相当のexportがMUCOM側に無いため常に0(空)。PROG(`tonenum`)/
+  KEY(`key`)/PANPOTはFM1-6・SSG1-3・ADPCM(LEVEL_COUNT配列のindex0-8,10)を
+  PCHDATAから埋めた。RHYTHM(index9)とPPZ8(index11-18)は元々`rightpane.js`側が
+  PROG/KEY非表示、またはMUCOM88に対応機能が無いため空のまま(PPZ8は確定方針、
+  RHYTHMはPMD側と同じ理由による既存の仕様)。
+  - **PANPOTの変換式**: OPNAのL/R選択2bit(`chwork & 0xc0`ないし`chwork & 3`。
+    §未掲載だが`cmucom.cpp:2346-2360`参照)を、PMD側`pmdweb/src/PmdCore.c`
+    `build_levels()`と同じ`table[4]={5,4,0,2}`でFMDSP PANPOTスプライト番号
+    (0-5)へ変換している。同一チップ(OPN系)のレジスタ配置という前提に基づく
+    近似で、**MUCOM側のpan値を実測検証したわけではない(未解明)**。
+- **コメント欄(曲名/作曲者/コメント)**: `CMucom`クラスに title/composer を
+  取得する公開APIが無い(`cmucom.h`の`public:`宣言を確認したが該当メソッド
+  なし)ため、コンパイルに使った生MMLテキストをJS側で正規表現走査し
+  `#title`/`#composer`/`#comment`行を抽出している。`fmdsp/comment.js`の
+  `commentModePmd=false`(MML流儀の3行固定表示)を使用。非ASCII文字が
+  混ざっている行は、CP932/UTF-8取り違えで化けた文字を描くくらいなら
+  空欄にする方針で描画をスキップする(捏造しない。今回のsampl1.mucヘッダは
+  全てASCIIだったため実際に描画できることを確認済み)。
+
+## 9. カウンタ類(PASSED TIME/CLOCK/LOOP)について
+
+親からの指摘どおり、公開`CMucom::GetStatus()`には
+`MUCOM_STATUS_INTCOUNT`(1)/`MUCOM_STATUS_PASSTICK`(2)/`MUCOM_STATUS_COUNT`(5)/
+`MUCOM_STATUS_MAXCOUNT`(6)(`cmucom.h:52-57`)が存在し、MUCOM側では
+FMDSP右半分のカウンタ類(経過時間/CLOCK/LOOP)に相当する値を**取得可能**
+である(PMD側は対応するwasm exportが無く0固定のまま、`pmdweb/src/PmdWeb.cpp`
+参照)。**今回のタスクでは実装していない**(`rightpane.drawDynamic()`は
+pmdweb同様、全て0/false固定で呼んでいる)。理由は主にスコープ都合で、
+技術的な障害があるわけではない。実装するなら`MucomWeb.cpp`に
+`GetStatus(MUCOM_STATUS_xxx)`をラップするexportを追加し、
+`mucomweb/html/index.html`の`rightpane.drawDynamic()`呼び出しへ渡す形になる。
+
+## 10. 調査時の注意: cmucom.h/cmucom.cpp はCP932+NEL改行
+
+`upstream/mucom88/src/cmucom.h` / `cmucom.cpp` は **CP932エンコーディングかつ、
+行終端にNEL(0x85)が混ざっている**箇所がある。UTF-8ロケールの`grep`はこれを
+一切マッチせず、**存在するシンボルでも無言で0件を返す**(誤って「無い」と
+判定してしまう罠。本タスクの親が実際に一度踏んだ)。読むときは
+
+```sh
+LC_ALL=C tr '\205' '\n' < cmucom.h | LC_ALL=C grep -n '検索語'
+```
+
+のようにNEL(0x85 = 8進`\205`)を明示的に改行へ変換してから`grep`に渡すこと。
+`LC_ALL=C`はマルチバイト文字をバイト列として扱わせるために必須(UTF-8
+ロケールのままだとCP932のバイト列を不正なマルチバイトシーケンスとして
+警告・スキップすることがある)。
+
+## 11. 動作確認(2026-08-14実施)
+
+`mucomweb/html/index.html`をビルドし、sampl1.mucをComplie/Playした状態で
+実際にスクリーンショットを取り、FMDSP左10行パートが動いていることを確認した。
+
+- FM1-6・SSG1-3の各行: MML再生に応じてKN(音程)・TN(音色番号)・VL/GT値が
+  行ごとに異なり、時間経過で変化し、鍵盤ハイライト(緑)も追従することを確認。
+  FM4/FM5が一時的に同じ音程を示す場面があったが、これはMML(`H`/`I`パートが
+  ユニゾンで書かれている)による正当な一致であり、バグではない。
+- ADPCM(K)行: §8に記載の理由により`playing`が常にfalseのままとなり、
+  `S`(未使用/停止扱い)表示のまま変化しない。**これは未達として明記する**
+  (音自体は鳴っている可能性があるが、PCHDATAのcode/fnumがADPCMでは
+  更新されないため、パート行UIでは検出できない)。
+- コメント欄: `Sample Music 1` / `Yuzo Koshiro`(`#title`/`#composer`)が
+  実際に描画されることを確認。
+- 右半分: PROG/KEY/PANPOT列(FM1-6, SSG1-3, ADPCM)がPCHDATA由来の値で
+  変化することを確認(ただし目視でのpan値の正しさまでは検証していない、
+  §8のPANPOT変換式の限界を参照)。レベルバー本体・FFTスペクトラムは
+  意図通り常に空。
+- 比較対象として`pmdweb`側も同時に起動し、同じ描画層(フォント・座標)で
+  レイアウトが崩れていないことを確認した(`TRACK.`行の数字スプライトが
+  小サイズフォントで視認しづらいのはPMD側も同じ挙動であり、本タスクで
+  劣化させたものではない)。
+- `node tools/verify_trackrow.mjs` / `node tools/verify_cp932_render.mjs`は
+  いずれもPASS(`fmdsp/`配下は無変更)。

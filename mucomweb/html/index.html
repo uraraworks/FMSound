@@ -1,19 +1,31 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>MUCOM88 on Web</title>
-</head>
+<meta charset="UTF-8">
+<title>MUCOM88 on Web</title>
 <style>
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; }
   a:link { color: #0000ff; }
   a:visited { color: #0000ff; }
   a:hover { color: #0000ff; }
   a:active { color: #0000ff; }
-  #channelStatus { border-collapse: collapse; margin: 1em 0; }
+  #channelStatus { border-collapse: collapse; margin: 1em 0; font: 12px monospace; }
   #channelStatus th, #channelStatus td { border: 1px solid #999; padding: 0.2em 0.5em; text-align: right; }
-  #snapshotDebug { white-space: pre-wrap; font-family: monospace; }
+  #snapshotDebug, #audioDebug { white-space: pre-wrap; font-family: monospace; font-size: 12px; }
   #syncControls { margin: 0.7em 0; }
+  details.debug-table { margin-top: .8rem; }
+  details.debug-table summary { cursor: pointer; font: 12px monospace; }
+  #fmdsp-canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #000;
+    display: block;
+    margin-top: 1rem;
+    outline: 1px solid #444;
+    box-sizing: content-box;
+  }
 </style>
+</head>
 <body>
 <h1 style="font-size: 125%">MUCOM88 on Web</h1>
 <textarea id="mml" cols="80" rows="20"></textarea>
@@ -33,12 +45,21 @@
   </label>
   <label><input id="useSynchronizedStatus" type="checkbox" checked> 同期表示</label>
 </div>
-<table id="channelStatus">
-  <thead>
-    <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
-  </thead>
-  <tbody></tbody>
-</table>
+
+<!-- FMDSP描画(共有描画層 fmdsp/ をmucomweb/adapter.js経由で駆動する)。
+     pmdweb/html/index.html と同じ「スナップショットリング+frame基準の二分探索」
+     という同期方式をそのまま踏襲する(同期ロジックの新規発明はしない)。 -->
+<canvas id="fmdsp-canvas" width="640" height="400"></canvas>
+
+<details class="debug-table" open>
+  <summary>デバッグ用テーブル(生のPCHDATA、切り分け用に残す)</summary>
+  <table id="channelStatus">
+    <thead>
+      <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</details>
 <div id="snapshotDebug">snapshot ring: inactive</div>
 <div id="audioDebug">AudioWorklet: inactive</div>
 <p/>
@@ -54,6 +75,7 @@
   <button id="btnClearMML">Clear MML</button>
   <p/>
   Sample MML
+  <a href="javascript:void(0);" id="dlSampl1">sampl1.muc(ローカル,動作確認用)</a>
   <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
   <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
   Copyright(C) by Yuzo Koshiro
@@ -61,6 +83,14 @@
 <div id="result"></div>
 <script type="module">
   import createMucomWeb from './mucom88.js';
+  import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
+  import { FmdspFont, SmallFont } from './fmdsp/font.js';
+  import { drawTrackRows } from './fmdsp/trackrow.js';
+  import { PALETTES } from './fmdsp/palette.js';
+  import { FONT_SMALL } from './fmdsp/font_small.js';
+  import { drawComment } from './fmdsp/comment.js';
+  import * as rightpane from './fmdsp/rightpane.js';
+  import { MucomFmdspAdapter, CH_TO_SLOT, MUCOM_CH_COUNT, PCH_FIELD_COUNT, panToSprite } from './adapter.js';
 
   const btnCompile = document.getElementById('btnCompile');
   const btnStop = document.getElementById('btnStop');
@@ -76,12 +106,89 @@
   const invalidWriteIndex = 0xffffffff;
   const calibrationInput = document.getElementById('calibrationMs');
   const synchronizedCheckbox = document.getElementById('useSynchronizedStatus');
-  for (let ch = 0; ch < 11; ch++) {
+  for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
     const row = channelTableBody.insertRow();
     row.insertCell().innerText = ch;
     for (let column = 0; column < 6; column++) {
       row.insertCell().innerText = '0';
     }
+  }
+
+  // --- FMDSP描画準備 ---
+  const vram = new Vram(PC98_W, PC98_H);
+  const canvas = document.getElementById('fmdsp-canvas');
+  const canvasCtx = canvas.getContext('2d');
+
+  // pmdweb/html/index.html と同じ「物理px基準の整数倍」フィット(非整数倍だと
+  // 5x6ドットのfont_fmdsp_smallが不均等に潰れる問題への対策。同ファイル参照)。
+  function fitCanvasScale() {
+    const dpr = window.devicePixelRatio || 1;
+    const available = document.documentElement.clientWidth;
+    const scale = Math.max(1, Math.floor((available * dpr) / PC98_W));
+    canvas.style.width = `${(PC98_W * scale) / dpr}px`;
+    canvas.style.height = `${(PC98_H * scale) / dpr}px`;
+  }
+  fitCanvasScale();
+  window.addEventListener('resize', fitCanvasScale);
+  new ResizeObserver(fitCanvasScale).observe(document.documentElement);
+
+  const palette = PALETTES[0];
+
+  // バージョン文字列相当のexportはMUCOM側にも無い。pmdweb同様プレースホルダ。
+  rightpane.drawStaticDecorations(vram, ['-', '-', '-']);
+  const staticVramSnapshot = vram.pixels.slice();
+
+  const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
+  const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
+  let rightPaneFrameCounter = 0;
+
+  let fmdspFont = null;
+  FmdspFont.load('./fmdsp/shinonome.rom').then((font) => { fmdspFont = font; })
+    .catch((error) => console.error('failed to load shinonome.rom:', error));
+  const commentSmallFont = new SmallFont(FONT_SMALL);
+
+  const adapter = new MucomFmdspAdapter();
+
+  // --- MMLヘッダ(#title/#composer/#comment)からコメント欄を作る ---
+  // MUCOM88のCMucomクラスにはtitle/composer取得の公開APIが無い
+  // (upstream/mucom88/src/cmucom.h の public: 一覧を確認したが該当メソッドなし)。
+  // そのためコンパイルに使った生MMLテキストをJS側で正規表現走査して取り出す。
+  // CP932/Shift_JISのままのファイルをfetchで読むとUTF-8として誤解釈されうる
+  // ため(既知の罠、docs参照)、非ASCII文字が混ざっている行は「化けたものを
+  // 描くくらいなら空欄にする」方針で諦める(捏造しない)。
+  function extractMmlHeader(mmlText) {
+    const lines = mmlText.split(/\r\n|\r|\n/);
+    const header = { title: null, composer: null, comment: null };
+    for (const line of lines) {
+      const m = line.match(/^\s*#\s*(title|composer|comment)\s+(.*)$/i);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      const text = m[2].trim();
+      if (header[key] === null) header[key] = text;
+    }
+    return header;
+  }
+  function asciiOnlyCp932Bytes(text) {
+    if (!text) return null;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code < 0x20 || code > 0x7e) return null; // 非ASCII混入時は空欄(化け防止)
+    }
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return bytes;
+  }
+  let commentBytesCache = [null, null, null];
+  function setCommentFromMml(mmlText) {
+    const header = extractMmlHeader(mmlText);
+    commentBytesCache = [
+      asciiOnlyCp932Bytes(header.title),
+      asciiOnlyCp932Bytes(header.composer),
+      asciiOnlyCp932Bytes(header.comment),
+    ];
+  }
+  function commentBytesFor(line) {
+    return commentBytesCache[line] ?? null;
   }
 
   function snapshotAt(pointerWords, entryWords, logicalIndex) {
@@ -97,7 +204,6 @@
     const oldestEntry = snapshotAt(pointerWords, entryWords, oldest);
     const newestEntry = snapshotAt(pointerWords, entryWords, newest);
 
-    // A delayed reader is clamped to the retained range instead of reading an overwritten slot.
     if (targetFrame <= (oldestEntry[0] >>> 0)) return oldestEntry;
     if (targetFrame >= (newestEntry[0] >>> 0)) return newestEntry;
 
@@ -116,8 +222,8 @@
   }
 
   function displaySnapshot(entry) {
-    for (let ch = 0; ch < 11; ch++) {
-      const track = entry.subarray(1 + ch * 15, 1 + (ch + 1) * 15);
+    for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
+      const track = entry.subarray(1 + ch * PCH_FIELD_COUNT, 1 + (ch + 1) * PCH_FIELD_COUNT);
       const cells = channelTableBody.rows[ch].cells;
       cells[1].innerText = track[1];
       cells[2].innerText = track[2];
@@ -125,6 +231,82 @@
       cells[4].innerText = track[0];
       cells[5].innerText = `${track[5]}/${track[6]}`;
       cells[6].innerText = track[8];
+    }
+  }
+
+  // 右半分のLEVELメーター列(19ch: FM1-6,SSG1-3,RHY,ADP,PPZ8x8)。
+  // MUCOMにはPPZ8/レベル生値(leveldata)相当のexportが無いため、level(音量バー)
+  // とFFTスペクトラムは常に0(空)のまま。PROG/KEY/パンポットのみPCHDATAから埋める。
+  // RHYTHM(index 9)はPCHDATAのch6を持つが、リズムには個別のtonenum/key概念が
+  // 無く(PMD側と同様の理由)、prog/keyは描かない(rightpane.js側もindex9は
+  // 元々PROG/KEY非表示)。パンは固定でOFF(5)にしておく。
+  function buildLevels(entryTracks, adapterOut) {
+    const levels = new Array(rightpane.FMDSP_LEVEL_COUNT);
+    for (let i = 0; i < rightpane.FMDSP_LEVEL_COUNT; i++) {
+      levels[i] = { level: 0, pan: 5, prog: 0, key: 0, playing: false };
+    }
+    // FMDSPスロット -> LEVEL列indexの対応。先頭9列(FM1-6, SSG1-3)+ADPCM(10)が
+    // PCHDATA由来で埋まる。PPZ8(11-18)はMUCOM88に相当機能が無いため常に空
+    // (確定方針、docs参照)。
+    const SLOT_TO_LEVEL = { 0: 0, 1: 1, 2: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7, 11: 8, 12: 10 };
+    for (const [slot, levelIndex] of Object.entries(SLOT_TO_LEVEL)) {
+      const data = entryTracks[slot];
+      if (!data) continue;
+      const pchCh = adapterOut.slotToCh[slot];
+      const pan = adapterOut.panByCh[pchCh];
+      levels[levelIndex] = {
+        level: 0, // leveldata相当なし(未実装、空のまま)
+        pan,
+        prog: data[6],   // FIELD.TONENUM
+        key: data[4],    // FIELD.KEY
+        playing: data[0] !== 0, // FIELD.PLAYING
+      };
+    }
+    return levels;
+  }
+
+  function draw(entry) {
+    const entryTracks = [];
+    const slotToCh = {};
+    const panByCh = {};
+    for (const [chStr, slot] of Object.entries(CH_TO_SLOT)) {
+      const ch = Number(chStr);
+      const pchData = entry.subarray(1 + ch * PCH_FIELD_COUNT, 1 + (ch + 1) * PCH_FIELD_COUNT);
+      entryTracks[slot] = adapter.convertChannel(ch, pchData);
+      slotToCh[slot] = ch;
+      panByCh[ch] = panToSprite(pchData[9]); // PCH.PAN
+    }
+
+    if (fmdspFont) {
+      vram.pixels.set(staticVramSnapshot);
+      drawTrackRows(vram, fmdspFont, entryTracks);
+      // MML mode(commentModePmd=false相当): 3行固定・ラベル無し。
+      drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
+
+      const audioState = globalThis.mucomAudioState;
+      const rightPanePlaying = Boolean(audioState?.playback);
+      rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+      rightpane.drawDynamic(vram, {
+        generatedFrames: 0n,
+        timerbCnt: 0,
+        timerb: 0,
+        loopCnt: 0,
+        cpuUsage: 0,
+        fps: 0,
+        timerbCntLoop: 0,
+        loopTimerbCnt: 0,
+        playing: rightPanePlaying,
+        stopped: !rightPanePlaying,
+        paused: false,
+        frameCnt: rightPaneFrameCounter,
+      });
+
+      const levels = buildLevels(entryTracks, { slotToCh, panByCh });
+      const emptyFft = new Uint8Array(rightpane.FFTDISPLEN); // leveldata/FFT相当なし(空のまま)
+      rightpane.drawSpectrumBars(vram, emptyFft, fftPeakState);
+      rightpane.drawLevelMeters(vram, levels, levelPeakState);
+
+      canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
     }
   }
 
@@ -167,6 +349,7 @@
         }
 
         displaySnapshot(selected);
+        draw(selected);
 
         const t = selected.subarray(1, 16);
         debug.innerText = `${syncText}\n` +
@@ -198,6 +381,8 @@
       }
 
       var mml = document.getElementById('mml').value;
+      adapter.reset();
+      setCommentFromMml(mml);
       document.getElementById('result').innerText = Module.compileMML(mml, rate);
   });
 
@@ -218,6 +403,10 @@
               document.getElementById('mml').value = text;
           });
   }
+
+  document.getElementById('dlSampl1').addEventListener('click', function() {
+      downloadMML('./sampl1.muc');
+  });
 
   document.getElementById('dlSampl2').addEventListener('click', function() {
       downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl2.muc');
