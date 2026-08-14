@@ -15,18 +15,36 @@ export const EXTENSION_DRIVER_TABLE = {
   '.m2': 'pmd',
 };
 
-/** @param {string} name */
-function driverForName(name) {
+// 実物の検証材料(利用者提供、sample2をUTF-8化してmacOS zipで固めたもの)は中の
+// ファイル名が "sample2.mml" で、EXTENSION_DRIVER_TABLE の '.muc' に一致しない
+// (2026-08-15 net配線タスクで実測発覚)。拡張子だけで判別できない '.mml' は、
+// 実際の中身の先頭がMUCOM88のヘッダ("#mucom88")かどうかを見て判定する
+// (拡張子を "きっとmucomだろう"と決め打ちしない。中身で確かめる)。
+const MUCOM_HEADER_RE = /^\s*#mucom88\b/i;
+
+/** @param {Uint8Array} data */
+function looksLikeMucomHeader(data) {
+  if (!data || data.length === 0) return false;
+  // ヘッダ判定はASCII範囲だけで足りる(先頭64バイトで十分)。CP932/UTF-8のどちらでも
+  // ASCII部分のバイト列は同じなので、文字コード判定より先にここで判定してよい。
+  const head = new TextDecoder('ascii', { fatal: false }).decode(data.subarray(0, 64));
+  return MUCOM_HEADER_RE.test(head);
+}
+
+/** @param {string} name @param {Uint8Array} [data] */
+function driverForName(name, data) {
   const lower = name.toLowerCase();
   const dot = lower.lastIndexOf('.');
   if (dot < 0) return null;
   const ext = lower.slice(dot);
-  return EXTENSION_DRIVER_TABLE[ext] ?? null;
+  if (EXTENSION_DRIVER_TABLE[ext]) return EXTENSION_DRIVER_TABLE[ext];
+  if (ext === '.mml' && looksLikeMucomHeader(data)) return 'mucom';
+  return null;
 }
 
-/** @param {string} name */
-export function isPlayableFileName(name) {
-  return driverForName(name) !== null;
+/** @param {string} name @param {Uint8Array} [data] */
+export function isPlayableFileName(name, data) {
+  return driverForName(name, data) !== null;
 }
 
 /**
@@ -60,7 +78,7 @@ function dirOf(path) {
 export function findSongCandidates(entries) {
   const candidates = [];
   for (const entry of entries) {
-    const driver = driverForName(entry.name);
+    const driver = driverForName(entry.name, entry.data);
     if (!driver) continue;
     const dir = dirOf(entry.name);
     const related = entries.filter((other) => other !== entry && dirOf(other.name) === dir);
