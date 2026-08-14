@@ -45,6 +45,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 (全文は `upstream/98fmplayer/LICENSE` を参照。本リポジトリでは `upstream/` を
 追跡しないため、著作権表示保持の条件を満たすためここに引用している。)
 
+## `mucomweb` のビルドに含まれる 98fmplayer 由来のコード
+
+`mucomweb`(MUCOM88 on Web)側のFMDSP右半分スペクトラムアナライザ(70ビン)は、
+上記と同じ `upstream/98fmplayer/fft/fft.c` / `fft/fft.h`(BSD 2-Clause、無改変)を
+`mucomweb/CMakeLists.txt` からビルドに取り込んで実現している。ライセンス全文は
+上記の引用と同一。
+
 ## `pmdweb/html/fmdsp/*.js` の描画ロジック
 
 FMDSP 風の画面描画ロジック(パート行 / コメント欄 / 右半分の各表示)は、

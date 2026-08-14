@@ -112,7 +112,7 @@ for (let ch = 0; ch < Module.getLevelCount(); ch++) {
     (これが無いと `opna.fm.channel[].leveldata` 等のフィールド自体が存在しない
     ビルドになる。PPZ8側の `leveldata` はこのマクロ非依存で常時有効)
 
-## 6. 検証
+## 6. 検証(PMD側)
 
 `tools/verify_right_pane_data.mjs`(Node直接実行)で以下を確認済み:
 
@@ -125,3 +125,39 @@ for (let ch = 0; ch < Module.getLevelCount(); ch++) {
   (常にPASSする検査になっていないことの確認)
 
 実行: `node tools/verify_right_pane_data.mjs`
+
+## 6a. MUCOM側(mucomweb)のFFT実装
+
+`mucomweb/src/MucomWeb.cpp` にも同じ形式でFFT(70ビン)を実装した。PMD側との
+違いのみここに記す(共通部分は §1-3 参照。命名も揃えてある: `getSnapshotFftOffset()` /
+`getFftBinCount()`)。
+
+- **レベルメーター(levels[])は無い。** fmgenにレベル追従(leveldata相当)が
+  無いため、スコープ外(今回の対応範囲外、別途判断)。`StatusSnapshot` は
+  `frame + passTick/intCount/maxCount + chstat[16] + tracks[MUCOM_MAXCH] + fft[72]`
+  という構成で、`fft[]`は末尾に置いた(PMD側は tracks の後に fft→levels の順)。
+- **サンプル形式の食い違い。** MUCOMのミックス後PCM(`g_audioBuffer`)は
+  `int32_t`のステレオ(fmgen の `FM_SAMPLETYPE=int32`、`fmgen.h`)。値のスケール
+  自体は16bit相当だが(再生側 `mucom-worklet.js` が `sample/32768` でPCM化)、
+  ミックスにより ±32768 をわずかに超えることがある。`fft_write()`
+  (98fmplayer/fft/fft.h)は`int16_t*`を要求するため、`MucomWeb.cpp`の`FftFeed()`で
+  **明示的に[-32768,32767]へクランプしてから`int16_t`にキャスト**している
+  (無言のstatic_castによる暗黙切り捨てにはしていない)。
+- **FFT算出の間引き間隔。** PMD側はサンプルレート固定(55467Hz)なので
+  `SAMPLE_RATE/60`という定数で間引けるが、MUCOM側はUIでサンプルレートが
+  可変(12kHz-55kHz、`compileMML(mml, sampleRate)`の引数)なので、
+  `g_sampleRate`(再生開始時に保存)から都度 `g_sampleRate/60` を計算している。
+- **fft.cのビルド取り込み。** `mucomweb/CMakeLists.txt` に
+  `${FFT_UPSTREAM_DIR}/fft/fft.c`(`upstream/98fmplayer`、無改変)を追加し、
+  includeパス(`${FFT_UPSTREAM_DIR}`)も追加した。fft.h/fft.cはCで書かれ
+  `extern "C"`ガードが無いため、C++の`MucomWeb.cpp`側で
+  `extern "C" { #include "fft/fft.h" }` と明示的に包んでリンクエラー
+  (名前修飾の不一致)を避けている。ライセンス表記は `NOTICE.md` に追記した
+  (98fmplayer由来、BSD 2-Clause。既存のpmdweb分と同一条項)。
+- **Node向けテスト専用export。** ブラウザの`AudioWorklet`経路
+  (`ProcessAudioRequest`)はNode環境から到達できない(EM_JSの`AudioContext`
+  初期化が失敗するため)。`renderFramesForTest(frames)` / `getSampleRate()` を
+  pmdweb同様に追加し、Nodeから直接レンダリングして検証できるようにした。
+
+検証: `tools/verify_right_pane_data_mucom.mjs`(PMD側の兄弟スクリプト)。
+故障注入の実施記録は `docs/verify_right_pane_data_mucom_fault_injection_log.txt`。

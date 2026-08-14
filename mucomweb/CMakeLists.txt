@@ -9,6 +9,10 @@ set(CMAKE_CXX_STANDARD 17)
 # 絶対に混同しないこと。こちらは無改変のまま参照専用に使う。
 set(MUCOM88_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/MucomWeb/mucom88")
 
+# FMDSP右半分のスペクトラムアナライザ(70ビン)用。pmdweb/CMakeLists.txtと同じ
+# 98fmplayer(BSD 2-Clause、NOTICE.md参照)由来のfft.cを無改変のまま取り込む。
+set(FFT_UPSTREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/98fmplayer")
+
 # upstream/MucomWeb/mucom88 は無改変クローンとして扱いたいが、CMucom::vm への
 # アクセサだけは FMDSP側の playing/panpot 実測に必須（詳細は
 # mucomweb/patches/0001-cmucom-expose-vm.patch のコメント、
@@ -45,6 +49,8 @@ file(GLOB SOURCES
         ${MUCOM88_DIR}/src/Z80/*.cpp
         src/*.cpp)
 
+list(APPEND SOURCES "${FFT_UPSTREAM_DIR}/fft/fft.c")
+
 list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/mucomerror.cpp")
 
 if (EMSCRIPTEN)
@@ -74,6 +80,7 @@ target_include_directories(${CMAKE_PROJECT_NAME}
         PRIVATE ${SDL_INCLUDE_DIR}
         PRIVATE ${MUCOM88_DIR}/src
         PRIVATE ${MUCOM88_DIR}/src/module
+        PRIVATE ${FFT_UPSTREAM_DIR}
         PRIVATE src)
 
 # html/ の同期は file(COPY) だと configure 時にしか走らず、html/js だけ編集

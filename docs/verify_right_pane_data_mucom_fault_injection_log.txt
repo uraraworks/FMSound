@@ -1,0 +1,49 @@
+MUCOM側FFTスペクトラム(70ビン) 故障注入テスト実施記録
+====================================================
+
+目的: tools/verify_right_pane_data_mucom.mjs の (b) チェック
+(「再生中はFFTに非0ビンが存在する」)が、実際に配線が切れたときに
+単独でFAILすることを確認する(常にPASSする検査になっていないことの確認)。
+
+手順:
+1. mucomweb/src/MucomWeb.cpp の FftFeed(...) 呼び出しを2箇所とも
+   コメントアウト(ProcessAudioRequest内・RenderFramesForTest内)。
+   ビルドし、node tools/verify_right_pane_data_mucom.mjs を実行。
+2. 結果を確認。
+3. コメントアウトを元に戻し、再ビルド・再実行してALL PASSに戻ることを確認。
+
+--- 手順1の結果(故障注入時) ---
+
+[PASS] getFftBinCount() === 70 - actual=70
+[PASS] fftOffset >= header領域の直後 - fftOffset=740 headerBytes(参考)=80
+[PASS] fftOffset + fftCount <= entryBytes(パディング込みでもエントリ範囲内) - fftOffset=740 fftCount=70 entryBytes=812
+[PASS] 再生前はスナップショットリングが無効(null)
+[PASS] compileMML() が呼べた(戻り値はログなので参考表示のみ)
+[PASS] getSampleRate() が指定値と一致 - actual=55467
+[PASS] renderFramesForTest() が非0の音声を生成した(曲が鳴っている証拠) - absSum=442015166
+[PASS] 再生後にスナップショットが取得できる
+[PASS] (a) FFT 70ビンが全て0-31の範囲 - min=0 max=0
+[FAIL] (b) 再生中はFFTに非0ビンが存在する(配線されている証拠) - nonZeroBins=0/70
+
+1 CHECK(S) FAILED
+
+FFT配列が全ビン0のまま(値域チェック(a)は0も0-31の範囲内なので通ってしまう)、
+(b)だけが単独でFAILした。他の項目(レイアウト整合性・音声生成そのもの)は
+FftFeed()と独立なので影響を受けず、想定通りの切り分けになっている。
+
+--- 手順3の結果(復元後) ---
+
+[PASS] getFftBinCount() === 70 - actual=70
+[PASS] fftOffset >= header領域の直後 - fftOffset=740 headerBytes(参考)=80
+[PASS] fftOffset + fftCount <= entryBytes(パディング込みでもエントリ範囲内) - fftOffset=740 fftCount=70 entryBytes=812
+[PASS] 再生前はスナップショットリングが無効(null)
+[PASS] compileMML() が呼べた(戻り値はログなので参考表示のみ)
+[PASS] getSampleRate() が指定値と一致 - actual=55467
+[PASS] renderFramesForTest() が非0の音声を生成した(曲が鳴っている証拠) - absSum=442015166
+[PASS] 再生後にスナップショットが取得できる
+[PASS] (a) FFT 70ビンが全て0-31の範囲 - min=0 max=29
+[PASS] (b) 再生中はFFTに非0ビンが存在する(配線されている証拠) - nonZeroBins=28/70
+
+ALL PASS
+
+結論: (b)は「常にPASSする検査」ではなく、実際の配線切断を検出できることを確認した。

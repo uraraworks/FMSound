@@ -413,8 +413,17 @@
       });
 
       const levels = buildLevels(entryTracks, { slotToCh, panByCh });
-      const emptyFft = new Uint8Array(rightpane.FFTDISPLEN); // leveldata/FFT相当なし(空のまま)
-      rightpane.drawSpectrumBars(vram, emptyFft, fftPeakState);
+      // FFTスペクトラム(70ビン)。MucomWeb.cppのProcessAudioRequest()内で
+      // ミックス後PCMをfft_write()に食わせ、約60Hzでfft_calc()した結果を
+      // スナップショットのfft[]に埋め込んでいる(docs/right-pane-data.md参照。
+      // pmdweb側と同じ形式・同じexport名)。levels(音量バー)側は
+      // leveldata相当が無いためスコープ外のまま。
+      // entry(HEAP32のsubarray)のbyteOffsetは、生成元snapshotAt()がHEAP32を
+      // subarrayしただけの同一ArrayBuffer上のビューなので、絶対バイトアドレス
+      // (=HEAPU8上のオフセット)としてそのまま使える。
+      const fftBase = entry.byteOffset + Module.getSnapshotFftOffset();
+      const fft = Module.HEAPU8.subarray(fftBase, fftBase + Module.getFftBinCount());
+      rightpane.drawSpectrumBars(vram, fft, fftPeakState);
       rightpane.drawLevelMeters(vram, levels, levelPeakState);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
