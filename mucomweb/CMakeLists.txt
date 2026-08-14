@@ -9,6 +9,32 @@ set(CMAKE_CXX_STANDARD 17)
 # 絶対に混同しないこと。こちらは無改変のまま参照専用に使う。
 set(MUCOM88_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/MucomWeb/mucom88")
 
+# upstream/MucomWeb/mucom88 は無改変クローンとして扱いたいが、CMucom::vm への
+# アクセサだけは FMDSP側の playing/panpot 実測に必須（詳細は
+# mucomweb/patches/0001-cmucom-expose-vm.patch のコメント、
+# docs/mucom-pchdata-mapping.md参照）。冪等に当てる: 「reverse --check」が
+# 成功する（＝既に当たっている）ならスキップ、失敗するなら apply する。
+# apply 自体が失敗したら警告ではなくビルドを失敗させる（無言で古い挙動へ
+# 戻ると気づけないため）。
+set(CMUCOM_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/0001-cmucom-expose-vm.patch")
+execute_process(
+    COMMAND git apply --reverse --check "${CMUCOM_PATCH}"
+    WORKING_DIRECTORY "${MUCOM88_DIR}"
+    RESULT_VARIABLE CMUCOM_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET)
+if (NOT CMUCOM_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND git apply "${CMUCOM_PATCH}"
+        WORKING_DIRECTORY "${MUCOM88_DIR}"
+        RESULT_VARIABLE CMUCOM_PATCH_APPLY_RESULT)
+    if (NOT CMUCOM_PATCH_APPLY_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "0001-cmucom-expose-vm.patch を ${MUCOM88_DIR} に適用できませんでした。"
+            "upstream/MucomWeb/mucom88/src/cmucom.h が想定と異なる可能性があります。"
+            "手動確認してください（警告で済ませず失敗させています）。")
+    endif()
+endif()
+
 file(GLOB SOURCES
         ${MUCOM88_DIR}/src/*.c
         ${MUCOM88_DIR}/src/*.cpp

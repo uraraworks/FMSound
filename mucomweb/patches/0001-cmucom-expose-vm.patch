@@ -1,0 +1,27 @@
+# FMSound patch: expose CMucom's private `mucomvm *vm` via a public accessor.
+#
+# Why: FMDSP-side "playing" detection and panpot rendering need OPNA key-on
+# status (mucomvm::GetChStatus) and the register mirror (mucomvm::GetRegisterMap),
+# both public on mucomvm, but CMucom keeps its `vm` pointer private with no
+# existing accessor. This adds a single one-line read-only accessor; no other
+# logic changes. Applied automatically by mucomweb/CMakeLists.txt at build time
+# (see docs/mucom-pchdata-mapping.md for the resulting playing/panpot mapping).
+#
+# Apply against upstream/MucomWeb/mucom88 (nested submodule at
+# upstream/MucomWeb/mucom88), e.g.:
+#   git -C upstream/MucomWeb/mucom88 apply mucomweb/patches/0001-cmucom-expose-vm.patch
+diff --git a/src/cmucom.h b/src/cmucom.h
+index 19447f3..11ea6a6 100644
+--- a/src/cmucom.h
++++ b/src/cmucom.h
+@@ -295,6 +295,10 @@ public:
+ 	void SetFastFW(int value);
+ 	void SetVolume(int fmvol, int ssgvol);
+ 	int GetChannelData(int ch, PCHDATA *result);
++	// FMSound patch (mucomweb/patches/0001-cmucom-expose-vm.patch):
++	// FMDSP playing/panpot detection needs OPNA key-on status and register
++	// mirror, only reachable via the private `vm` member. Expose it read-only.
++	mucomvm *GetVM(void) { return vm; }
+ 
+ 	//	FM Voice Service
+ 	void InitFMVoice(unsigned char *voice = NULL);

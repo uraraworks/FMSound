@@ -7,6 +7,7 @@
 #include <string>
 #include <type_traits>
 #include "mucom_module.h"
+#include "mucomvm.h" // GetVM()経由でOPNAキーオン状態(GetChStatus)を読むため。upstream patch(mucomweb/patches/0001-cmucom-expose-vm.patch)前提
 #include "StreamingPlayer.h"
 
 static const int ChannelCount = 2;
@@ -48,16 +49,29 @@ struct TrackStatus
 //     GetStatus(MUCOM_STATUS_COUNT)が「intCount % maxCount」を返す実装
 //     (cmucom.cpp:534-538)であることから、floor(intCount / maxCount)が
 //     ループ回数に相当する(JS側でmaxCount>0のときのみ計算する)。
+// mucomvm::GetChStatus(ch)由来のOPNAキーオン状態(0/1)。ch の意味はPCHDATAの
+// MMLパートch(A-K=0-10)とは別物で、mucomvm.h の OPNACH_FM=0/OPNACH_PSG=6/
+// OPNACH_RHYTHM=9/OPNACH_ADPCM=10 というOPNAハードウェアch番号。
+// mucomvm.cpp:FMOutData()の実装では reg 0x28 KeyOnで `ch = data & 7`
+// (YM2203/OPNA標準: port0=ch0-2, port1(bit2)=ch4-6)をそのままchstat[]の
+// indexに使っており、単純に0-5連番ではない。ADPCM検出はreg 0x28ではなく
+// FMOutData()のRhythm分岐とFMOutData2()の別経路(chstat[OPNACH_ADPCM])で
+// 行われており、他のchと混線しない。全16chをそのまま持ち出し、
+// 実測でMMLパート(A-K)との対応をdocs/mucom-pchdata-mapping.mdに記録した上で
+// JS側(adapter.js)がその対応表に従って参照する。
+static const int OpnaChannelCount = 16; // mucomvm.h の OPNACH_MAX
+
 struct StatusSnapshot
 {
 	uint32_t frame;
 	int32_t passTick;
 	int32_t intCount;
 	int32_t maxCount;
+	int32_t chstat[OpnaChannelCount];
 	TrackStatus tracks[MUCOM_MAXCH];
 };
 
-static const int StatusSnapshotHeaderWordCount = 4; // frame, passTick, intCount, maxCount
+static const int StatusSnapshotHeaderWordCount = 4 + OpnaChannelCount; // frame, passTick, intCount, maxCount, chstat[16]
 
 static_assert(std::is_standard_layout<TrackStatus>::value, "TrackStatus must stay flat");
 static_assert(sizeof(TrackStatus) == 15 * sizeof(int32_t), "TrackStatus layout changed");
@@ -106,6 +120,11 @@ void PushSnapshot()
 	snapshot.passTick = g_mucom->GetStatus(MUCOM_STATUS_PASSTICK);
 	snapshot.intCount = g_mucom->GetStatus(MUCOM_STATUS_INTCOUNT);
 	snapshot.maxCount = g_maxCount; // g_mucom->GetStatus(MUCOM_STATUS_MAXCOUNT)は常に0(上のコメント参照)
+	mucomvm *vm = g_mucom->GetVM();
+	for (int ch = 0; ch < OpnaChannelCount; ++ch)
+	{
+		snapshot.chstat[ch] = vm != nullptr ? vm->GetChStatus(ch) : 0;
+	}
 	for (int ch = 0; ch < MUCOM_MAXCH; ++ch)
 	{
 		PCHDATA data{};

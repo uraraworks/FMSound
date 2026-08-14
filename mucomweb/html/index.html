@@ -91,7 +91,7 @@
   import { FONT_SMALL } from './fmdsp/font_small.js';
   import { drawComment } from './fmdsp/comment.js';
   import * as rightpane from './fmdsp/rightpane.js';
-  import { MucomFmdspAdapter, CH_TO_SLOT, MUCOM_CH_COUNT, PCH_FIELD_COUNT, panToSprite } from './adapter.js';
+  import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT, panToSprite } from './adapter.js';
 
   const btnCompile = document.getElementById('btnCompile');
   const btnStop = document.getElementById('btnStop');
@@ -109,6 +109,11 @@
   // MucomWeb.cppのGetSnapshotHeaderWordCount()と一致させる(ハードコード禁止)。
   const snapshotHeaderWordCount = Module.getSnapshotHeaderWordCount();
   const SNAPSHOT_HEADER = { FRAME: 0, PASS_TICK: 1, INT_COUNT: 2, MAX_COUNT: 3 };
+  // chstat[](mucomvm::GetChStatus()、OPNAハードウェアch単位のキーオン状態)は
+  // 固定ヘッダ(frame/passTick/intCount/maxCount、4ワード)の直後から
+  // snapshotHeaderWordCountの手前まで(MucomWeb.cpp StatusSnapshot参照)。
+  const CHSTAT_OFFSET = 4;
+  const CHSTAT_COUNT = snapshotHeaderWordCount - CHSTAT_OFFSET;
   const calibrationInput = document.getElementById('calibrationMs');
   const synchronizedCheckbox = document.getElementById('useSynchronizedStatus');
   for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
@@ -370,7 +375,9 @@
       const pchData = entry.subarray(
         snapshotHeaderWordCount + ch * PCH_FIELD_COUNT,
         snapshotHeaderWordCount + (ch + 1) * PCH_FIELD_COUNT);
-      entryTracks[slot] = adapter.convertChannel(ch, pchData);
+      const chstatIdx = CH_TO_CHSTAT[ch];
+      const chstatValue = chstatIdx !== undefined ? entry[CHSTAT_OFFSET + chstatIdx] : undefined;
+      entryTracks[slot] = adapter.convertChannel(ch, pchData, chstatValue);
       slotToCh[slot] = ch;
       panByCh[ch] = panToSprite(pchData[9]); // PCH.PAN
     }

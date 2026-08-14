@@ -45,17 +45,56 @@ export const CH_TO_SLOT = {
   10: 12,               // ADPCM
 };
 
+// PCHDATAのMMLパートch(A-K=0-10) -> mucomvm::GetChStatus(ch)のOPNAハードウェアch
+// index(0-15)。実測(2026-08-14, node直実行でchstatをリング経由で観測):
+//   A(ch0,FM1)->chstat0 / B(ch1,FM2)->chstat1 / C(ch2,FM3)->chstat2
+//   H(ch7,FM4)->chstat4 / I(ch8,FM5)->chstat5 / J(ch9,FM6)->chstat6
+//   K(ch10,ADPCM)->chstat10(実曲sampl1.mucで実測、ADPCM再生区間だけ1になり
+//     停止区間で0に戻ることを複数ステップで確認済み)
+// D/E/F(SSG1-3, ch3-5)とG(リズム, ch6)は、単発ノートを鳴らしても対応する
+// chstat[]がまったく変化しないことを実測で確認した(mucomvm.cpp のFMOutData()
+// 実装を読むと、chstat[]はreg 0x28(FM KeyOn, data&7)とFMOutData2の
+// ADPCM分岐でしか更新されておらず、SSG/リズムのKeyOnは別レジスタ経路で
+// chstat[]を一切触らない。よってSSG/リズムはchstatによる実時間playing判定が
+// 構造的に不可能で、引き続きsticky近似を使う)。
+export const CH_TO_CHSTAT = {
+  0: 0, 1: 1, 2: 2,
+  7: 4, 8: 5, 9: 6,
+  10: 10,
+};
+
 // OPNAのpanレジスタ(L/R選択2bit)相当値(0-3) -> FMDSP PANPOTスプライト番号(0-5)。
-// pmdweb/src/PmdCore.c build_levels() の `static const int table[4] = {5,4,0,2};`
-// と同じ変換式を流用している。根拠: MUCOM側 cmucom.cpp の FM/ADPCM分岐は
-// `chwork & 0xc0` / `chwork & 3` というレジスタ生ビットをそのまま result->pan に
-// 入れており(cmucom.cpp:2346-2360)、OPNA/OPN系チップの標準的なL/R選択2bitと
-// 同じ配置だと考えられる。ただし本アダプタでMUCOM側のpan値を音として
-// 実測検証したわけではなく、「同じチップ由来のレジスタ形式のはず」という
-// 推測に基づく近似(未解明)。SSG/リズムは常に固定値3(cmucom.cpp:2338,2342)を
-// 返す実装になっており、これは他パートのbit配置とは意味が異なる「決め打ち値」
-// だが、table[3]=2(=中央/両chへ出力)という解釈は「SSG/リズムはパンを持たず
-// 両ch鳴る」という実際の挙動と矛盾しないため、そのままtable経由で使う。
+// 2026-08-14に実測で確定(docs/mucom-pchdata-mapping.md §14参照。旧コメントの
+// 「PMD側テーブルの流用・未検証」は誤りではなかったが、以下により裏付けが取れた)。
+//
+// FM(A,B,C,H,I,J): PCHDATA.pan は OPNAレジスタ 0xB4-0xB6(FM1-3)/0x1B4-0x1B6(FM4-6)の
+// bit6,7をそのまま反映していることを mucomvm::GetRegisterMap() 直読みで実測確認済み
+// (`K@1p<n>o4c1`ならぬ`A@1p0..3o4c1`/`H@1p0..3o4c1`をコンパイルし、regmap[0xB4]/
+// [0x1B4]の上位2bitとPCHDATA.panが p0-p3 全4値で完全一致することを確認)。
+// さらに `upstream/98fmplayer/libopna/opnafm.c`(PMD側が使う独立実装)の
+// `fm->lselect[c]=val&0x80; fm->rselect[c]=val&0x40;`(reg 0xB4のcase 0x4)と
+// `upstream/98fmplayer/fmdsp/fmdsp-pacc.c`の
+// `table[4]={5,4,0,2}; pan=table[lselect*2+rselect]` が、MUCOM側の生値(0-3、
+// bit7<<1|bit6の並び)と完全に同じビット合成式であることをソースレベルで確認した。
+// 独立な2実装(fmgenのOPNABase::Mix6、opnafm.cのミキシング)が同じ変換をしている
+// ため、推測ではなく「同一チップの同一レジスタを2つの実装が同じ規約で読んでいる」
+// という一致であり、tableをそのまま流用してよい。
+//   pan=0(p0,L無効R無効)->無音 / pan=1(p1,Rのみ)->右 / pan=2(p2,Lのみ)->左 /
+//   pan=3(p3,両方)->中央。テストMML: `A @1p0o4c1` 〜 `A @1p3o4c1`(part A/H で実施)。
+//
+// ADPCM(K): 実曲(sampl1.muc)再生中、regmap[0x101](ADPCM-B Control2、fmgen
+// opna.cpp:SetADPCMBReg case 0x01)の上位2bitとPCHDATA.panがどちらも終始3(中央)で
+// 一致することを確認した。ただしp0-p3を明示指定してのK単独テスト
+// (`K @1p<n> r1`のような無音ノート)では実際にKeyOnが発生せずレジスタ書き込み
+// 自体が起きなかったため、pan=0/1/2でのレジスタ一致は確認できていない
+// (**ADPCMの0/1/2は未解明**。3(中央)のみ実測で裏付け済み)。fmgen opna.cpp:976-977の
+// `maskl=control2&0x80; maskr=control2&0x40;` はFMと同じbit配置のため同じ式を
+// 流用する方針だが、これは未検証部分にはソースの構造的類推が根拠であることを明記する。
+//
+// SSG(D,E,F)/リズム(G): cmucom.cpp が `pan=3` を無条件に返す(レジスタを読んですら
+// いない、cmucom.cpp:1621,1625)ハードコードのため「未検証の近似」ではなく、
+// ソースの断定的な代入としてそのまま確定値として扱ってよい。table[3]=2
+// (=両ch出力)という解釈もこの「SSG/リズムは常に両ch」という実装と整合する。
 const PAN_TABLE = [5, 4, 0, 2];
 
 export function panToSprite(pan) {
@@ -63,14 +102,15 @@ export function panToSprite(pan) {
   return PAN_TABLE[index];
 }
 
-// --- sticky状態(playing/ticksの近似実装に必要) ---
-// playing: 「このパートがこの曲で一度でも非0のcode/fnum1を出したか」を
-//   曲ごとに1度立てたら降ろさないstickyフラグとして持つ。
-//   docs/mucom-pchdata-mapping.md §5の通り、MUCOM側PCHDATAには
-//   「今この瞬間鳴っているかどうか」に対応する単一フィールドが見当たらず、
-//   private tcount[]も読めないため、この近似で代替する
-//   (「未使用パートかどうか」は判定できるが、「一時停止中かどうか」は
-//   判定できないという意味で、PMDのnativeなplayingとは性質が異なる)。
+// --- sticky状態(SSG/リズムのplaying近似・ticksの近似実装に必要) ---
+// playing: FM(A,B,C,H,I,J)とADPCM(K)は upstream patch で追加した
+//   mucomvm::GetChStatus() 実測値(CH_TO_CHSTAT)を「今この瞬間鳴っているか」
+//   としてそのまま使う(sticky不要、real-time)。SSG(D,E,F)とリズム(G)は
+//   対応するchstat[]が存在しない(CH_TO_CHSTATのコメント参照)ため、従来通り
+//   「このパートがこの曲で一度でも非0のcode/fnum1を出したか」を曲ごとに
+//   1度立てたら降ろさないstickyフラグで代替する(「未使用パートかどうか」は
+//   判定できるが「一時停止中かどうか」は判定できない、という制約付きの近似。
+//   未解明として残る)。
 // ticks / ticks_left: ticks_left は実測済みの LENGTH COUNTER (`length`、
 //   ノート再生中に減っていく値)をそのまま使う。ticks は対応物が無いため、
 //   「直前のノート開始(=keyの変化を検出したタイミング)以降に観測した
@@ -96,7 +136,10 @@ export class MucomFmdspAdapter {
 
   // 1ch分のPCHDATA(Int32Array長15、MucomWeb.cpp TrackStatusの並び)を
   // flat_track_status形式のInt32Array(長26)へ変換する。
-  convertChannel(ch, pchData) {
+  // chstatValue: CH_TO_CHSTAT[ch]が定義されているchについてのみ、
+  // mucomvm::GetChStatus()の実測値(0/1)を渡す。undefinedならsticky近似を使う
+  // (SSG/リズム。CH_TO_CHSTATのコメント参照)。
+  convertChannel(ch, pchData, chstatValue) {
     const state = this.states[ch];
     const out = new Int32Array(FIELD_COUNT);
 
@@ -113,9 +156,13 @@ export class MucomFmdspAdapter {
     if (isRest) key = (key & 0xf0) | 0xf;
     const actualKey = key; // LFO/ベンド後の実効値はMUCOM側に無い(未解明)。keyと同値で代用。
 
-    // playing(sticky): 一度でも非0のcode/fnum1を出したら以後ずっとtrueのまま
-    // (「今鳴っているか」ではなく「この曲でそのパートが使われているか」)。
+    // playing: chstatValueが渡された(FM/ADPCM)場合はmucomvm::GetChStatus()の
+    // 実測値をそのまま「今この瞬間鳴っているか」として使う(sticky近似ではない、
+    // CH_TO_CHSTATのコメント参照)。SSG/リズム(chstatValue===undefined)は
+    // 対応するchstat[]が存在しないため、従来通り「一度でも非0のcode/fnum1を
+    // 出したか」のsticky近似のまま(未解明として残る制約)。
     if (code !== 0 || fnum1 !== 0) state.playingSticky = true;
+    const playing = chstatValue !== undefined ? (chstatValue !== 0) : state.playingSticky;
 
     // ticks/ticks_left の近似(クラスコメント参照)。
     const length = pchData[PCH.LENGTH] | 0;
@@ -126,7 +173,7 @@ export class MucomFmdspAdapter {
       state.ticksMax = length;
     }
 
-    out[F.PLAYING] = state.playingSticky ? 1 : 0;
+    out[F.PLAYING] = playing ? 1 : 0;
     out[F.INFO] = 0; // 対応物なし(暫定0)
     out[F.TICKS] = state.ticksMax;
     out[F.TICKS_LEFT] = length;

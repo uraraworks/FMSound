@@ -160,6 +160,10 @@ emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build buil
 
 - プレビュー用サーバは `_emulator/PC98/.claude/launch.json` に登録済み
   （`mucomweb` = port 8777、`pmdweb` = port 8778）
+- `mucomweb`のconfigure時、`upstream/MucomWeb/mucom88/src/cmucom.h`へ
+  `mucomweb/patches/0001-cmucom-expose-vm.patch`（`CMucom::vm`を読むアクセサ1行）が
+  冪等に自動適用される（`git apply --reverse --check`で未適用時のみ適用、
+  適用失敗時はビルドを止める）。upstream作業ツリー自体は素のまま追跡不要
 - MUCOM の MML は **Shift_JIS**。`new TextDecoder('shift_jis')` でデコードして textarea へ入れる
 - PMD のテストデータは `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
 - **AudioContext はユーザー操作が要る。** JS から `compileMML()` を呼ぶだけでは音が出ない

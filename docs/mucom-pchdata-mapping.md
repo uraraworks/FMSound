@@ -493,3 +493,144 @@ Shift_JISエンコーダが無いため。textareaを編集した場合(また�
 なしで手入力した場合)は、従来どおり「非ASCII混入時は空欄にする」
 ASCII安全フォールバック(`asciiOnlyCp932Bytes`)を使う。これは制約として
 残す(捏造しない方針を優先した)。
+
+## 14. `playing`(chstat)とパンポットの本実装【2026-08-14】
+
+親からの指示により、以下2点をupstream最小パッチ(アクセサ1本)込みで実装した。
+
+### upstreamパッチ
+
+`upstream/MucomWeb/mucom88/src/cmucom.h` の `CMucom` クラス(private `mucomvm *vm`)に
+`mucomvm *GetVM(void) { return vm; }` を1行追加。パッチは
+`mucomweb/patches/0001-cmucom-expose-vm.patch` としてFMSound repo側で追跡し、
+`mucomweb/CMakeLists.txt` のconfigure時に「`git apply --reverse --check`が失敗する
+(＝未適用)場合だけ`git apply`する」という冪等ロジックで自動適用する
+(適用失敗時は警告でなくビルドを`FATAL_ERROR`で止める)。以下3パターンを
+実機確認済み:
+1. 未適用状態からconfigure → diffが4行(追加分)になり、そのままビルド成功。
+2. 適用済み状態から再度configure(2回目) → diffは4行のまま変化なし
+   (二重適用しない)。
+3. パッチの検索対象文字列をわざと壊して(`GetChannelData`→
+   `GetChannelDataXXXNOTFOUND`)故障注入し、configureが`CMake Error`で
+   **確実に停止する**(警告で済まさない)ことを確認してから元のパッチへ戻した。
+
+### `playing`(chstat)の実測結果
+
+`mucomvm::GetChStatus(ch)`(OPNAハードウェアch単位のキーオン状態、0/1)を
+`MucomWeb.cpp`の`StatusSnapshot`に`chstat[16]`として追加した(`OpnaChannelCount=16`、
+`mucomvm.h`の`OPNACH_MAX`)。**PCHDATAのMMLパートch(A-K=0-10)とは別の番号体系**
+であることに注意(以下は全て単発ノートを1パートだけ鳴らすMMLでの実測、
+`node`から直接wasmを叩いてスナップショットリングを読む方式。
+`tools/probe_mucom_pchdata.mjs`と同じ手法)。
+
+| MMLパート | PCHDATA ch | chstat idx | 実測結果 |
+|---|---|---|---|
+| A(FM1) | 0 | 0 | `A @1o4c1`で chstat[0]=1 |
+| B(FM2) | 1 | 1 | `B @1o4c1`で chstat[1]=1 |
+| C(FM3) | 2 | 2 | `C @1o4c1`で chstat[2]=1 |
+| H(FM4) | 7 | 4 | `H @1o4c1`で chstat[4]=1 |
+| I(FM5) | 8 | 5 | `I @1o4c1`で chstat[5]=1 |
+| J(FM6) | 9 | 6 | `J @1o4c1`で chstat[6]=1 |
+| K(ADPCM) | 10 | 10 | sampl1.muc(実曲)再生中、ADPCM鳴動区間だけchstat[10]が1になり停止区間で0に戻ることを複数ステップ(20480フレーム刻み)で確認 |
+| D(SSG1) | 3 | (無し) | `D @1o4c1`で全16 chstat要素が0のまま変化なし |
+| E(SSG2) | 4 | (無し) | 同上 |
+| F(SSG3) | 5 | (無し) | 同上 |
+| G(リズム) | 6 | (無し) | `G @1o4c1`で全16 chstat要素が0のまま変化なし |
+
+裏付け(ソース側、`upstream/MucomWeb/mucom88/src/mucomvm.cpp` `FMOutData()`):
+`case 0x28`(FM KeyOn)で`ch = data & 7`をそのまま`chstat[ch]`のindexに使う
+(標準的なOPNA仕様どおりFM1-3は0-2、FM4-6は4-6でindex3は未使用)。ADPCMは
+`FMOutData2()`の別経路(`chstat[OPNACH_ADPCM]`, idx10)。**SSGとリズムはchstat[]を
+更新するコードパス自体が無い**(`case 0x28`/ADPCM分岐以外でchstat[]へ書き込む
+箇所が存在しない)ため、これは実装ミスではなく構造的な制約。
+
+**採用方針**(`mucomweb/html/adapter.js` `CH_TO_CHSTAT`): A,B,C,H,I,J,Kはchstat値を
+そのまま「今この瞬間鳴っているか」として使う(sticky不要、real-time)。
+D,E,F,G(SSG/リズム)は引き続き旧来の「一度でも非0のcode/fnum1を出したか」の
+sticky近似を使う(chstatで判定できないという制約は未解明のまま残る)。
+
+**成果物**: sampl1.mucを実際に再生し、ADPCM(K)行が鳴動区間だけ`playing`表示に
+切り替わり(FMDSP左パネルのS表示から実演奏表示へ)、停止区間で元に戻ることを
+スクリーンショットで確認した(詳細は§15参照)。これが今回の一番の目的だった
+「ADPCM行がSのまま固まる」問題の解消。
+
+### パンポットの実測結果
+
+`mucomvm::GetRegisterMap()`(検証専用に一時的な埋め込みexport
+`debugGetReg(int reg)`を追加し、実測後に削除した。本番コードには残っていない)で
+実際のOPNAレジスタバイトを直読みし、PCHDATAの`pan`フィールドと突き合わせた。
+
+**FM(A-C, H-J、reg 0xB4-0xB6 / 0x1B4-0x1B6のbit6,7)**: `A @1p0o4c1`〜
+`A @1p3o4c1`(part A、reg 0xB4)と`H @1p0o4c1`〜`H @1p3o4c1`(part H、reg 0x1B4)の
+両方で、p0-p3の全4値について「PCHDATA.pan」と「regmap[reg]の上位2bit
+((regByte>>6)&3)」が完全一致することを実測した(8/8件PASS)。
+`upstream/MucomWeb/mucom88/src/fmgen/opna.cpp:575-578`
+(`case 0xb4: pan[c] = (data>>6)&3;`)がこの一致の裏付けとなるソース。
+
+bit配置の意味(値そのものの解釈)はfmgenの`OPNABase::Mix6()`
+(`opna.cpp:1147-1160`、`idest[c]=&ibuf[pan[c]]`、`dest[0](L出力)=ibuf[2]+ibuf[3]`,
+`dest[1](R出力)=ibuf[1]+ibuf[3]`)から機械的に導出した:
+
+| pan値 | MML | 意味 |
+|---|---|---|
+| 0 | `p0` | 無音(L/Rどちらにも出力しない) |
+| 1 | `p1` | 右のみ |
+| 2 | `p2` | 左のみ |
+| 3 | `p3` | 両方(中央) |
+
+独立検証として、PMD側が使う別実装`upstream/98fmplayer/libopna/opnafm.c`の
+`fm->lselect[c]=val&0x80; fm->rselect[c]=val&0x40;`(同じreg 0xB4のcase 0x4)と
+`upstream/98fmplayer/fmdsp/fmdsp-pacc.c`の
+`table[4]={5,4,0,2}; levels[c].pan=table[lselect*2+rselect]`が、MUCOM側の生値
+(bit7<<1|bit6)と同じ合成式であることをソースレベルで確認した。2つの独立した
+チップエミュレータ実装が同じレジスタ規約で一致しているため、
+`mucomweb/html/adapter.js`の`PAN_TABLE=[5,4,0,2]`(既存、PMD由来)を
+そのまま流用してよいと判断した。
+
+**ADPCM(K, reg 0x101 = ADPCM-B Control2)**: sampl1.muc実曲再生中、
+`regmap[0x101]`の上位2bitと`PCHDATA.pan`がどちらも再生を通じて終始`3`(中央)で
+一致することを確認した。ただし`K @1p<n> r1`のような無音ノートでの単独テストでは
+実際のKeyOnが発生せずレジスタ書き込み自体が起きなかったため、
+**p0/p1/p2でのADPCMのレジスタ一致は実測できていない(未解明のまま残す)**。
+fmgen `opna.cpp:976-977`(`maskl=control2&0x80; maskr=control2&0x40;`)は
+FMと同じbit配置だが、これはソース上の構造的な類推であり実測による裏付けではない
+ことを明記する。
+
+**SSG(D,E,F)/リズム(G)**: `cmucom.cpp:1621,1625`
+(`case MUCOM_CH_PSG...: pan=3; break;` / `case MUCOM_CH_RHYTHM: pan=3; break;`)が
+レジスタを一切読まず`pan=3`を無条件代入するハードコードであることをソースで
+確認済み。これは「未検証の近似」ではなく実装が断定している値そのものであり、
+実測を要しない確定事項として扱った。
+
+### 実装ファイル
+
+- `mucomweb/src/MucomWeb.cpp`: `StatusSnapshot`に`chstat[16]`追加、
+  `PushSnapshot()`で`g_mucom->GetVM()->GetChStatus(ch)`を全16ch分格納。
+- `mucomweb/html/adapter.js`: `CH_TO_CHSTAT`(PCHDATA ch -> chstat idx)追加、
+  `convertChannel(ch, pchData, chstatValue)`が`chstatValue`未定義時のみ
+  従来のsticky近似にフォールバック。`PAN_TABLE`は変更なし(裏付けのコメントを
+  全面更新)。
+- `mucomweb/html/index.html`: `CHSTAT_OFFSET=4`(固定ヘッダの直後)から
+  `snapshotHeaderWordCount`手前までを`chstat[]`として読み、
+  `CH_TO_CHSTAT[ch]`があるchについてのみ`convertChannel`へ渡す。
+
+## 15. 動作確認スクリーンショット(2026-08-14)
+
+`mcp__Claude_Browser__preview_start`(`mucomweb`、port 8777)でsampl1.mucを
+Compile/Playし、約1-2秒間隔で3枚のスクリーンショットを撮ってADPCM(K)行の
+`KN:`表示を確認した。`fmdsp/trackrow.js`の描画ロジック(`!playing`なら`S`、
+`playing`かつ休符なら`R`、それ以外は音名)を根拠に、以下の遷移を目視確認した:
+
+1. 1枚目: `ADPCM TRACK.0.0 KN: R`(`playing=true`、休符中)
+2. 2枚目(約2秒後): `ADPCM TRACK.0.0 KN: S`(`playing=false`、未使用/停止扱い)
+3. 3枚目(さらに約2秒後): `ADPCM TRACK.0.0 KN: R`(`playing=true`に復帰)
+
+`S`と`R`が時間経過で入れ替わっていることから、ADPCM行の`playing`が
+sticky近似(旧実装。一度立ったら曲終了まで`S`に戻らない)ではなく、
+`chstat[10]`由来のreal-time値になっていることを確認した。これが今回の目的
+「ADPCM行がSのまま固まる」問題の解消の実機証拠。
+
+自動化クリックはCompile/Playボタンに届かなかった(押しても`snapshot ring:
+inactive/empty`のまま変化せず)ため、`document.getElementById('btnCompile').click()`
+(JS直接呼び出し)で代替した。これはタスク指示の許容範囲内(合成クリックが
+届かない場合の代替手段)であることをここに明記する。
