@@ -23,26 +23,40 @@ set(PMDWEB_SOURCES
     ${UPSTREAM_DIR}/common/fmplayer_file_unix.c
     ${UPSTREAM_DIR}/fft/fft.c)
 
-file(GLOB HTML_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/html/*")
-file(COPY ${HTML_SOURCES} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
-
 add_executable(pmdweb ${PMDWEB_SOURCES})
 
-# 上の file(COPY) は configure 時にしか走らないため、html/ を編集しても
-# build-web/ には反映されず、古い版を配信し続ける（実際に踏んだ）。
+# FMSound自身のバージョン表示(ui/version.js)。mucomweb/CMakeLists.txtと同じ仕組み
+# (git コミット日時/ハッシュから生成、壁時計は使わない)。共有ファイルなので
+# mucomweb側と両方から生成されても内容は同じ(冪等)。sync_htmlより先に走らせる
+# 必要があるためadd_dependenciesで明示的に順序付けする。
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_custom_target(generate_version ALL
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_version.py"
+    COMMENT "git commit日時/ハッシュから ui/version.js を生成")
+
+# html/ の同期は file(COPY) だと configure 時にしか走らず、html/js だけ編集
+# しても build-web/ には反映されない（実際に踏んだ）。
 #
 # POST_BUILD ではダメ: ターゲットが再リンクされた時しか走らないので、
 # JS/HTML だけ編集した場合は make が「最新」と判断して同期をスキップする
 # （probe 行を消しても build-web 側に残ることで確認済み）。
 # ALL 付き custom target なら make のたびに必ず走る。
+#
+# コピー元は pmdweb/html ではなく ../html（1アプリ化: mucom-app.js/pmd-app.js/
+# 共通シェルapp.js/index.htmlをmucomweb/pmdweb両方から共有する。詳細はREADME参照）。
 add_custom_target(sync_html ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/html"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../html"
         "${CMAKE_CURRENT_BINARY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../fmdsp"
         "${CMAKE_CURRENT_BINARY_DIR}/fmdsp"
-    COMMENT "html/ と fmdsp/ を build-web/ へ同期")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../ui"
+        "${CMAKE_CURRENT_BINARY_DIR}/ui"
+    COMMENT "html/ と fmdsp/ と ui/ を build-web/ へ同期")
+add_dependencies(sync_html generate_version)
 
 target_include_directories(pmdweb PRIVATE "${UPSTREAM_DIR}")
 
@@ -65,7 +79,6 @@ if(EMSCRIPTEN)
         -sEXPORTED_RUNTIME_METHODS=FS,HEAP32,HEAPU8)
 endif()
 
-add_custom_command(TARGET pmdweb POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M"
-        "${CMAKE_CURRENT_BINARY_DIR}/PC-98_Hartmann_s_Youkai_GIrl.M")
+# 東方Projectアレンジ曲(PC-98_Hartmann_s_Youkai_GIrl.M)のビルド成果物への同梱をやめた。
+# 権利(アレンジ元の使用許諾)が不明なため。代わりの自作サンプルは別タスクで用意する
+# (PMD MMLコンパイラが完成したため作成可能になった)。pmdweb/README.md参照。

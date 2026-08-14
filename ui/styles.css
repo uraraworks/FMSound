@@ -114,6 +114,47 @@ header.app-header .app-tagline {
   color: var(--header-tagline-text);
 }
 
+/* エンジン切替(?engine=を書き換えて開き直す)。「いまどちらのエンジンで動いているか」の
+   表記(タグライン)のすぐ下に置く。ロゴ画像は使わない(他所の標章のため)。 */
+.engine-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--header-tagline-text);
+}
+
+.engine-switch select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--footer-btn-border);
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+}
+
+/* PMDのコメント欄スクロール操作(エディタが無いのでeditor-paneを軽量に流用)。 */
+.pmd-comment-controls {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.pmd-comment-controls button {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pmd-comment-controls button:hover {
+  background: var(--border);
+}
+
 #app {
   display: flex;
   flex-direction: column;

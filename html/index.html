@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FMSound</title>
+<link rel="stylesheet" href="./ui/styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="app-title-row">
+    <h1>FMSound</h1>
+  </div>
+  <!-- タグラインは「いまどちらのエンジンで動いているか」の常時表示(文字表記のみ。
+       ロゴ画像は使わない: 他所の標章のため出典表示と推奨の含みの線引きが曖昧になる)。
+       app.js が ?engine= を見て書き換える。 -->
+  <p class="app-tagline" id="engineTagline"></p>
+  <!-- エンジン切替(別エンジンで開き直す)。selectのchangeでlocation.searchを
+       書き換えてreloadする(=wasmは常に片方だけロードされる、切替時に両方
+       抱えることはない)。app.js側で配線する。 -->
+  <label class="engine-switch">
+    <span class="engine-switch-label">エンジン:</span>
+    <select id="engineSelect">
+      <option value="mucom">MUCOM88 (PC-8801)</option>
+      <option value="pmd">PMD (PC-9801)</option>
+    </select>
+  </label>
+</header>
+
+<div id="app">
+  <div class="console-card" id="consoleCard">
+    <div class="stage" id="stage">
+      <!-- FMDSP描画(共有描画層 fmdsp/ を engine-app 経由で駆動する)。
+           MUCOM88/PMDのどちらでも同じ「スナップショットリング+frame基準の
+           二分探索」という同期方式を使う(同期ロジックの新規発明はしない)。 -->
+      <canvas id="fmdsp-canvas" width="640" height="400"></canvas>
+    </div>
+    <div class="console-footer">
+      <div class="toolbar" id="toolbar">
+        <!-- ツールバーの実体ボタンはJSで組み立てる(WebNP2/WebX68kのiconButton()と同じ流儀)。
+             共通ボタン(再生/停止/開く/設定/フルスクリーン)はapp.jsが組み立て、
+             エンジン固有ボタン(MUCOM88のエディタモード切替等)はengine-app側が追加する。 -->
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" class="file-input-hidden">
+
+  <div class="settings-popover hidden" id="settingsPopover">
+    <p class="settings-popover-title">設定</p>
+    <div class="settings-row">
+      <label for="srateSelect">サンプルレート</label>
+      <select id="srateSelect">
+        <option value="55467" selected>55kHz</option>
+        <option value="48000">48kHz</option>
+        <option value="44100">44kHz</option>
+        <option value="24000">24kHz</option>
+        <option value="22050">22kHz</option>
+        <option value="12000">12kHz</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label for="calibrationMs">同期較正(ms)</label>
+      <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0">
+    </div>
+    <label class="settings-checkbox-row">
+      <input id="useSynchronizedStatus" type="checkbox" checked> 音声に同期して描画する
+    </label>
+  </div>
+
+  <!-- 曲を開く手段(サンプルリンク等)。エンジンごとに内容が違うのでengine-appが組み立てる。 -->
+  <div class="sample-links" id="sampleLinks"></div>
+
+  <!-- エンジン固有の追加UI領域(MUCOM88のMMLエディタ等)。PMD側は今回未使用(空のまま)。
+       エディタモードは今回のタスクの対象外(次のタスクでコンパイラと一緒に入れる)。 -->
+  <div class="editor-pane hidden" id="enginePane"></div>
+
+  <!-- 既定では非表示(?debug=1で表示)。生のスナップショットテーブル・同期情報行。
+       内容はエンジンごとに列が違うためengine-appが組み立てる。削除はしない
+       (不具合報告時の切り分けに必要)。 -->
+  <div class="debug-only" id="debugPane"></div>
+</div>
+
+<footer class="app-footer">
+  <span id="footerCredits"><!-- engine-appが組み立てる --></span>
+  <span id="fmsoundVersionFooter" class="fmsound-version-footer"></span>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

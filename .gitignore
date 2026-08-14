@@ -5,6 +5,11 @@
 /pmdweb/build-web/
 /mucomweb/build-web/
 
+# tools/build_dist.sh が組み立てる、1アプリ化後のGitHub Pages配信用ディレクトリ
+# (両エンジンのwasm+共有html/fmdsp/uiを1箇所に集めたもの)。build-web/と同じ理由で
+# 生成物のため追跡しない。
+/dist/
+
 # ツールチェーンへの symlink(実体は ../PC98/emsdk)。
 /emsdk
 

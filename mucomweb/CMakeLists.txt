@@ -134,9 +134,12 @@ add_custom_target(generate_version ALL
 # html/ の同期は file(COPY) だと configure 時にしか走らず、html/js だけ編集
 # しても build-web/ に反映されない（pmdweb/CMakeLists.txt で踏んだ問題と同じ）。
 # ALL 付き custom target なら make のたびに必ず走る。
+#
+# コピー元は mucomweb/html ではなく ../html（1アプリ化: mucom-app.js/pmd-app.js/
+# 共通シェルapp.js/index.htmlをmucomweb/pmdweb両方から共有する。詳細はREADME参照）。
 add_custom_target(sync_html ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/html"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../html"
         "${CMAKE_CURRENT_BINARY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../fmdsp"

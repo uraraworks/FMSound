@@ -25,7 +25,10 @@ import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILD_DIR = path.join(__dirname, '../pmdweb/build-web');
-const SAMPLE = path.join(BUILD_DIR, 'PC-98_Hartmann_s_Youkai_GIrl.M');
+// 東方Projectアレンジ曲(権利未確認)のビルド成果物への同梱をやめたため(pmdweb/CMakeLists.txt
+// 参照)、このテスト専用の入力としては upstream/ 配下から直接読む(upstream/はビルド成果物では
+// なく参照用クローンで、そもそも配布物に含めていない。.gitignoreでも追跡対象外)。
+const SAMPLE = path.join(__dirname, '../upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M');
 
 let failCount = 0;
 function check(name, cond, detail) {

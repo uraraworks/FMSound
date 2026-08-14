@@ -144,17 +144,34 @@ MUCOM の `PCHDATA` はここへ素直に写せる（`quantize`→`gate`、`fnum
 
 MUCOM が時間サンプリングなのは submodule 非改変の制約。実用上 4.6ms で十分。
 
-### 次にやること
+### 1アプリ化（2026-08-14 完了）
 
-1. **ブートストラップ形の統一**（小・すぐ終わる）
-   - MucomWeb: `import Module from './mucom88.js'` でそのままインスタンス
-   - pmdweb: `import factory from './pmdweb.js'; const M = await factory();`（MODULARIZE）
-   - embind の関数名（`getSnapshotRingPointer` / `getSnapshotEntryByteSize` /
-     `getSnapshotWriteIndex` / `getTrackCount` / `getFieldCount`）は**既に両方揃っている**。
-     ブートストラップだけが違う。**MODULARIZE 形（pmdweb 側）に寄せるのが筋**
-2. **共通フロント `WebFMPlayer/` の作成** — 2つの wasm を差し替えて同じ画面で鳴らす
-3. **FMDSP 風の Canvas 描画** — 本題の見た目。`upstream/98fmplayer/fmdsp/` が参照実装
-4. **ライセンス方針の決定**（課題4・下記）
+MUCOM88/PMDは**1つのアプリ**として配信する。エンジンの選択はURLクエリ `?engine=mucom` /
+`?engine=pmd` で行う（既定値は `mucom`。理由: MUCOM88側が先に完成しており、素のURL
+`?engine`なしでアクセスする既存ユーザーの体験を変えないため）。
+
+**構成**:
+
+```
+FMSound/
+  html/                # 共有アプリ本体(mucomweb/pmdweb 両方から使う唯一のソース)
+    index.html         # 共通シェル(ヘッダー/canvas/ツールバー/設定/フッター)
+    app.js             # 共通ブートストラップ。?engine=を見て mucom-app.js / pmd-app.js を
+                        #   動的import(import())する -> 選ばれなかった側のwasmは一切fetchされない
+    mucom-app.js        # MUCOM88エンジン固有ロジック(MMLエディタ・コンパイル等)
+    pmd-app.js           # PMDエンジン固有ロジック(プレイヤーのみ、エディタは次のタスク)
+    mucom-adapter.js, mml-editor.js, mml-tokens.js, mucom-worklet.js, pmd-worklet.js, samplja.muc
+  mucomweb/CMakeLists.txt  # ../html を build-web/ へ同期してmucom88.js/.wasmをビルド
+  pmdweb/CMakeLists.txt    # ../html を build-web/ へ同期してpmdweb.js/.wasmをビルド
+  tools/build_dist.sh      # 両方のbuild-web/からwasmを集め、dist/ を1ディレクトリに組み立てる
+                            # (GitHub Pagesはこのdist/を配信する想定)
+```
+
+- `mucomweb/build-web/` `pmdweb/build-web/` は**それぞれ自分のエンジンのwasmしか持たない**
+  （個別開発・単体確認用。他方の `?engine=` に切り替えると404になるのは既知の制約）。
+  **両エンジンを切り替え可能な状態で確認するには `tools/build_dist.sh` で組み立てた `dist/` を見ること**
+- サンプルMML(`sampl1.muc`等)はMUCOM88側のみ同梱。PMD側の同梱サンプルは無くなった
+  （東方Projectアレンジ曲のため権利未確認、`pmdweb/README.md`参照。次タスクで自作サンプルを追加予定）
 
 ### 検証手順（確立済み）
 
@@ -168,20 +185,25 @@ emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release && cm
 # PMD
 cd ../pmdweb
 emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
+
+# 両エンジンを1ディレクトリへ組み立てる(?engine=切替の実地検証・GitHub Pages配信物確認用)
+cd ..
+tools/build_dist.sh
 ```
 
 - プレビュー用サーバは `_emulator/PC98/.claude/launch.json` に登録済み
-  （`mucomweb` = port 8777、`pmdweb` = port 8778）
+  （`mucomweb` = port 8777、`pmdweb` = port 8778、統合`dist/` = port 8779「fmsound-dist」）
 - `mucomweb`のconfigure時、`upstream/MucomWeb/mucom88/src/cmucom.h`へ
   `mucomweb/patches/0001-cmucom-expose-vm.patch`（`CMucom::vm`を読むアクセサ1行）が
   冪等に自動適用される（`git apply --reverse --check`で未適用時のみ適用、
   適用失敗時はビルドを止める）。upstream作業ツリー自体は素のまま追跡不要
 - MUCOM の MML は **Shift_JIS**。`new TextDecoder('shift_jis')` でデコードして textarea へ入れる
 - `mucomweb`のエディタモードは既定でデバッグ表示（生PCHDATAテーブル・同期情報行）を隠す。
-  URLに `?debug=1` を付けると表示される（例: `http://localhost:8777/?debug=1`）
-- PMD のテストデータは `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
-- **AudioContext はユーザー操作が要る。** JS から `compileMML()` を呼ぶだけでは音が出ない
-  （リングは進むので「動いてるように見えて無音」になり紛らわしい）。実際にボタンをクリックすること
+  URLに `?debug=1` を付けると表示される（例: `http://localhost:8779/?engine=mucom&debug=1`）
+- PMDの動作確認用データは `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
+  （ビルド成果物には同梱しない。upstream/直下から直接読む用途のみ、`tools/verify_right_pane_data.mjs`参照）
+- **AudioContext はユーザー操作が要る。** JS から `compileMML()`/`playMusic()` を呼ぶだけでは
+  音が出ない（リングは進むので「動いてるように見えて無音」になり紛らわしい）。実際にボタンをクリックすること
 - **frame 刻みの測定は時間サンプリングでは不可。** サブブロックが1バーストで処理されるため
   2048 の塊に見える。リングの連続エントリを直接読むこと
 
