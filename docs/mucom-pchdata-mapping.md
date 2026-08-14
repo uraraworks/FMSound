@@ -463,7 +463,7 @@ CLOCK COUNTへそのまま採用した。
 
 `upstream/MucomWeb/mucom88/package/sampl2.muc`/`sampl3.muc`はcommentが空
 だったため、日本語コメントを含むローカルサンプル`mucomweb/html/samplja.muc`
-(CP932でエンコード、`#title 日本語コメント確認用` / `#composer 米原正和` /
+(CP932でエンコード、`#title 日本語コメント確認用` / `#composer うらら太郎` /
 `#comment これは日本語コメントの表示確認用サンプルです`)を新規作成し、
 `sampl1.muc`と同様「ローカル,確認用」のリンクとして常設した。
 実際にダウンロード→Compile/Playし、FMDSP画面下部のコメント欄3行すべてに
