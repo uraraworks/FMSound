@@ -148,6 +148,11 @@ export async function init(ctx) {
   const resultEl = document.getElementById('result');
   function renderCompileResult(text) {
     resultEl.textContent = text;
+    // 課題D: エラー(#error N in line M./#Device error/#Memory write error等、
+    // upstream/mucom88/src/cmucom.cpp のメッセージはすべて"error"を含む)は赤系(--danger)。
+    // 正常時の"#OpenMucom88 Ver..."はこの文字列を含まないため赤くならない(実測確認済み)。
+    const isError = /error/i.test(text);
+    resultEl.classList.toggle('mml-compile-error', isError);
     const line = extractErrorLine(text);
     if (line != null) {
       resultEl.classList.add('result-has-error-line');

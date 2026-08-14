@@ -555,6 +555,15 @@ header.app-header .app-tagline {
   text-decoration: underline dotted;
 }
 
+/* 課題D: エラー表示は赤系(--danger)にする。正常時(「コンパイル成功」/
+   MUCOM側の"#OpenMucom88 Ver..."等)には付与しないため誤って赤くならない
+   (PMD: html/pmd-app.js renderCompileErrors()、MUCOM: html/mucom-app.js
+   renderCompileResult()参照)。 */
+.mml-compile-error-text,
+#result.mml-compile-error {
+  color: var(--danger);
+}
+
 /* エラー行ジャンプ: compileMML()の出力から行番号が取れた場合だけ付与される
    (mucomweb/html/mml-editor.js extractErrorLine()参照。取れない場合はクリック不可のまま)。 */
 #result.result-has-error-line {

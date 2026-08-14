@@ -202,6 +202,11 @@ export async function init(ctx) {
     for (const e of errors) {
       const div = document.createElement('div');
       div.textContent = e.line != null ? `line ${e.line}: ${e.message}` : e.message;
+      // 課題D: エラーはすべて赤系(--danger)にする(行番号が無い「再生エラー: ...」も
+      // 含む。以前は line != null のときだけ .mml-error-line を付けていたため
+      // 再生エラーだけ色が付かない抜けがあった)。正常時の「コンパイル成功」は
+      // このループを通らない(上のearly returnで別処理)ので赤くならない。
+      div.classList.add('mml-compile-error-text');
       if (e.line != null) {
         div.classList.add('mml-error-line');
         div.title = `クリックでMML ${e.line}行目へ移動`;
