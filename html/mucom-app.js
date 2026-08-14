@@ -129,6 +129,15 @@ export async function init(ctx) {
   });
 
   let mmlDirty = false;
+  // PMD側(html/pmd-app.js)と同じ理由で用意する「一度でも今の内容をコンパイル成功
+  // させたか」フラグ。MUCOM側は元々ボタンの青いドット表示自体は mmlDirty だけを見て
+  // いた(hasPlaybackには依存していなかった)ためドットが残る不具合そのものは無かったが、
+  // クリックハンドラの「再コンパイルすべきか」判定は hasPlayback(AudioWorkletの
+  // 非同期'playback'通知)を見ていた。コンパイル成功直後、その通知がまだ届いていない
+  // 一瞬の間に再クリックすると不要な再コンパイルが起きてしまう(実害は薄いが、
+  // 課題A/追加報告と同じ「コンパイル成否をhasPlaybackで代用する」パターンなので、
+  // 再発防止のためPMD側と揃えて専用フラグに切り替える)。
+  let hasCompiled = false;
   function markMmlDirty() {
     if (mmlDirty) return;
     mmlDirty = true;
@@ -174,7 +183,10 @@ export async function init(ctx) {
     btnStop.disabled = !moduleReady || !hasPlayback;
 
     const icon = !mmlDirty && playing ? ICONS.pause : ICONS.play;
-    const label = mmlDirty ? 'コンパイル&再生' : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
+    // ドットの意味を利用者に伝える(PMD側と同じ対応。見た目は変えずtitle/aria-labelだけ)。
+    const label = mmlDirty
+      ? '未コンパイルの変更があります(クリックでコンパイル&再生)'
+      : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
     btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);
@@ -203,7 +215,7 @@ export async function init(ctx) {
     if (btnPlayPause.disabled) return;
     const audioState = globalThis.mucomAudioState;
     const hasPlayback = Boolean(audioState?.playback);
-    if (!hasPlayback || mmlDirty) {
+    if (!hasCompiled || mmlDirty) {
       if (hasPlayback) {
         stopPlayback();
       }
@@ -576,6 +588,7 @@ export async function init(ctx) {
     const compiledOk = Boolean(audioStateAfter) && audioStateAfter.generation !== generationBefore;
     if (compiledOk) {
       mmlDirty = false;
+      hasCompiled = true;
     }
     setAudioPaused(false);
   }

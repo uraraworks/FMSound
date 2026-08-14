@@ -166,6 +166,21 @@ export async function init(ctx) {
   });
 
   let mmlDirty = false;
+  // 「一度でも今のMML内容をコンパイル成功させたか」。UI(青いドット/ボタンラベル)の
+  // 「コンパイル&再生」が必要かどうかの判定に使う。
+  //
+  // 実測で判明した不具合(利用者報告「再生ボタン右上に青い●が出たままになる」の根):
+  // 以前はこの判定に globalThis.pmdAudioState?.playback (hasPlayback、AudioWorkletの
+  // 'playback' postMessageで非同期に立つ) を使っていた。しかしコンパイル成功→
+  // Module.playMusic()が返った直後の時点では、AudioWorkletの初回メッセージがまだ
+  // 届いておらず hasPlayback は依然falseのまま。そのためcompileAndPlay()内で
+  // updateTransportButtonUI()を呼んでも「まだコンパイルが必要」と誤判定され、
+  // 次のrAF(updateChannelStatus、無条件に毎フレームupdateTransportButtonUI()を呼ぶ)が
+  // 回ってhasPlaybackが追いつくまでの間、青いドットが消えないまま残る
+  // (rAFが遅延・停止する環境やタブがバックグラウンドの場合は体感できるほど残る)。
+  // 「コンパイルの成否」と「実際に音が出始めたか」は別の事象なので、前者だけを見る
+  // 専用フラグに切り替えて解消する(hasPlaybackはbtnStopの活性判定にだけ残す)。
+  let hasCompiled = false;
   function markMmlDirty() {
     if (mmlDirty) return;
     mmlDirty = true;
@@ -408,14 +423,17 @@ export async function init(ctx) {
     const hasPlayback = Boolean(audioState?.playback);
     const paused = Boolean(audioState?.paused);
     const playing = hasPlayback && !paused;
-    const needsCompile = uiMode === 'editor' && (mmlDirty || !hasPlayback);
+    const needsCompile = uiMode === 'editor' && (mmlDirty || !hasCompiled);
 
     if (needsCompile) {
       btnPlayPause.disabled = !moduleReady;
       btnStop.disabled = !moduleReady || !hasPlayback;
       btnPlayPause.replaceChildren(svgIcon(ICONS.play.path ?? ICONS.play, ICONS.play.extra ?? ''));
-      btnPlayPause.title = 'コンパイル&再生';
-      btnPlayPause.setAttribute('aria-label', 'コンパイル&再生');
+      // ドットの意味を利用者に伝える(利用者報告「青い●は何?」への対応。
+      // 見た目(サイズ・色)は変えず、title/aria-labelだけで説明する)。
+      const title = mmlDirty ? '未コンパイルの変更があります(クリックでコンパイル&再生)' : 'コンパイル&再生';
+      btnPlayPause.title = title;
+      btnPlayPause.setAttribute('aria-label', title);
       btnPlayPause.classList.remove('active');
       btnPlayPause.classList.add('dirty');
       return;
@@ -459,18 +477,18 @@ export async function init(ctx) {
     }
     renderCompileErrors([]);
     mmlDirty = false;
+    hasCompiled = true;
     commentOffset = 0;
     setAudioPaused(false);
   }
 
   btnPlayPause.addEventListener('click', () => {
     if (btnPlayPause.disabled) return;
-    const audioState = globalThis.pmdAudioState;
-    const hasPlayback = Boolean(audioState?.playback);
-    if (uiMode === 'editor' && (mmlDirty || !hasPlayback)) {
+    if (uiMode === 'editor' && (mmlDirty || !hasCompiled)) {
       compileAndPlay();
       return;
     }
+    const audioState = globalThis.pmdAudioState;
     if (!audioState || !audioState.context) return;
     if (audioState.paused) {
       audioState.context.resume();
