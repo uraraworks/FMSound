@@ -229,9 +229,10 @@ export async function init(ctx) {
 
     const icon = !mmlDirty && playing ? ICONS.pause : ICONS.play;
     // ドットの意味を利用者に伝える(PMD側と同じ対応。見た目は変えずtitle/aria-labelだけ)。
-    const label = mmlDirty
+    const baseLabel = mmlDirty
       ? '未コンパイルの変更があります(クリックでコンパイル&再生)'
       : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
+    const label = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
     btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);

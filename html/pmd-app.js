@@ -520,7 +520,9 @@ export async function init(ctx) {
       btnPlayPause.replaceChildren(svgIcon(ICONS.play.path ?? ICONS.play, ICONS.play.extra ?? ''));
       // ドットの意味を利用者に伝える(利用者報告「青い●は何?」への対応。
       // 見た目(サイズ・色)は変えず、title/aria-labelだけで説明する)。
-      const title = mmlDirty ? '未コンパイルの変更があります(クリックでコンパイル&再生)' : 'コンパイル&再生';
+      const title = mmlDirty
+        ? `未コンパイルの変更があります(クリックでコンパイル&再生 / ${SHORTCUT_PLAY_HINT})`
+        : `コンパイル&再生 (${SHORTCUT_PLAY_HINT})`;
       btnPlayPause.title = title;
       btnPlayPause.setAttribute('aria-label', title);
       btnPlayPause.classList.remove('active');
@@ -532,7 +534,8 @@ export async function init(ctx) {
     btnStop.disabled = !moduleReady || !hasPlayback;
 
     const icon = playing ? ICONS.pause : ICONS.play;
-    const label = playing ? '一時停止' : (paused ? '再開' : '再生(曲を開いてください)');
+    const baseLabel = playing ? '一時停止' : (paused ? '再開' : '再生(曲を開いてください)');
+    const label = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
     btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);
