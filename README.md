@@ -150,9 +150,8 @@ MUCOM が時間サンプリングなのは submodule 非改変の制約。実用
 ```bash
 # MUCOM88
 cd /Users/haruurara/MyProject/_emulator/FMSound && source ./emsdk/emsdk_env.sh
-cd upstream/MucomWeb
+cd mucomweb
 emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
-cp ../mucom88/package/sampl*.muc build-web/     # ビルド後に毎回必要
 
 # PMD
 cd /Users/haruurara/MyProject/_emulator/FMSound/pmdweb

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MUCOM88 on Web</title>
+</head>
+<style>
+  a:link { color: #0000ff; }
+  a:visited { color: #0000ff; }
+  a:hover { color: #0000ff; }
+  a:active { color: #0000ff; }
+  #channelStatus { border-collapse: collapse; margin: 1em 0; }
+  #channelStatus th, #channelStatus td { border: 1px solid #999; padding: 0.2em 0.5em; text-align: right; }
+  #snapshotDebug { white-space: pre-wrap; font-family: monospace; }
+  #syncControls { margin: 0.7em 0; }
+</style>
+<body>
+<h1 style="font-size: 125%">MUCOM88 on Web</h1>
+<textarea id="mml" cols="80" rows="20"></textarea>
+<p/>
+<button id="btnCompile">Compile / Play</button>
+<button id="btnStop">Stop</button>
+<p/>
+<input type="radio" name="srate" value="55467" checked="checked">55kHz</input>
+<input type="radio" name="srate" value="48000">48kHz</input>
+<input type="radio" name="srate" value="44100">44kHz</input>
+<input type="radio" name="srate" value="24000">24kHz</input>
+<input type="radio" name="srate" value="22050">22kHz</input>
+<input type="radio" name="srate" value="12000">12kHz</input>
+<div id="syncControls">
+  <label>同期較正:
+    <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0"> ms
+  </label>
+  <label><input id="useSynchronizedStatus" type="checkbox" checked> 同期表示</label>
+</div>
+<table id="channelStatus">
+  <thead>
+    <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<div id="snapshotDebug">snapshot ring: inactive</div>
+<div id="audioDebug">AudioWorklet: inactive</div>
+<p/>
+<div style="font-size: small;">
+  <a href="https://github.com/onitama/mucom88" target="_blank">OPEN MUCOM88</a>
+  <a href="https://github.com/onitama/mucom88/blob/master/package/license.txt" target="_blank">(LICENSE)</a> |
+  <a href="https://github.com/aosoft/MucomWeb" target="_blank">MUCOM88 on Web</a>
+  <a href="https://github.com/aosoft/MucomWeb/blob/master/LICENSE" target="_blank">(LICENSE)</a> /
+  <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank">CC BY-NC-SA 4.0</a>
+</div>
+<p/>
+<div>
+  <button id="btnClearMML">Clear MML</button>
+  <p/>
+  Sample MML
+  <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
+  <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
+  Copyright(C) by Yuzo Koshiro
+</div>
+<div id="result"></div>
+<script type="module">
+  import Module from './mucom88.js';
+
+  const channelTableBody = document.querySelector('#channelStatus tbody');
+  const snapshotRingSize = 2048;
+  const invalidWriteIndex = 0xffffffff;
+  const calibrationInput = document.getElementById('calibrationMs');
+  const synchronizedCheckbox = document.getElementById('useSynchronizedStatus');
+  for (let ch = 0; ch < 11; ch++) {
+    const row = channelTableBody.insertRow();
+    row.insertCell().innerText = ch;
+    for (let column = 0; column < 6; column++) {
+      row.insertCell().innerText = '0';
+    }
+  }
+
+  function snapshotAt(pointerWords, entryWords, logicalIndex) {
+    const slot = logicalIndex & (snapshotRingSize - 1);
+    const start = pointerWords + slot * entryWords;
+    return Module.HEAP32.subarray(start, start + entryWords);
+  }
+
+  function findSnapshot(pointerWords, entryWords, writeIndex, targetFrame) {
+    const available = Math.min(writeIndex, snapshotRingSize);
+    const oldest = writeIndex - available;
+    const newest = writeIndex - 1;
+    const oldestEntry = snapshotAt(pointerWords, entryWords, oldest);
+    const newestEntry = snapshotAt(pointerWords, entryWords, newest);
+
+    // A delayed reader is clamped to the retained range instead of reading an overwritten slot.
+    if (targetFrame <= (oldestEntry[0] >>> 0)) return oldestEntry;
+    if (targetFrame >= (newestEntry[0] >>> 0)) return newestEntry;
+
+    let low = oldest;
+    let high = newest;
+    while (low <= high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const entry = snapshotAt(pointerWords, entryWords, middle);
+      if ((entry[0] >>> 0) <= targetFrame) {
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return snapshotAt(pointerWords, entryWords, high);
+  }
+
+  function displaySnapshot(entry) {
+    for (let ch = 0; ch < 11; ch++) {
+      const track = entry.subarray(1 + ch * 15, 1 + (ch + 1) * 15);
+      const cells = channelTableBody.rows[ch].cells;
+      cells[1].innerText = track[1];
+      cells[2].innerText = track[2];
+      cells[3].innerText = track[3];
+      cells[4].innerText = track[0];
+      cells[5].innerText = `${track[5]}/${track[6]}`;
+      cells[6].innerText = track[8];
+    }
+  }
+
+  function updateChannelStatus() {
+    if (typeof Module.getSnapshotWriteIndex === 'function' && Module.HEAP32) {
+      const writeIndex = Module.getSnapshotWriteIndex() >>> 0;
+      const debug = document.getElementById('snapshotDebug');
+      if (writeIndex === invalidWriteIndex || writeIndex === 0) {
+        debug.innerText = 'snapshot ring: inactive/empty';
+      } else {
+        const pointerWords = Module.getSnapshotRingPointer() / 4;
+        const entryWords = Module.getSnapshotEntryByteSize() / 4;
+        const latest = snapshotAt(pointerWords, entryWords, writeIndex - 1);
+        const renderFrame = latest[0] >>> 0;
+        const audioState = globalThis.mucomAudioState;
+        const playback = audioState && audioState.playback;
+        let selected = latest;
+        let syncText = 'sync: waiting for playFrame';
+
+        if (playback && audioState.context) {
+          const context = audioState.context;
+          const sampleRate = context.sampleRate;
+          const outputLatency = Number.isFinite(context.outputLatency) && context.outputLatency > 0
+            ? context.outputLatency
+            : (Number.isFinite(context.baseLatency) && context.baseLatency > 0
+              ? context.baseLatency : 0);
+          const calibrationMs = Math.max(-200, Math.min(200,
+            Number.parseFloat(calibrationInput.value) || 0));
+          const estimatedPlayFrame = playback.playFrame +
+            (context.currentTime - playback.contextTime) * sampleRate;
+          const audibleFrame = Math.max(0, estimatedPlayFrame -
+            (outputLatency + calibrationMs / 1000) * sampleRate);
+          if (synchronizedCheckbox.checked) {
+            selected = findSnapshot(pointerWords, entryWords, writeIndex, audibleFrame);
+          }
+          const differenceMs = (renderFrame - audibleFrame) / sampleRate * 1000;
+          syncText = `sync: audibleFrame=${Math.round(audibleFrame)} renderFrame=${renderFrame} ` +
+            `difference=${differenceMs.toFixed(1)}ms latency=${(outputLatency * 1000).toFixed(1)}ms ` +
+            `calibration=${calibrationMs.toFixed(1)}ms`;
+        }
+
+        displaySnapshot(selected);
+
+        const t = selected.subarray(1, 16);
+        debug.innerText = `${syncText}\n` +
+          `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}\n` +
+          `track0 length=${t[0]} vnum=${t[1]} volume=${t[2]} quantize=${t[3]} ` +
+          `detune=${t[4]} fnum=${t[5]}/${t[6]} flag=${t[8]}`;
+      }
+    }
+
+    const audioState = globalThis.mucomAudioState;
+    if (audioState) {
+      const stats = audioState.stats;
+      document.getElementById('audioDebug').innerText =
+        `AudioWorklet: requested=${stats.requestedFrames} rendered=${stats.renderedFrames} ` +
+        `queued=${stats.queuedFrames} underflow=${stats.underflowFrames}`;
+    }
+    requestAnimationFrame(updateChannelStatus);
+  }
+  requestAnimationFrame(updateChannelStatus);
+
+  document.getElementById('btnCompile').addEventListener('click', function() {
+      var radios = document.getElementsByName('srate');
+      var rate = 44100;
+      for (var i = 0; i < radios.length; i++) {
+          if (radios[i].checked) {
+            rate = parseInt(radios[i].value);
+            break;
+          }
+      }
+
+      var mml = document.getElementById('mml').value;
+      document.getElementById('result').innerText = Module.compileMML(mml, rate);
+  });
+
+  document.getElementById('btnStop').addEventListener('click', function() {
+      Module.stopMusic();
+  });
+
+  document.getElementById('btnClearMML').addEventListener('click', function() {
+      document.getElementById('mml').value = '';
+  });
+
+  function downloadMML(url) {
+      fetch(url)
+          .then(response => {
+              return response.text()
+          })
+          .then(text => {
+              document.getElementById('mml').value = text;
+          });
+  }
+
+  document.getElementById('dlSampl2').addEventListener('click', function() {
+      downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl2.muc');
+  });
+
+  document.getElementById('dlSampl3').addEventListener('click', function() {
+      downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl3.muc');
+  });
+</script>
+</body>
+</html>

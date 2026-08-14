@@ -1,0 +1,68 @@
+cmake_minimum_required(VERSION 3.13)
+project(mucom88)
+
+set(CMAKE_CXX_STANDARD 17)
+
+# mucom88 本体は aosoft/MucomWeb が抱える専用フォルクを参照する。
+# 兄弟ディレクトリの ../upstream/mucom88（OpenMucom88 本家クローン）とは
+# 別系統・非互換（cmucom.h/mucom_module.cpp 等の中身が大きく異なる）なので
+# 絶対に混同しないこと。こちらは無改変のまま参照専用に使う。
+set(MUCOM88_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/MucomWeb/mucom88")
+
+file(GLOB SOURCES
+        ${MUCOM88_DIR}/src/*.c
+        ${MUCOM88_DIR}/src/*.cpp
+        ${MUCOM88_DIR}/src/dummy/*.cpp
+        ${MUCOM88_DIR}/src/fmgen/*.cpp
+        ${MUCOM88_DIR}/src/module/*.cpp
+        ${MUCOM88_DIR}/src/plugin/*.cpp
+        ${MUCOM88_DIR}/src/Z80/*.cpp
+        src/*.cpp)
+
+list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/mucomerror.cpp")
+
+if (EMSCRIPTEN)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/main.cpp")
+
+    set(CMAKE_CXX_FLAGS_DEBUG "-g")
+    set(CMAKE_CXX_FLAGS_RELEASE  "-Oz")
+endif()
+
+add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
+
+if (EMSCRIPTEN)
+    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE --bind)
+    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -sEXPORTED_RUNTIME_METHODS=HEAP32)
+    if (NOT WEB_BROWSER)
+        target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -sNODERAWFS=1)
+    endif()
+
+    add_custom_command(
+        TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" ARGS "${MUCOM88_DIR}/clion/PostBuild.py" "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.js")
+endif()
+
+target_include_directories(${CMAKE_PROJECT_NAME}
+        PRIVATE ${SDL_INCLUDE_DIR}
+        PRIVATE ${MUCOM88_DIR}/src
+        PRIVATE ${MUCOM88_DIR}/src/module
+        PRIVATE src)
+
+# html/ の同期は file(COPY) だと configure 時にしか走らず、html/js だけ編集
+# しても build-web/ に反映されない（pmdweb/CMakeLists.txt で踏んだ問題と同じ）。
+# ALL 付き custom target なら make のたびに必ず走る。
+add_custom_target(sync_html ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/html"
+        "${CMAKE_CURRENT_BINARY_DIR}"
+    COMMENT "html/ を build-web/ へ同期")
+
+# サンプル MML。README には「ビルド後に毎回手でコピー」とあったがこの機会に自動化。
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/mucom88/package/sampl1.muc"
+        "${CMAKE_CURRENT_BINARY_DIR}/sampl1.muc"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/mucom88/package/sampl2.muc"
+        "${CMAKE_CURRENT_BINARY_DIR}/sampl2.muc")

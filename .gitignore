@@ -3,6 +3,7 @@
 
 # ビルド成果物(7.4MB)。CMake キャッシュに絶対パスが焼かれるため移植性も無い。
 /pmdweb/build-web/
+/mucomweb/build-web/
 
 # ツールチェーンへの symlink(実体は ../PC98/emsdk)。
 /emsdk
