@@ -103,7 +103,7 @@
   import { drawComment } from './fmdsp/comment.js';
   import * as rightpane from './fmdsp/rightpane.js';
   import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT } from './adapter.js';
-  import { ICONS, iconButton } from './ui/icons.js';
+  import { ICONS, iconButton, svgIcon } from './ui/icons.js';
   import { setupFullscreen, setupPopover } from './ui/shell.js';
   import { FMSOUND_VERSION_FIELDS, FMSOUND_VERSION_FOOTER } from './ui/version.js';
 
@@ -221,18 +221,22 @@
 
   // --- ツールバー組み立て ---
   const toolbar = document.getElementById('toolbar');
-  const btnCompile = iconButton(ICONS.play, 'コンパイル&再生');
+  // 再生/一時停止トグル(旧btnCompile+btnPauseを統合)。停止中は▶(コンパイル&再生)、
+  // 再生中は⏸(一時停止)、一時停止中は▶(再開)を表示する。アイコン/title/aria-label
+  // の切替はupdateTransportButtonUI()に一本化する(ここでは初期状態=停止中を仮置き)。
+  const btnPlayPause = iconButton(ICONS.play, 'コンパイル&再生');
   const btnStop = iconButton(ICONS.stop, '停止');
-  const btnPause = iconButton(ICONS.pause, '一時停止');
   const btnOpenFile = iconButton(ICONS.open, '曲を開く(.muc)');
   const btnSettings = iconButton(ICONS.settings, '設定');
   const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
   const btnFullscreen = iconButton(ICONS.fullscreen, 'フルスクリーン');
-  toolbar.append(btnCompile, btnStop, btnPause, btnOpenFile, btnSettings, btnEditorMode, btnFullscreen);
+  toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnSettings, btnEditorMode, btnFullscreen);
 
-  btnCompile.disabled = true;
+  // 初期化(Module読み込み)が済むまではどちらも押せない。停止ボタンは初期化後も
+  // 再生中の曲が無い間はdisabledのまま(updateTransportButtonUIが管理)。
+  let moduleReady = false;
+  btnPlayPause.disabled = true;
   btnStop.disabled = true;
-  btnPause.disabled = true;
 
   applyUiMode(currentUiMode());
   btnEditorMode.addEventListener('click', () => {
@@ -252,9 +256,8 @@
   requestAnimationFrame(rescale);
 
   const Module = await createMucomWeb();
-  btnCompile.disabled = false;
-  btnStop.disabled = false;
-  btnPause.disabled = false;
+  moduleReady = true;
+  updateTransportButtonUI();
 
   // --- PAUSE ---
   // Stop()(g_player->Stop()/g_mucom->Stop())は呼ばない。曲の位置(g_renderFrame,
@@ -274,12 +277,27 @@
   // 停止直後、STOPインジケータを反映する1回だけの再描画用フラグ(updateChannelStatus参照)。
   let stoppedFrameDrawn = false;
 
-  function updatePauseButtonUI() {
+  // 3状態(停止/再生中/一時停止中)をbtnPlayPause/btnStopへ反映する。
+  // 状態変化のトリガー(compileAndPlay/setAudioPaused/Module初期化完了)の
+  // すべてから同期的に呼べる箇所に加え、AudioWorkletPlay()内部の非同期処理で
+  // state.playbackが遅れてセットされる分はupdateChannelStatus()のrAFループ
+  // からも毎フレーム呼び、ズレを吸収する(playFrame/frame同期ロジックには
+  // 触れない、表示専用)。
+  function updateTransportButtonUI() {
     const audioState = globalThis.mucomAudioState;
+    const hasPlayback = Boolean(audioState?.playback);
     const paused = Boolean(audioState?.paused);
-    btnPause.classList.toggle('active', paused);
-    btnPause.title = paused ? '再開' : '一時停止';
-    btnPause.setAttribute('aria-label', btnPause.title);
+    const playing = hasPlayback && !paused;
+
+    btnPlayPause.disabled = !moduleReady;
+    btnStop.disabled = !moduleReady || !hasPlayback;
+
+    const icon = playing ? ICONS.pause : ICONS.play;
+    const label = playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生');
+    btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
+    btnPlayPause.title = label;
+    btnPlayPause.setAttribute('aria-label', label);
+    btnPlayPause.classList.toggle('active', paused);
   }
 
   function setAudioPaused(paused) {
@@ -291,22 +309,30 @@
     // 以後はそのフラグがtrueのままなので、再開までdraw()が一切呼ばれない
     // (=キャンバスのピクセルハッシュが完全に固定される)。
     pausedFrameDrawn = false;
-    updatePauseButtonUI();
+    updateTransportButtonUI();
   }
 
-  btnPause.addEventListener('click', () => {
+  btnPlayPause.addEventListener('click', () => {
+    if (btnPlayPause.disabled) return;
     const audioState = globalThis.mucomAudioState;
-    if (!audioState || !audioState.context) return;
+    const hasPlayback = Boolean(audioState?.playback);
+    if (!hasPlayback) {
+      // 停止中: コンパイル&再生(常に頭から)。
+      compileAndPlay();
+      return;
+    }
+    if (!audioState.context) return;
     if (audioState.paused) {
+      // 一時停止中: 再開のみ。再コンパイルも頭出しもしない。
       audioState.context.resume();
       setAudioPaused(false);
     } else {
-      if (!audioState.playback) return; // 再生中の曲が無い
+      // 再生中: 一時停止。
       audioState.context.suspend();
       setAudioPaused(true);
     }
   });
-  updatePauseButtonUI();
+  updateTransportButtonUI();
 
   const channelTableBody = document.querySelector('#channelStatus tbody');
   const snapshotRingSize = 2048;
@@ -613,6 +639,11 @@
   }
 
   function updateChannelStatus() {
+    // トランスポートボタンの見た目は毎フレーム同期する(AudioWorkletPlay()内部の
+    // 非同期処理でstate.playbackが遅れてセットされる分を吸収するため)。
+    // draw()自体の早期returnより前に置き、一時停止中も含めて確実に更新する。
+    updateTransportButtonUI();
+
     // 一時停止中: 最初の1回だけ通常描画(PAUSE/PLAYインジケータの点灯反映)を
     // 行わせ、以後はdraw()自体を呼ばずに完全に固定する(ピーク保持/減衰
     // (stepPeak, fmdsp/rightpane.js)がrAFのたびに1歩ずつ進む副作用があり、
@@ -716,7 +747,7 @@
   }
 
   function compileAndPlay() {
-    if (btnCompile.disabled) return;
+    if (!moduleReady) return;
     const mml = document.getElementById('mml').value;
     adapter.reset();
     setCommentFromMml(mml);
@@ -725,8 +756,6 @@
     // 一時停止フラグを引きずらないようにここでクリアする。
     setAudioPaused(false);
   }
-
-  btnCompile.addEventListener('click', compileAndPlay);
 
   btnStop.addEventListener('click', function() {
       Module.stopMusic();
