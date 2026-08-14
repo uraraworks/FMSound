@@ -37,11 +37,16 @@ import { ICONS, iconButton, svgIcon } from './ui/icons.js';
 import { setupMmlEditor } from './mml-editor.js';
 import { PMD_TOKEN_RULES, PMD_MACRO_HEADER_RE, PMD_PART_LETTER_RE } from './mml-tokens.js';
 import { compileMml } from './compiler/pmd_mml_compiler.mjs';
+import { loadMmlDraft, setupMmlAutosave, formatSavedAt } from './ui/mml-draft.js';
+import { setMmlStatus } from './ui/mml-status.js';
+import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
+import { createDownloadMenu } from './ui/download-menu.js';
+import { setupPopover } from './ui/shell.js';
 
 export async function init(ctx) {
   const {
     canvas, consoleCard, toolbar,
-    btnPlayPause, btnStop, btnOpenFile, btnFullscreen,
+    btnPlayPause, btnStop, btnOpenFile, btnDownload, settingsPopoverEl, btnFullscreen,
     fileInput, sampleLinksEl, enginePaneEl, footerCreditsEl, rescale,
   } = ctx;
 
@@ -64,6 +69,14 @@ export async function init(ctx) {
     '　「曲を開く」から手元の.M/.mファイルを選ぶこともできます。';
   document.getElementById('dlSampleFurElise').addEventListener('click', async () => {
     if (uiMode === 'editor') {
+      // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
+      // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
+      if (mmlTextarea.value.trim().length > 0) {
+        const ok = window.confirm(
+          '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
+        );
+        if (!ok) return;
+      }
       const response = await fetch('./sample_fur_elise.mml');
       const text = await response.text();
       mmlTextarea.value = text;
@@ -81,6 +94,8 @@ export async function init(ctx) {
   enginePaneEl.classList.remove('hidden');
   enginePaneEl.innerHTML = `
     <div class="editor-pane hidden" id="mmlEditorPane">
+      <div class="mml-restore-note hidden" id="mmlRestoreNote"></div>
+      <div class="mml-status" id="mmlStatus"></div>
       <div class="mml-editor" id="mmlEditor">
         <div class="mml-gutter" id="mmlGutter" aria-hidden="true"><div class="mml-gutter-inner" id="mmlGutterInner"></div></div>
         <div class="mml-code-wrap" id="mmlCodeWrap">
@@ -160,6 +175,30 @@ export async function init(ctx) {
       partLetterRe: PMD_PART_LETTER_RE,
     },
   });
+
+  // --- 課題A: 編集内容の自動保存/復元。ドライバごとに別キー(PMDとMUCOM88はMML文法が
+  // 違うため混在させない)。復元とサンプル読み込みの優先順位: サンプルはユーザーの
+  // 明示クリックでのみ読み込まれ、かつテキストに何か入っている状態でクリックした
+  // ときは確認を挟む(下のdlSampleFurElise参照)ので、復元した下書きが黙って
+  // 上書きされることはない。
+  const MML_DRAFT_KEY = 'fmsound-pmd-mml-draft';
+  const mmlRestoreNoteEl = document.getElementById('mmlRestoreNote');
+  const mmlStatusEl = document.getElementById('mmlStatus');
+  const draft = loadMmlDraft(MML_DRAFT_KEY);
+  if (draft && draft.text.length > 0) {
+    mmlTextarea.value = draft.text;
+    mmlEditorApi.render();
+    const savedLabel = formatSavedAt(draft.savedAt);
+    mmlRestoreNoteEl.textContent = savedLabel
+      ? `前回の続きを復元しました(${savedLabel}保存)`
+      : '前回の続きを復元しました';
+    mmlRestoreNoteEl.classList.remove('hidden');
+    mmlTextarea.addEventListener('input', () => mmlRestoreNoteEl.classList.add('hidden'), { once: true });
+  }
+  // 保存頻度: 打鍵のたびに同期書き込みすると長いMMLで主スレッドを塞ぐため、
+  // 最後の入力から少し経ってから1回だけ書く(間引く)。タブを閉じる/裏に回す
+  // 直前だけは間引かず即書く(ui/mml-draft.js参照)。
+  setupMmlAutosave({ storageKey: MML_DRAFT_KEY, textarea: mmlTextarea });
 
   let mmlDirty = false;
   // 「一度でも今のMML内容をコンパイル成功させたか」。UI(青いドット/ボタンラベル)の

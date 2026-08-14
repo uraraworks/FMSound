@@ -20,11 +20,16 @@ import { ICONS, iconButton, svgIcon } from './ui/icons.js';
 import { setupMmlEditor, extractErrorLine } from './mml-editor.js';
 import { MUCOM_TOKEN_RULES, MUCOM_MACRO_HEADER_RE, MUCOM_PART_LETTER_RE } from './mml-tokens.js';
 import { FMSOUND_VERSION_FIELDS } from './ui/version.js';
+import { loadMmlDraft, setupMmlAutosave, formatSavedAt } from './ui/mml-draft.js';
+import { setMmlStatus } from './ui/mml-status.js';
+import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
+import { createDownloadMenu } from './ui/download-menu.js';
+import { setupPopover } from './ui/shell.js';
 
 export async function init(ctx) {
   const {
     canvas, consoleCard, toolbar,
-    btnPlayPause, btnStop, btnOpenFile, btnFullscreen,
+    btnPlayPause, btnStop, btnOpenFile, btnDownload, settingsPopoverEl, btnFullscreen,
     fileInput, sampleLinksEl, enginePaneEl, footerCreditsEl, rescale,
   } = ctx;
 
@@ -43,6 +48,8 @@ export async function init(ctx) {
   // 本物のtextareaの3つを同じ枠(overflow:hidden)の中に収め、textareaのscrollを
   // 正として他の2つを追従させる(mml-editor.js参照)。
   enginePaneEl.innerHTML = `
+    <div class="mml-restore-note hidden" id="mmlRestoreNote"></div>
+    <div class="mml-status" id="mmlStatus"></div>
     <div class="mml-editor" id="mmlEditor">
       <div class="mml-gutter" id="mmlGutter" aria-hidden="true"><div class="mml-gutter-inner" id="mmlGutterInner"></div></div>
       <div class="mml-code-wrap" id="mmlCodeWrap">
@@ -127,6 +134,24 @@ export async function init(ctx) {
       partLetterRe: MUCOM_PART_LETTER_RE,
     },
   });
+
+  // --- 課題A: 編集内容の自動保存/復元(PMD側と同じ作法、ui/mml-draft.js参照)。
+  // ドライバごとに別キー(PMDとMUCOM88はMML文法が違うため混在させない)。
+  const MML_DRAFT_KEY = 'fmsound-mucom-mml-draft';
+  const mmlRestoreNoteEl = document.getElementById('mmlRestoreNote');
+  const mmlStatusEl = document.getElementById('mmlStatus');
+  const draft = loadMmlDraft(MML_DRAFT_KEY);
+  if (draft && draft.text.length > 0) {
+    mmlTextarea.value = draft.text;
+    mmlEditorApi.render();
+    const savedLabel = formatSavedAt(draft.savedAt);
+    mmlRestoreNoteEl.textContent = savedLabel
+      ? `前回の続きを復元しました(${savedLabel}保存)`
+      : '前回の続きを復元しました';
+    mmlRestoreNoteEl.classList.remove('hidden');
+    mmlTextarea.addEventListener('input', () => mmlRestoreNoteEl.classList.add('hidden'), { once: true });
+  }
+  setupMmlAutosave({ storageKey: MML_DRAFT_KEY, textarea: mmlTextarea });
 
   let mmlDirty = false;
   // PMD側(html/pmd-app.js)と同じ理由で用意する「一度でも今の内容をコンパイル成功
@@ -634,6 +659,14 @@ export async function init(ctx) {
   }
 
   function downloadMML(url) {
+    // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
+    // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
+    if (mmlTextarea.value.trim().length > 0) {
+      const ok = window.confirm(
+        '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
+      );
+      if (!ok) return Promise.resolve();
+    }
     return fetch(url)
       .then(response => response.arrayBuffer())
       .then(buffer => {

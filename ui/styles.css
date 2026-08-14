@@ -505,6 +505,34 @@ header.app-header .app-tagline {
 .mml-tok-tempo { color: #bf3989; font-weight: 700; }
 .mml-tok-vol { color: #0550ae; font-weight: 700; }
 
+/* 課題B: エディタのすぐ上に置く1行の状態表示(詳細ログは従来どおり#result側に残る)。 */
+.mml-status {
+  min-height: 1.4em;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-dim);
+}
+
+.mml-status-error {
+  color: var(--danger);
+}
+
+.mml-status-clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+/* 課題A: 復元通知(前回の編集内容をlocalStorageから読み戻したことを示す)。
+   初回入力(dirty化)で消える想定なのでhidden切替のみ持つ。 */
+.mml-restore-note {
+  font-size: 11px;
+  color: var(--accent-dim);
+}
+
+.mml-restore-note.hidden {
+  display: none;
+}
+
 .editor-actions {
   display: flex;
   align-items: center;
