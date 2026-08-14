@@ -115,6 +115,88 @@
   const UI_MODE_KEY = 'fmsound-mucom-ui-mode';
   const editorPane = document.getElementById('editorPane');
   const consoleCard = document.getElementById('consoleCard');
+  const canvas = document.getElementById('fmdsp-canvas');
+
+  // --- キャンバス表示サイズの再計算(WebX68k src/main.ts の rescale() に倣う) ---
+  // 旧実装(fitCanvasScale、当時はここより下のFMDSP描画準備の直後にあった)は
+  // 横幅だけを見て倍率を決めていたため、フルスクリーン中にツールバー
+  // (.console-footer)の高さぶん縦にはみ出し、.console-card の overflow:hidden で
+  // 上下が見切れていた(このファイルを直したissueの本題)。対策として、
+  // CSS(object-fit等)でのサイズ決めはやめ、幅と高さの両方の実測値から640x400の
+  // 縦横比を保ったまま収まる倍率をここ(JS)で一括計算し、canvas.style.width/height
+  // にpx直書きする方式に一本化する。通常表示・ネイティブ全画面・疑似全画面
+  // (body.pseudo-fullscreen)の3つとも、このrescale()だけがサイズを決める。
+  //
+  // 注意: canvasにmax-width/max-heightを付けてはいけない。width指定はインラインが
+  // スタイルシートより強い(仕様通り)が、max-widthは別プロパティなのでこの優先規則が
+  // 効かず、後からCSS側のmax-*がインライン値をクランプして縦横比が崩れる
+  // (WebX68k src/style.css 244行目付近のコメントに実際に踏んだ事例が残っている)。
+  const pageHeaderEl = document.querySelector('header.app-header');
+  const pageFooterEl = document.querySelector('footer.app-footer');
+  const sampleLinksEl = document.getElementById('sampleLinks');
+  const consoleFooterEl = document.querySelector('.console-footer');
+
+  function elHeight(el) {
+    return el ? el.getBoundingClientRect().height : 0;
+  }
+
+  function parseLenOrZero(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function isNativeFullscreen() {
+    return document.fullscreenElement === consoleCard || document.webkitFullscreenElement === consoleCard;
+  }
+
+  // 「カードに使える幅・高さ」を測る。ネイティブ全画面中は .console-card 自体が
+  // CSS(:fullscreen{width:100vw;height:100vh})で既に画面いっぱいに固定されているので、
+  // その実測値をそのまま使う(ヘッダー等はブラウザのトップレイヤーの下に隠れているだけで
+  // getBoundingClientRect() 上は非ゼロのままなため、通常表示と同じ「各要素の高さを
+  // 積み上げて引く」方式は使えない)。通常表示・疑似全画面では、疑似全画面がheader/
+  // footer/sample-linksをdisplay:noneにする(styles.css参照)ため、同じ積み上げ式で
+  // 自動的に0として扱われ、結果的に3モードとも同じ計算経路を通る。
+  function computeAvailable() {
+    if (isNativeFullscreen()) {
+      const rect = consoleCard.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+    const appStyle = getComputedStyle(document.getElementById('app'));
+    const paddingH = parseLenOrZero(appStyle.paddingLeft) + parseLenOrZero(appStyle.paddingRight);
+    const paddingV = parseLenOrZero(appStyle.paddingTop) + parseLenOrZero(appStyle.paddingBottom);
+    const availWidth = Math.max(1, window.innerWidth - paddingH);
+    const reservedHeight =
+      elHeight(pageHeaderEl) + elHeight(pageFooterEl) + elHeight(sampleLinksEl) + elHeight(editorPane) + paddingV;
+    const availHeight = Math.max(1, window.innerHeight - reservedHeight);
+    return { width: availWidth, height: availHeight };
+  }
+
+  function rescale() {
+    const dpr = window.devicePixelRatio || 1;
+    const avail = computeAvailable();
+    const cardStyle = getComputedStyle(consoleCard);
+    const cardGap = parseLenOrZero(cardStyle.rowGap || cardStyle.gap);
+    const stageAvailHeight = Math.max(1, avail.height - elHeight(consoleFooterEl) - cardGap);
+    const stageAvailWidth = Math.max(1, avail.width);
+
+    const fit = Math.min(stageAvailWidth / PC98_W, stageAvailHeight / PC98_H);
+    // 等倍以上のときだけ物理px単位に丸める(5x6ドットのfont_fmdsp_smallが非整数倍だと
+    // 不均等に潰れて滲む対策。pmdweb/html/index.htmlの同種コメント参照)。等倍未満は
+    // そのまま使う(丸めると1倍に張り付き、狭い画面で画面外へはみ出すため)。
+    const scale = fit >= 1 ? Math.max(1, Math.floor(fit * dpr) / dpr) : Math.max(0.3, fit);
+    if (!Number.isFinite(scale) || scale <= 0) return;
+
+    // 幅・高さを同じscaleから導くことで640:400の縦横比を厳密に保つ(個別に
+    // Math.roundすると縦横比がわずかに崩れるため、あえて丸めない)。
+    canvas.style.width = `${PC98_W * scale}px`;
+    canvas.style.height = `${PC98_H * scale}px`;
+  }
+
+  window.addEventListener('resize', rescale);
+  window.addEventListener('orientationchange', rescale);
+  // visualViewportのresizeは購読しない: ピンチズーム操作でも発火するため、ここで
+  // 再フィットすると自前のリサイズが利用者のピンチ操作を引き戻してしまう
+  // (既知の罠。WebX68k/WebNP2でも同じ理由で避けている)。
 
   function applyUiMode(mode) {
     editorPane.classList.toggle('hidden', mode !== 'editor');
@@ -157,8 +239,17 @@
     setUiMode(currentUiMode() === 'editor' ? 'player' : 'editor');
   });
 
-  setupFullscreen(consoleCard, btnFullscreen, { enter: 'フルスクリーン', exit: 'フルスクリーン解除' });
+  // onChange(=rescale)はfullscreenchangeイベントが飛ばない疑似フルスクリーンの
+  // トグルや、ネイティブ全画面が拒否されて疑似へフォールバックする経路も含め、
+  // 状態が確定するすべての分岐から呼ばれる(ui/shell.jsのupdateControl参照)。
+  setupFullscreen(consoleCard, btnFullscreen, { enter: 'フルスクリーン', exit: 'フルスクリーン解除' }, rescale);
   setupPopover(btnSettings, document.getElementById('settingsPopover'));
+
+  // スクリプト読み込み直後にも一度リスケールしておく(WebX68k src/main.tsの同種コメント
+  // 参照: resize等のイベント待ちだけだと、初回表示が常に最小サイズに固まる)。
+  // レイアウト確定後に測る必要があるためrAFを1回挟む。
+  rescale();
+  requestAnimationFrame(rescale);
 
   const Module = await createMucomWeb();
   btnCompile.disabled = false;
@@ -241,21 +332,7 @@
 
   // --- FMDSP描画準備 ---
   const vram = new Vram(PC98_W, PC98_H);
-  const canvas = document.getElementById('fmdsp-canvas');
   const canvasCtx = canvas.getContext('2d');
-
-  // pmdweb/html/index.html と同じ「物理px基準の整数倍」フィット(非整数倍だと
-  // 5x6ドットのfont_fmdsp_smallが不均等に潰れる問題への対策。同ファイル参照)。
-  function fitCanvasScale() {
-    const dpr = window.devicePixelRatio || 1;
-    const available = document.documentElement.clientWidth;
-    const scale = Math.max(1, Math.floor((available * dpr) / PC98_W));
-    canvas.style.width = `${(PC98_W * scale) / dpr}px`;
-    canvas.style.height = `${(PC98_H * scale) / dpr}px`;
-  }
-  fitCanvasScale();
-  window.addEventListener('resize', fitCanvasScale);
-  new ResizeObserver(fitCanvasScale).observe(document.documentElement);
 
   const palette = PALETTES[0];
 

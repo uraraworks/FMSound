@@ -28,7 +28,7 @@ function isPseudoFullscreen() {
  * cardEl(.console-card) のフルスクリーン切り替えをボタンに配線する。
  * ボタンの見た目(active状態/title)は fullscreenchange のたびに自動追従する。
  */
-export function setupFullscreen(cardEl, btnEl, labels = {}) {
+export function setupFullscreen(cardEl, btnEl, labels = {}, onChange) {
   const label = labels.enter ?? 'フルスクリーン';
   const labelExit = labels.exit ?? 'フルスクリーン解除';
 
@@ -69,6 +69,13 @@ export function setupFullscreen(cardEl, btnEl, labels = {}) {
     btnEl.title = on ? labelExit : label;
     btnEl.setAttribute('aria-label', btnEl.title);
     btnEl.setAttribute('aria-pressed', on ? 'true' : 'false');
+    // ネイティブ全画面が拒否され疑似全画面へ自動フォールバックする経路(setFullscreen内の
+    // Promise拒否/タイムアウト)は、クリックハンドラの外側(非同期)でbody.pseudo-fullscreen
+    // を付け外しする。呼び出し側がクリックのタイミングだけを見て再計算(rescale等)しようと
+    // すると、フォールバック確定前に走ってしまい間に合わない。updateControl()は状態が
+    // 確定するすべての経路(fullscreenchangeイベント・疑似トグル・フォールバック)から
+    // 呼ばれるため、ここで一括して通知する。
+    onChange?.();
   }
 
   btnEl.addEventListener('click', () => {
