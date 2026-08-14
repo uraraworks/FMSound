@@ -372,7 +372,7 @@ JS側の修正は不要。
   を一時的に`snapshot->timerb_cnt = 0;`へ変更して再ビルドし、回転コマの変化
   検出と`timerbCnt`単調増加の検査が単独でFAILすることを確認してから元に戻した
 
-ブラウザでの実測(`?engine=pmd&debug=1`、`sample_fur_elise.M`再生)でも、
+ブラウザでの実測(`?driver=pmd&debug=1`、`sample_fur_elise.M`再生)でも、
 壁時計(`AudioContext.currentTime`)9.494s時点でPASSED TIME表示が`00:09.30`
 (`frame/55467=9.305s`)、30.392s時点で`frame/55467=30.216s`となり、
 20.9秒の壁時計経過に対し経過時間表示も20.911秒進んでいる(slope誤差0.005%)。
@@ -382,6 +382,6 @@ AudioWorkletの出力レイテンシ相当)はMUCOM側の実測(§ドキュメ�
 
 ### MUCOM側の回帰
 
-`fmdsp/`・`mucomweb/`は一切変更していない。ブラウザで`?engine=mucom`を開き、
+`fmdsp/`・`mucomweb/`は一切変更していない。ブラウザで`?driver=mucom`を開き、
 PASSED TIME/CLOCK COUNT/回転円が引き続き正常に動作すること、
 `tools/verify_right_pane_data_mucom.mjs`がALL PASSすることを確認した。

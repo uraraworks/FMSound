@@ -146,9 +146,9 @@ MUCOM が時間サンプリングなのは submodule 非改変の制約。実用
 
 ### 1アプリ化（2026-08-14 完了）
 
-MUCOM88/PMDは**1つのアプリ**として配信する。エンジンの選択はURLクエリ `?engine=mucom` /
-`?engine=pmd` で行う（既定値は `mucom`。理由: MUCOM88側が先に完成しており、素のURL
-`?engine`なしでアクセスする既存ユーザーの体験を変えないため）。
+MUCOM88/PMDは**1つのアプリ**として配信する。音源ドライバの選択はURLクエリ `?driver=mucom` /
+`?driver=pmd` で行う（既定値は `mucom`。理由: MUCOM88側が先に完成しており、素のURL
+`?driver`なしでアクセスする既存ユーザーの体験を変えないため）。
 
 **構成**:
 
@@ -156,10 +156,10 @@ MUCOM88/PMDは**1つのアプリ**として配信する。エンジンの選択�
 FMSound/
   html/                # 共有アプリ本体(mucomweb/pmdweb 両方から使う唯一のソース)
     index.html         # 共通シェル(ヘッダー/canvas/ツールバー/設定/フッター)
-    app.js             # 共通ブートストラップ。?engine=を見て mucom-app.js / pmd-app.js を
+    app.js             # 共通ブートストラップ。?driver=を見て mucom-app.js / pmd-app.js を
                         #   動的import(import())する -> 選ばれなかった側のwasmは一切fetchされない
-    mucom-app.js        # MUCOM88エンジン固有ロジック(MMLエディタ・コンパイル等)
-    pmd-app.js           # PMDエンジン固有ロジック(プレイヤーのみ、エディタは次のタスク)
+    mucom-app.js        # MUCOM88音源ドライバ固有ロジック(MMLエディタ・コンパイル等)
+    pmd-app.js           # PMD音源ドライバ固有ロジック(プレイヤーのみ、エディタは次のタスク)
     mucom-adapter.js, mml-editor.js, mml-tokens.js, mucom-worklet.js, pmd-worklet.js, samplja.muc
     sample_fur_elise.M   # PMD側の同梱サンプル(エリーゼのために冒頭、NOTICE.md参照)
   mucomweb/CMakeLists.txt  # ../html を build-web/ へ同期してmucom88.js/.wasmをビルド
@@ -168,9 +168,9 @@ FMSound/
                             # (GitHub Pagesはこのdist/を配信する想定)
 ```
 
-- `mucomweb/build-web/` `pmdweb/build-web/` は**それぞれ自分のエンジンのwasmしか持たない**
-  （個別開発・単体確認用。他方の `?engine=` に切り替えると404になるのは既知の制約）。
-  **両エンジンを切り替え可能な状態で確認するには `tools/build_dist.sh` で組み立てた `dist/` を見ること**
+- `mucomweb/build-web/` `pmdweb/build-web/` は**それぞれ自分の音源ドライバのwasmしか持たない**
+  （個別開発・単体確認用。他方の `?driver=` に切り替えると404になるのは既知の制約）。
+  **両ドライバを切り替え可能な状態で確認するには `tools/build_dist.sh` で組み立てた `dist/` を見ること**
 - MUCOM88側は `sampl1.muc` 等の従来サンプルを同梱。PMD側は東方Projectアレンジ曲
   （権利未確認）を同梱から外し、代わりに自作サンプル `html/sample_fur_elise.M`
   （エリーゼのために冒頭、パブリックドメイン曲からのMML書き起こし）を同梱している
@@ -189,7 +189,7 @@ emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release && cm
 cd ../pmdweb
 emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
 
-# 両エンジンを1ディレクトリへ組み立てる(?engine=切替の実地検証・GitHub Pages配信物確認用)
+# 両ドライバを1ディレクトリへ組み立てる(?driver=切替の実地検証・GitHub Pages配信物確認用)
 cd ..
 tools/build_dist.sh
 ```
@@ -202,7 +202,7 @@ tools/build_dist.sh
   適用失敗時はビルドを止める）。upstream作業ツリー自体は素のまま追跡不要
 - MUCOM の MML は **Shift_JIS**。`new TextDecoder('shift_jis')` でデコードして textarea へ入れる
 - `mucomweb`のエディタモードは既定でデバッグ表示（生PCHDATAテーブル・同期情報行）を隠す。
-  URLに `?debug=1` を付けると表示される（例: `http://localhost:8779/?engine=mucom&debug=1`）
+  URLに `?debug=1` を付けると表示される（例: `http://localhost:8779/?driver=mucom&debug=1`）
 - PMDの動作確認用データは `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
   （ビルド成果物には同梱しない。upstream/直下から直接読む用途のみ、`tools/verify_right_pane_data.mjs`参照）
 - **AudioContext はユーザー操作が要る。** JS から `compileMML()`/`playMusic()` を呼ぶだけでは

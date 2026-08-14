@@ -5,7 +5,7 @@
 # (このスクリプト自体はビルドしない。README.md の検証手順参照)。
 #
 # dist/ には mucom88.js/.wasm と pmdweb.js/.wasm の両方が並ぶ(=どちらのエンジンで
-# 開き直しても404にならない)が、ページ本体(html/app.js)は ?engine= に応じて
+# 開き直しても404にならない)が、ページ本体(html/app.js)は ?driver= に応じて
 # 動的import(import())で片方のエンジンモジュールしか評価しないため、
 # 実行時にロードされるwasmは常に選ばれた側の1本だけになる。
 #
@@ -29,11 +29,12 @@ fi
 rm -rf "$DIST"
 mkdir -p "$DIST"
 
-# 共通シェル・エンジンモジュール・共有描画層・共有UI(html/app.jsから見た相対パスは
+# 共通シェル・エンジンモジュール・共有描画層・共有UI・共有PMD MMLコンパイラ(html/app.jsから見た相対パスは
 # 常にこのディレクトリ直下を前提にしているため、サブディレクトリへ逃がさずルート直下へ置く)。
 cp -R html/. "$DIST/"
 cp -R fmdsp "$DIST/fmdsp"
 cp -R ui "$DIST/ui"
+cp -R compiler "$DIST/compiler"
 
 # MUCOM88側のwasmとサンプルMML(東方Projectとは無関係、Yuzo Koshiro氏の同梱サンプル)。
 cp "$MUCOM_BUILD/mucom88.js" "$MUCOM_BUILD/mucom88.wasm" "$DIST/"

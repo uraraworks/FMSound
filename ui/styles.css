@@ -114,9 +114,9 @@ header.app-header .app-tagline {
   color: var(--header-tagline-text);
 }
 
-/* エンジン切替(?engine=を書き換えて開き直す)。「いまどちらのエンジンで動いているか」の
+/* 音源ドライバ切替(?driver=を書き換えて開き直す)。「いま音源ドライバで動いているか」の
    表記(タグライン)のすぐ下に置く。ロゴ画像は使わない(他所の標章のため)。 */
-.engine-switch {
+.driver-switch {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -125,7 +125,7 @@ header.app-header .app-tagline {
   color: var(--header-tagline-text);
 }
 
-.engine-switch select {
+.driver-switch select {
   font-size: 11px;
   padding: 2px 4px;
   border-radius: 4px;
@@ -515,6 +515,12 @@ header.app-header .app-tagline {
 .mml-tok-voice { color: #cf222e; }
 .mml-tok-loop { color: #9a6700; font-weight: 700; }
 .mml-tok-tie { color: #0969da; font-weight: 700; }
+/* PMD用(mml-tokens.js PMD_TOKEN_RULES参照)。*/
+.mml-tok-comment { color: var(--text-dim); font-style: italic; }
+.mml-tok-octave { color: #6639ba; font-weight: 700; }
+.mml-tok-length { color: #6639ba; }
+.mml-tok-tempo { color: #bf3989; font-weight: 700; }
+.mml-tok-vol { color: #0550ae; font-weight: 700; }
 
 .editor-actions {
   display: flex;
@@ -540,6 +546,13 @@ header.app-header .app-tagline {
   font-size: 12px;
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* PMD側: エラーは{line, message}の構造化配列で複数返ってくる(html/pmd-app.js
+   renderCompileErrors()参照)ため、#result直下に1エラー1行のdivを並べる。 */
+.mml-error-line {
+  cursor: pointer;
+  text-decoration: underline dotted;
 }
 
 /* エラー行ジャンプ: compileMML()の出力から行番号が取れた場合だけ付与される

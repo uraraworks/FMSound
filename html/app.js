@@ -1,7 +1,7 @@
 // FMSound 共有ブートストラップ。
 //
-// 1アプリ化の要: エンジンの選択は `?engine=mucom` / `?engine=pmd`(既定はmucom、
-// 理由はfooter付近ではなくREADME/報告に記す)。ページはここで選ばれたエンジンの
+// 1アプリ化の要: 音源ドライバの選択は `?driver=mucom` / `?driver=pmd`(既定はmucom、
+// 理由はfooter付近ではなくREADME/報告に記す)。ページはここで選ばれたドライバの
 // モジュール(./mucom-app.js または ./pmd-app.js)だけを動的importする。
 // 動的import(import())は評価されるまでモジュールを取得・実行しないため、
 // これにより「wasmは片方だけ読み込む」を満たす(静的importで両方書くとバンドラ無し
@@ -20,32 +20,32 @@ import { ICONS, iconButton } from './ui/icons.js';
 import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER } from './ui/version.js';
 
-const VALID_ENGINES = ['mucom', 'pmd'];
-// 既定エンジン: mucom。理由(報告にも記載): MUCOM88側は本タスク以前から
+const VALID_DRIVERS = ['mucom', 'pmd'];
+// 既定ドライバ: mucom。理由(報告にも記載): MUCOM88側は本タスク以前から
 // エディタ機能まで含めて完成しており実績が長い。既定を変えると
-// 「素のURL(?engineなし)でアクセスした既存ユーザー」の体験が変わってしまうため、
+// 「素のURL(?driverなし)でアクセスした既存ユーザー」の体験が変わってしまうため、
 // 後方互換の意味でもmucomを既定にする。
-const DEFAULT_ENGINE = 'mucom';
+const DEFAULT_DRIVER = 'mucom';
 
 const params = new URLSearchParams(location.search);
-const requestedEngine = params.get('engine');
-const engine = VALID_ENGINES.includes(requestedEngine) ? requestedEngine : DEFAULT_ENGINE;
+const requestedDriver = params.get('driver');
+const driver = VALID_DRIVERS.includes(requestedDriver) ? requestedDriver : DEFAULT_DRIVER;
 
-const ENGINE_LABELS = {
+const DRIVER_LABELS = {
   mucom: 'MUCOM88 (PC-8801)',
   pmd: 'PMD (PC-9801)',
 };
 
 document.getElementById('fmsoundVersionFooter').textContent = ` — FMSound ${FMSOUND_VERSION_FOOTER}`;
-document.getElementById('engineTagline').textContent = `${ENGINE_LABELS[engine]} MMLプレイヤー`;
+document.getElementById('driverTagline').textContent = `${DRIVER_LABELS[driver]} MMLプレイヤー`;
 
-const engineSelect = document.getElementById('engineSelect');
-engineSelect.value = engine;
-engineSelect.addEventListener('change', () => {
-  const next = engineSelect.value;
-  if (next === engine) return;
+const driverSelect = document.getElementById('driverSelect');
+driverSelect.value = driver;
+driverSelect.addEventListener('change', () => {
+  const next = driverSelect.value;
+  if (next === driver) return;
   const url = new URL(location.href);
-  url.searchParams.set('engine', next);
+  url.searchParams.set('driver', next);
   location.href = url.toString();
 });
 
@@ -139,7 +139,7 @@ rescale();
 requestAnimationFrame(rescale);
 
 const ctx = {
-  engine,
+  driver,
   debugEnabled,
   canvas,
   consoleCard,
@@ -157,8 +157,8 @@ const ctx = {
   rescale,
 };
 
-// エンジンの選択は?engine=だけで決まり、選ばれた側のモジュールだけを動的import
+// 音源ドライバの選択は?driver=だけで決まり、選ばれた側のモジュールだけを動的import
 // する(=選ばれなかった側のwasmは一切fetchされない)。
-const modulePath = engine === 'pmd' ? './pmd-app.js' : './mucom-app.js';
+const modulePath = driver === 'pmd' ? './pmd-app.js' : './mucom-app.js';
 const engineApp = await import(modulePath);
 await engineApp.init(ctx);

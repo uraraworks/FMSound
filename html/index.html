@@ -11,16 +11,16 @@
   <div class="app-title-row">
     <h1>FMSound</h1>
   </div>
-  <!-- タグラインは「いまどちらのエンジンで動いているか」の常時表示(文字表記のみ。
+  <!-- タグラインは「いまどちらの音源ドライバで動いているか」の常時表示(文字表記のみ。
        ロゴ画像は使わない: 他所の標章のため出典表示と推奨の含みの線引きが曖昧になる)。
-       app.js が ?engine= を見て書き換える。 -->
-  <p class="app-tagline" id="engineTagline"></p>
-  <!-- エンジン切替(別エンジンで開き直す)。selectのchangeでlocation.searchを
+       app.js が ?driver= を見て書き換える。 -->
+  <p class="app-tagline" id="driverTagline"></p>
+  <!-- 音源ドライバ切替(別ドライバで開き直す)。selectのchangeでlocation.searchを
        書き換えてreloadする(=wasmは常に片方だけロードされる、切替時に両方
        抱えることはない)。app.js側で配線する。 -->
-  <label class="engine-switch">
-    <span class="engine-switch-label">エンジン:</span>
-    <select id="engineSelect">
+  <label class="driver-switch">
+    <span class="driver-switch-label">音源ドライバ:</span>
+    <select id="driverSelect">
       <option value="mucom">MUCOM88 (PC-8801)</option>
       <option value="pmd">PMD (PC-9801)</option>
     </select>
@@ -71,8 +71,8 @@
   <!-- 曲を開く手段(サンプルリンク等)。エンジンごとに内容が違うのでengine-appが組み立てる。 -->
   <div class="sample-links" id="sampleLinks"></div>
 
-  <!-- エンジン固有の追加UI領域(MUCOM88のMMLエディタ等)。PMD側は今回未使用(空のまま)。
-       エディタモードは今回のタスクの対象外(次のタスクでコンパイラと一緒に入れる)。 -->
+  <!-- エンジン固有の追加UI領域(MMLエディタ・コメント操作等)。中身はengine-appが組み立てる。
+       MUCOM88/PMDともエディタモードを持つ(html/mucom-app.js・html/pmd-app.js参照)。 -->
   <div class="editor-pane hidden" id="enginePane"></div>
 
   <!-- 既定では非表示(?debug=1で表示)。生のスナップショットテーブル・同期情報行。

@@ -8,8 +8,8 @@ emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
 cmake --build build-web -j4
 ```
 
-`build-web/` を HTTP サーバーで配信し、`index.html?engine=pmd` を開きます
-（1アプリ化により `mucomweb` と UI を共有している。エンジン選択は `?engine=` のクエリで行う。
+`build-web/` を HTTP サーバーで配信し、`index.html?driver=pmd` を開きます
+（1アプリ化により `mucomweb` と UI を共有している。音源ドライバ選択は `?driver=` のクエリで行う。
 詳細は `../README.md` 参照）。音源の内部レートは98fmplayer と同じ 55467Hz 固定です。
 YM2608 リズム ROM は同梱せず、未ロード時はリズムのみ無音です。
 
