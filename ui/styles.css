@@ -230,6 +230,21 @@ header.app-header .app-tagline {
   position: relative;
 }
 
+/* MML編集済み(dirty)で未反映のときの控えめな通知ドット。btnPlayPauseに付与する
+   (mucomweb/html/index.html updateTransportButtonUI()参照)。「押してみないと何が
+   起きるか分からない」を避けるため、押す前から分かるようにする。 */
+.toolbar button.icon-btn.dirty::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--footer-bg-bottom);
+}
+
 /* 曲を開く用の隠しファイル入力。 */
 .file-input-hidden {
   display: none;

@@ -309,6 +309,25 @@
     },
   });
 
+  // --- MML dirty追跡(再生/一時停止トグル化の副作用対策) ---
+  // 再生中/一時停止中はbtnPlayPauseが「一時停止」「再開」を表示するため、そのままでは
+  // MMLを編集してボタンを押しても古い曲が再開されるだけでコンパイルへ一切入れない
+  // (停止を挟まないと編集内容を反映できない、利用者からは「無視されている」ように
+  // 見える重大な不具合)。textareaのinputでdirtyを立て、コンパイル成功時
+  // (compileAndPlay()参照)に下ろす。dirty中はupdateTransportButtonUI()が再生状態に
+  // 関わらずボタンを「コンパイル&再生」表示に固定し、押されたら(再生中/一時停止中
+  // だった場合)まず明示的に停止してから頭出しで再コンパイルする(btnPlayPauseの
+  // clickハンドラ参照)。「押してみないと何が起きるか分からない」を避けるため、
+  // 押す前から分かるようアイコン下に控えめなドットを出す(styles.css
+  // .icon-btn.dirty::after参照)。
+  let mmlDirty = false;
+  function markMmlDirty() {
+    if (mmlDirty) return;
+    mmlDirty = true;
+    updateTransportButtonUI();
+  }
+  mmlTextarea.addEventListener('input', markMmlDirty);
+
   // --- エラー行ジャンプ ---
   // compileMML()の戻り文字列に実際に行番号が含まれるかを実測で確認した上で実装している
   // (upstream/mucom88/src/cmucom.cpp CMucom::Compile()の
@@ -383,12 +402,32 @@
     btnPlayPause.disabled = !moduleReady;
     btnStop.disabled = !moduleReady || !hasPlayback;
 
-    const icon = playing ? ICONS.pause : ICONS.play;
-    const label = playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生');
+    // dirty(MML編集済みで未反映)のときは、実際の再生/一時停止状態に関わらず
+    // 「コンパイル&再生」表示に固定する(mmlDirty宣言部のコメント参照。トグル化の
+    // 副作用で編集が無視されたように見える問題への対策)。
+    const icon = !mmlDirty && playing ? ICONS.pause : ICONS.play;
+    const label = mmlDirty ? 'コンパイル&再生' : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
     btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);
-    btnPlayPause.classList.toggle('active', paused);
+    btnPlayPause.classList.toggle('active', !mmlDirty && paused);
+    // 押す前からdirtyだと分かるように控えめなドットを出す(styles.css参照)。
+    btnPlayPause.classList.toggle('dirty', mmlDirty);
+  }
+
+  // Module.stopMusic()経由の停止処理をbtnStopとbtnPlayPause(dirty時の再コンパイル前)の
+  // 両方から呼べるように共通化する。中身はbtnStopの従来ハンドラをそのまま移しただけ
+  // (挙動は変えていない)。
+  function stopPlayback() {
+    Module.stopMusic();
+    // Stop()はStreamingPlayer::Stop()経由でAudioWorkletStop()を呼ぶだけで
+    // context自体はsuspendされたままになり得るため、次の再生に備えて
+    // resumeしておく(pause機能とは独立した後始末)。
+    const audioState = globalThis.mucomAudioState;
+    if (audioState?.context?.state === 'suspended') {
+      audioState.context.resume();
+    }
+    setAudioPaused(false);
   }
 
   function setAudioPaused(paused) {
@@ -407,8 +446,15 @@
     if (btnPlayPause.disabled) return;
     const audioState = globalThis.mucomAudioState;
     const hasPlayback = Boolean(audioState?.playback);
-    if (!hasPlayback) {
-      // 停止中: コンパイル&再生(常に頭から)。
+    if (!hasPlayback || mmlDirty) {
+      // 停止中、または編集済み(dirty): コンパイル&再生(常に頭から)。
+      // dirtyで再生中/一時停止中だった場合は、まず明示的に停止してから
+      // 再コンパイルする(停止せずcompileAndPlay()だけ呼ぶと、コンパイルが失敗した
+      // 場合に古い曲がそのまま鳴り続けてしまう。押した時点で「頭出しし直す」動作を
+      // 確定させるため、成否に関わらず先に止める)。
+      if (hasPlayback) {
+        stopPlayback();
+      }
       compileAndPlay();
       return;
     }
