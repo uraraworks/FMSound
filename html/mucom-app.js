@@ -115,6 +115,10 @@ export async function init(ctx) {
   }
 
   let moduleReady = false;
+  // 症状③⑥の対策(下のupdateTransportButtonUI()参照)で使うアイコン差し替え済み判定。
+  // moduleReadyと同じ理由(Temporal Dead Zone、実測で「Cannot access 'moduleReady'
+  // before initialization」を確認済み)でここに先出しする。
+  let lastPlayIconKey = null;
   btnPlayPause.disabled = true;
   btnStop.disabled = true;
 
@@ -170,6 +174,22 @@ export async function init(ctx) {
   }
   mmlTextarea.addEventListener('input', markMmlDirty);
 
+  // 症状④: エラー時の1行要約を取り出す。以前は単純に「先頭行」を使っていたが、
+  // MUCOM88コンパイラの出力は先頭が"#OpenMucom88 Ver..."のバナーであることが多く、
+  // それを要約として出すと(a)意味のある内容になっておらず、かつ(b)下の#result側の
+  // 詳細ログの先頭行と文字通り同じ文言が上下に二重表示される、という2つの問題があった。
+  // "-> ..."(cmucom.cppが出す日本語の一言説明)があればそれを、無ければ"#error"行を、
+  // どちらも無ければ先頭行を使う(実測: upstream/mucom88/src/cmucom.cppのエラー出力
+  // 末尾に"-> 文法に誤りがあります"のような行が付く)。
+  function summarizeMucomError(text) {
+    const lines = text.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    const arrowLine = [...lines].reverse().find((l) => l.startsWith('->'));
+    if (arrowLine) return arrowLine.replace(/^->\s*/, '');
+    const errorLine = lines.find((l) => /^#error\b/i.test(l));
+    if (errorLine) return errorLine;
+    return lines[0] ?? text;
+  }
+
   const resultEl = document.getElementById('result');
   function renderCompileResult(text) {
     resultEl.textContent = text;
@@ -189,11 +209,9 @@ export async function init(ctx) {
       resultEl.onclick = null;
     }
     // 課題B: エディタのすぐ上の状態表示(詳細ログはこのまま下の#resultに残す)。
-    // MUCOMの出力は"line N"を含まないメッセージ(#Device error等)もあるため、
-    // その場合はline番号なしでメッセージ全文(先頭行)だけを状態表示に出す。
-    const firstLine = text.split(/\r\n|\r|\n/, 1)[0] ?? text;
+    const summary = isError ? summarizeMucomError(text) : '';
     setMmlStatus(mmlStatusEl, isError
-      ? { ok: false, line, message: firstLine, onJump: (l) => mmlEditorApi.jumpToLine(l) }
+      ? { ok: false, line, message: summary, onJump: (l) => mmlEditorApi.jumpToLine(l) }
       : { ok: true });
   }
   btnEditorMode.addEventListener('click', () => {
@@ -218,26 +236,50 @@ export async function init(ctx) {
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
 
+  // 症状③⑥の根本原因(PMD側と共通): 以前はここで毎フレーム無条件に
+  // btnPlayPause.replaceChildren(...)していたため、ボタンの中身(アイコンのsvg)が
+  // 実際のクリック操作のmousedown〜mouseup間に差し替わることがあり、ブラウザが
+  // clickイベントを発火できないことがあった(html/pmd-app.js updateTransportButtonUI()
+  // のコメント参照)。アイコン種別が変わるときだけ差し替える
+  // (lastPlayIconKey自体はTDZを避けるため上のmoduleReady宣言のそばへ移した)。
+
+  // 症状⑥: 「コンパイル成功→Stop→もう一度Play」が無反応になる不具合の対処。
+  // 以前はmmlDirty/hasCompiledだけを見ており、「編集はしていないが完全に停止済み
+  // (hasPlayback===false)」を考慮していなかった。一時停止(hasPlaybackはtrueのまま)
+  // とは別物で、単純なcontext.resume()では鳴らせない。PMD側(html/pmd-app.js
+  // needsCompileNow())と同じ考え方で、この状態も「コンパイル&再生」扱いにする。
+  function needsCompileNow() {
+    const hasPlayback = Boolean(globalThis.mucomAudioState?.playback);
+    return mmlDirty || !hasCompiled || !hasPlayback;
+  }
+
   function updateTransportButtonUI() {
     const audioState = globalThis.mucomAudioState;
     const hasPlayback = Boolean(audioState?.playback);
     const paused = Boolean(audioState?.paused);
     const playing = hasPlayback && !paused;
+    // 症状②: MMLが空のときは「未コンパイルの変更があります」の青いドットを出さない。
+    const hasMmlContent = mmlTextarea.value.trim().length > 0;
+    const showDirty = mmlDirty && hasMmlContent;
 
     btnPlayPause.disabled = !moduleReady;
     btnStop.disabled = !moduleReady || !hasPlayback;
 
-    const icon = !mmlDirty && playing ? ICONS.pause : ICONS.play;
+    const iconKey = !mmlDirty && playing ? 'pause' : 'play';
     // ドットの意味を利用者に伝える(PMD側と同じ対応。見た目は変えずtitle/aria-labelだけ)。
     const baseLabel = mmlDirty
       ? '未コンパイルの変更があります(クリックでコンパイル&再生)'
       : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
     const label = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
-    btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
+    if (iconKey !== lastPlayIconKey) {
+      const icon = iconKey === 'pause' ? ICONS.pause : ICONS.play;
+      btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
+      lastPlayIconKey = iconKey;
+    }
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);
     btnPlayPause.classList.toggle('active', !mmlDirty && paused);
-    btnPlayPause.classList.toggle('dirty', mmlDirty);
+    btnPlayPause.classList.toggle('dirty', showDirty);
   }
 
   function stopPlayback() {
@@ -261,7 +303,7 @@ export async function init(ctx) {
     if (btnPlayPause.disabled) return;
     const audioState = globalThis.mucomAudioState;
     const hasPlayback = Boolean(audioState?.playback);
-    if (!hasCompiled || mmlDirty) {
+    if (needsCompileNow()) {
       if (hasPlayback) {
         stopPlayback();
       }

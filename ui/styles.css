@@ -568,7 +568,7 @@ header.app-header .app-tagline {
 
 .mml-status-clickable {
   cursor: pointer;
-  text-decoration: underline dotted;
+  text-decoration: underline solid;
 }
 
 /* 課題A: 復元通知(前回の編集内容をlocalStorageから読み戻したことを示す)。
@@ -612,7 +612,7 @@ header.app-header .app-tagline {
    renderCompileErrors()参照)ため、#result直下に1エラー1行のdivを並べる。 */
 .mml-error-line {
   cursor: pointer;
-  text-decoration: underline dotted;
+  text-decoration: underline solid;
 }
 
 /* 課題D: エラー表示は赤系(--danger)にする。正常時(「コンパイル成功」/
@@ -628,7 +628,7 @@ header.app-header .app-tagline {
    (mucomweb/html/mml-editor.js extractErrorLine()参照。取れない場合はクリック不可のまま)。 */
 #result.result-has-error-line {
   cursor: pointer;
-  text-decoration: underline dotted;
+  text-decoration: underline solid;
 }
 
 /* デバッグ用の表示は既定で隠す(?debug=1のときだけ表示。body.debug-enabled参照)。

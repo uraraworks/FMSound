@@ -68,15 +68,17 @@ export async function init(ctx) {
     '<a href="javascript:void(0);" id="dlSampleFurElise">sample_fur_elise.M(エリーゼのために・冒頭)</a>' +
     '　「曲を開く」から手元の.M/.mファイルを選ぶこともできます。';
   document.getElementById('dlSampleFurElise').addEventListener('click', async () => {
+    // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
+    // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
+    // プレイヤーモードでも同じ確認をする(下のとおりプレイヤーモードでも編集欄を
+    // 静かに更新するため、モードで確認の有無を変えない)。
+    if (mmlTextarea.value.trim().length > 0) {
+      const ok = window.confirm(
+        '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
+      );
+      if (!ok) return;
+    }
     if (uiMode === 'editor') {
-      // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
-      // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
-      if (mmlTextarea.value.trim().length > 0) {
-        const ok = window.confirm(
-          '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
-        );
-        if (!ok) return;
-      }
       const response = await fetch('./sample_fur_elise.mml');
       const text = await response.text();
       mmlTextarea.value = text;
@@ -85,8 +87,21 @@ export async function init(ctx) {
       compileAndPlay();
       return;
     }
-    const response = await fetch('./sample_fur_elise.M');
-    const buffer = await response.arrayBuffer();
+    // 症状①: プレイヤーモードでサンプルを再生した直後にエディタモードへ切り替えると
+    // 編集欄が空に見える不具合の対処。再生はプレイヤーモードのまま(コンパイル済み.Mを
+    // 直接再生)で変えないが、後でエディタへ切り替えたときに何も入っていない状態に
+    // ならないよう、MMLソースも並行して読み込み、静かに(コンパイルはせず)editor欄へ
+    // 反映しておく(mucom-appのapplyMmlBytesがモードに関係なく編集欄を更新するのと
+    // 揃える)。
+    const [mResponse, mmlResponse] = await Promise.all([
+      fetch('./sample_fur_elise.M'),
+      fetch('./sample_fur_elise.mml'),
+    ]);
+    const buffer = await mResponse.arrayBuffer();
+    const text = await mmlResponse.text();
+    mmlTextarea.value = text;
+    mmlEditorApi.render();
+    mmlDirty = false;
     await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M');
   });
 
@@ -244,15 +259,18 @@ export async function init(ctx) {
       setMmlStatus(mmlStatusEl, { ok: true });
       return;
     }
-    // 課題B: 状態表示には先頭のエラーだけを1行で出す(複数ある場合の全件は
-    // 従来どおり下の#result側で確認する)。
+    // 課題B: 状態表示には先頭のエラーだけを1行で出す(複数ある場合の残りは
+    // 下の#result側で確認する)。
     setMmlStatus(mmlStatusEl, {
       ok: false,
       line: errors[0].line ?? null,
       message: errors[0].message,
       onJump: (line) => mmlEditorApi.jumpToLine(line),
     });
-    for (const e of errors) {
+    // 症状④: 先頭のエラーは直上の状態表示(上)にすでに出ているため、#result(下)では
+    // 2件目以降だけを並べる(同じ「line N: message」を上下二重に出さない)。
+    // エラーが1件だけのときは#resultには何も追加しない(詳細ログ側に足す情報が無い)。
+    for (const e of errors.slice(1)) {
       const div = document.createElement('div');
       div.textContent = e.line != null ? `line ${e.line}: ${e.message}` : e.message;
       // 課題D: エラーはすべて赤系(--danger)にする(行番号が無い「再生エラー: ...」も
@@ -290,10 +308,12 @@ export async function init(ctx) {
   rescale();
   requestAnimationFrame(rescale);
 
-  // moduleReadyはupdateTransportButtonUI()(applyUiMode()経由で即座に呼ばれる)が
-  // 参照するため、letのTemporal Dead Zoneを踏まないよう先に宣言しておく
-  // (実測で「Cannot access 'moduleReady' before initialization」を確認して気づいた)。
+  // moduleReady/lastPlayIconKeyはupdateTransportButtonUI()(applyUiMode()経由で
+  // 即座に呼ばれる)が参照するため、letのTemporal Dead Zoneを踏まないよう
+  // 先に宣言しておく(実測で「Cannot access 'moduleReady' before initialization」を
+  // 確認して気づいた。lastPlayIconKeyも同じ理由で同居させる)。
   let moduleReady = false;
+  let lastPlayIconKey = null;
 
   applyUiMode(currentUiMode());
 
@@ -507,40 +527,73 @@ export async function init(ctx) {
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
 
+  // 症状③⑥の根本原因: 以前はここで毎フレーム(rAFループ経由)無条件に
+  // btnPlayPause.replaceChildren(...)していたため、ボタンの中身(アイコンのsvg)が
+  // 実際のクリック操作のmousedown〜mouseup間に差し替わることがあった。mousedownの
+  // 対象要素がmouseup前にDOMから切り離されると、ブラウザはclickイベントを
+  // 発火できない(実測: btn.firstElementChildが約16ms間隔で毎回別ノードに
+  // 差し替わっていることをisConnectedで確認した)。これが「押しても無反応、だが
+  // ⌘/Ctrl+Enter(btnPlayPause.click()を直接呼ぶ経路)なら効く」の正体だった。
+  // 対策: アイコンの種別(play/pause)が実際に変わるときだけ差し替える
+  // (lastPlayIconKey自体はTDZを避けるため上のmoduleReady宣言のそばへ移した)。
+
+  // 症状⑥: 「編集モードで一度コンパイル成功→Stop→もう一度Play」が押せなくなる
+  // (または無反応になる)不具合の対処。以前はmmlDirty/hasCompiledだけを見ており、
+  // 「編集していないが完全に停止済み(hasPlayback===false)」という状態を
+  // 考慮していなかった。この状態は一時停止(pausedでhasPlaybackはtrueのまま)とは
+  // 別物で、Module側は曲を手放しているため単純なcontext.resume()では鳴らせない。
+  // ここに来たら「コンパイル&再生」扱いにして、もう一度compileAndPlay()を
+  // 呼び直せば復帰する(内容は変わっていないので再コンパイルしても実害は無い)。
+  function needsCompileNow() {
+    if (uiMode !== 'editor') return false;
+    const hasPlayback = Boolean(globalThis.pmdAudioState?.playback);
+    return mmlDirty || !hasCompiled || !hasPlayback;
+  }
+
   function updateTransportButtonUI() {
     const audioState = globalThis.pmdAudioState;
     const hasPlayback = Boolean(audioState?.playback);
     const paused = Boolean(audioState?.paused);
     const playing = hasPlayback && !paused;
-    const needsCompile = uiMode === 'editor' && (mmlDirty || !hasCompiled);
+    const needsCompile = needsCompileNow();
+    // 症状②: MMLが空のとき、またはmmlDirty自体がfalseのとき(⑥の「停止直後」等)は
+    // 「未コンパイルの変更があります」の青いドットを出さない(実際に変更が無いのに
+    // ドットが出るのは不自然)。
+    const hasMmlContent = mmlTextarea.value.trim().length > 0;
 
+    let iconKey, title, active, dirty, playDisabled, stopDisabled;
     if (needsCompile) {
-      btnPlayPause.disabled = !moduleReady;
-      btnStop.disabled = !moduleReady || !hasPlayback;
-      btnPlayPause.replaceChildren(svgIcon(ICONS.play.path ?? ICONS.play, ICONS.play.extra ?? ''));
+      playDisabled = !moduleReady;
+      stopDisabled = !moduleReady || !hasPlayback;
+      iconKey = 'play';
       // ドットの意味を利用者に伝える(利用者報告「青い●は何?」への対応。
       // 見た目(サイズ・色)は変えず、title/aria-labelだけで説明する)。
-      const title = mmlDirty
+      title = mmlDirty
         ? `未コンパイルの変更があります(クリックでコンパイル&再生 / ${SHORTCUT_PLAY_HINT})`
         : `コンパイル&再生 (${SHORTCUT_PLAY_HINT})`;
-      btnPlayPause.title = title;
-      btnPlayPause.setAttribute('aria-label', title);
-      btnPlayPause.classList.remove('active');
-      btnPlayPause.classList.add('dirty');
-      return;
+      active = false;
+      dirty = mmlDirty && hasMmlContent;
+    } else {
+      playDisabled = !moduleReady || !hasPlayback;
+      stopDisabled = !moduleReady || !hasPlayback;
+      iconKey = playing ? 'pause' : 'play';
+      const baseLabel = playing ? '一時停止' : (paused ? '再開' : '再生(曲を開いてください)');
+      title = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
+      active = paused;
+      dirty = false;
     }
 
-    btnPlayPause.disabled = !moduleReady || !hasPlayback;
-    btnStop.disabled = !moduleReady || !hasPlayback;
-
-    const icon = playing ? ICONS.pause : ICONS.play;
-    const baseLabel = playing ? '一時停止' : (paused ? '再開' : '再生(曲を開いてください)');
-    const label = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
-    btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
-    btnPlayPause.title = label;
-    btnPlayPause.setAttribute('aria-label', label);
-    btnPlayPause.classList.toggle('active', paused);
-    btnPlayPause.classList.remove('dirty');
+    btnPlayPause.disabled = playDisabled;
+    btnStop.disabled = stopDisabled;
+    if (iconKey !== lastPlayIconKey) {
+      const icon = iconKey === 'pause' ? ICONS.pause : ICONS.play;
+      btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
+      lastPlayIconKey = iconKey;
+    }
+    btnPlayPause.title = title;
+    btnPlayPause.setAttribute('aria-label', title);
+    btnPlayPause.classList.toggle('active', active);
+    btnPlayPause.classList.toggle('dirty', dirty);
   }
 
   function setAudioPaused(paused) {
@@ -582,7 +635,7 @@ export async function init(ctx) {
 
   btnPlayPause.addEventListener('click', () => {
     if (btnPlayPause.disabled) return;
-    if (uiMode === 'editor' && (mmlDirty || !hasCompiled)) {
+    if (needsCompileNow()) {
       compileAndPlay();
       return;
     }
