@@ -1,0 +1,33 @@
+; 同梱サンプル(MUCOM88版): ベートーヴェン「エリーゼのために」(Für Elise, WoO 59) 冒頭
+;
+; tools/sample_fur_elise.mml (PMD版)と同じ音符を移植したもの。曲・音符の由来・
+; 権利関係はPMD版と同じ(NOTICE.md参照、曲自体はパブリックドメイン。この編曲・
+; MMLアレンジは本プロジェクトの著作物)。延長はしていない(PMD版と同じ上げ拍+4小節)。
+;
+; 音符は同じだが文法と音色指定はMUCOM88のもの:
+;   - 音色は内蔵音色バンクの@78番(html/mucom-app.js MUCOM_NEW_MML_TEMPLATEと同じ。
+;     voice.dat無しでも鳴ることを実測済み、tools/verify_mucom_new_template.mjs)。
+;   - テンポはT(BPM相当、docs/mucom-tempo-commands.md参照)。PMD版はt30
+;     (2分音符=30、PMDMML.MAN §11-1準拠で4分音符=1.0秒)なので、実時間を揃えて
+;     T60(4分音符=60/60=1.0秒)を指定する。
+;   - Lは曲全体のループ位置指定(PMD版のLと同じ記号・同じ役割)。
+;
+; 実測確認: tools/verify_mucom_fur_elise.mjs で
+;   (a) コンパイルエラーが無いこと
+;   (b) 実際にPCM出力(absSum)が非0であること(鳴っていること)
+;   (c) 4分音符の実時間がPMD版と近い値(実時間で速度が揃っていること)
+;   を確認済み。
+
+A T60 @78 v12 L
+A o5 e16 d+16
+A e16 d+16 e16 o4 b16 o5 d16 c16
+A o4 a8 r16 c16 e16 a16
+A o4 b8 r16 e16 g+16 b16
+A o5 c4.
+
+B T60 @78 v8 L
+B r8
+B o2 a8 o3 e8 a8
+B o2 a8 o3 e8 a8
+B o3 e8 g+8 b8
+B o2 f8 o3 a8 c8

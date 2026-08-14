@@ -73,6 +73,16 @@ FMDSP 風の画面描画ロジック(パート行 / コメント欄 / 右半分�
 - 生成元: `tools/sample_fur_elise.mml`(MML ソース)→ `tools/gen_sample_fur_elise.mjs`
   (自作 PMD MML コンパイラ、`docs/pmd-compiler-spec.md` 参照)→ `html/sample_fur_elise.M`。
 
+## `html/sample_fur_elise_mucom.muc`(MUCOM88側の同梱サンプル曲)
+
+上記 `html/sample_fur_elise.M` と同じ曲・同じ音符を MUCOM88 の MML 文法へ移植したもの。
+権利関係(曲自体はパブリックドメイン、MML アレンジは本プロジェクトの著作物)も同じ。
+生成元: `tools/sample_fur_elise_mucom.mml` → `tools/gen_sample_fur_elise.mjs`
+(MUCOM88 自身がテキスト MML を直接コンパイルするため、事前コンパイルは不要でそのまま
+コピーしている)。以前は MUCOM88 側だけ古代祐三氏の従来サンプル(`sampl1.muc` 等)を
+同梱していたが、2026-08-15 に方針を変更し、両ドライバとも自作曲のみを同梱するように
+した(`tools/verify_mucom_fur_elise.mjs` 参照)。
+
 ## 含まないもの
 
 ROM イメージ(PC-98 本体 BIOS 等)や市販ソフトウェアのデータは、

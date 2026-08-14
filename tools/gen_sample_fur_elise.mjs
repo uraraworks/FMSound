@@ -32,3 +32,14 @@ fs.writeFileSync(outPath, file);
 fs.writeFileSync(mmlOutPath, source);
 console.log(`[gen_sample_fur_elise.mjs] wrote ${outPath} (${file.length} bytes)`);
 console.log(`[gen_sample_fur_elise.mjs] wrote ${mmlOutPath} (${source.length} bytes)`);
+
+// 課題D: MUCOM88版(tools/sample_fur_elise_mucom.mml)は、MUCOM88エンジン自身が
+// 生MMLテキストをそのままコンパイルできる(html/mucom-app.js compileAndPlay()の
+// Module.compileMML())ため、PMD版と違って事前コンパイル(.M生成)が不要。
+// テキストをそのままhtml/へコピーするだけでよい(拡張子は他のMUCOMサンプルと
+// 揃えて.mucにする。html/mucom-app.js fileInput.accept='.muc'と同じ)。
+const mucomMmlPath = path.join(__dirname, 'sample_fur_elise_mucom.mml');
+const mucomOutPath = path.join(__dirname, '..', 'html', 'sample_fur_elise_mucom.muc');
+const mucomSource = fs.readFileSync(mucomMmlPath, 'utf8');
+fs.writeFileSync(mucomOutPath, mucomSource);
+console.log(`[gen_sample_fur_elise.mjs] wrote ${mucomOutPath} (${mucomSource.length} bytes)`);

@@ -116,13 +116,14 @@ export async function init(ctx) {
   `;
 
   // --- サンプルMMLリンク ---
+  // 課題D(方針転換): 同梱するのは自作曲のみにする(PMD版と同じ曲=エリーゼのために)。
+  // 古代祐三氏のsampl1/sampl2/sampl3.muc(GitHubから取得するものも含む)は同梱をやめた。
+  // samplja.muc(日本語コメント表示の確認用テストファイル)は削除せず残すが、
+  // 利用者向けサンプルではないため?debug=1のときだけ表示する(class="debug-only")。
   sampleLinksEl.innerHTML = `
     Sample MML:
-    <a href="javascript:void(0);" id="dlSampl1">sampl1.muc</a>
-    <a href="javascript:void(0);" id="dlSampl2">sampl2.muc</a>
-    <a href="javascript:void(0);" id="dlSampl3">sampl3.muc</a>
-    <a href="javascript:void(0);" id="dlSamplJa">samplja.muc</a>
-    <span style="opacity:.7">(Copyright(C) by Yuzo Koshiro)</span>
+    <a href="javascript:void(0);" id="dlSampleFurEliseMucom">sample_fur_elise_mucom.muc(エリーゼのために・冒頭)</a>
+    <a href="javascript:void(0);" id="dlSamplJa" class="debug-only">samplja.muc</a>
   `;
 
   // --- モード(player/editor)。localStorageに保存し、次回も同じモードで開く ---
@@ -878,16 +879,8 @@ export async function init(ctx) {
       });
   }
 
-  document.getElementById('dlSampl1').addEventListener('click', function() {
-    downloadMML('./sampl1.muc');
-  });
-
-  document.getElementById('dlSampl2').addEventListener('click', function() {
-    downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl2.muc');
-  });
-
-  document.getElementById('dlSampl3').addEventListener('click', function() {
-    downloadMML('https://raw.githubusercontent.com/onitama/mucom88/master/package/sampl3.muc');
+  document.getElementById('dlSampleFurEliseMucom').addEventListener('click', function() {
+    downloadMML('./sample_fur_elise_mucom.muc');
   });
 
   document.getElementById('dlSamplJa').addEventListener('click', function() {

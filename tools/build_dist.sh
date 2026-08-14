@@ -43,9 +43,10 @@ cp -R ui "$DIST/ui"
 cp -R compiler "$DIST/compiler"
 cp -R net "$DIST/net"
 
-# MUCOM88側のwasmとサンプルMML(東方Projectとは無関係、Yuzo Koshiro氏の同梱サンプル)。
+# MUCOM88側のwasm。同梱サンプル(sample_fur_elise_mucom.muc/samplja.muc)はhtml/直下に
+# あり、上のcp -R html/. で既にコピー済み(課題D、2026-08-15: 古代祐三氏のsampl1/2/3.mucの
+# 同梱はやめた。方針は「同梱するのは自作曲のみ、両ドライバとも同じ曲」)。
 cp "$MUCOM_BUILD/mucom88.js" "$MUCOM_BUILD/mucom88.wasm" "$DIST/"
-cp "$MUCOM_BUILD/sampl1.muc" "$MUCOM_BUILD/sampl2.muc" "$DIST/"
 
 # PMD側のwasm。同梱サンプル曲は無し(pmdweb/README.md参照)。
 cp "$PMD_BUILD/pmdweb.js" "$PMD_BUILD/pmdweb.wasm" "$DIST/"

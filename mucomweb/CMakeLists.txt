@@ -153,11 +153,7 @@ add_custom_target(sync_html ALL
     COMMENT "html/ と fmdsp/ と ui/ と compiler/ を build-web/ へ同期")
 add_dependencies(sync_html generate_version)
 
-# サンプル MML。README には「ビルド後に毎回手でコピー」とあったがこの機会に自動化。
-add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MUCOM88_DIR}/package/sampl1.muc"
-        "${CMAKE_CURRENT_BINARY_DIR}/sampl1.muc"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MUCOM88_DIR}/package/sampl2.muc"
-        "${CMAKE_CURRENT_BINARY_DIR}/sampl2.muc")
+# 課題D(方針転換、2026-08-15): 同梱するサンプルは自作曲のみにする方針となったため、
+# 古代祐三氏のsampl1.muc/sampl2.muc(package/同梱)の自動コピーは廃止した。
+# 同梱サンプルはhtml/sample_fur_elise_mucom.muc(tools/gen_sample_fur_elise.mjs生成、
+# sync_htmlターゲットのhtml/コピーに含まれる)とsamplja.muc(html/直下、検証用)。

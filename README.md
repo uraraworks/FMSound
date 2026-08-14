@@ -162,8 +162,10 @@ FMSound/
                         #   動的import(import())する -> 選ばれなかった側のwasmは一切fetchされない
     mucom-app.js        # MUCOM88音源ドライバ固有ロジック(MMLエディタ・コンパイル等)
     pmd-app.js           # PMD音源ドライバ固有ロジック(プレイヤーのみ、エディタは次のタスク)
-    mucom-adapter.js, mml-editor.js, mml-tokens.js, mucom-worklet.js, pmd-worklet.js, samplja.muc
-    sample_fur_elise.M   # PMD側の同梱サンプル(エリーゼのために冒頭、NOTICE.md参照)
+    mucom-adapter.js, mml-editor.js, mml-tokens.js, mucom-worklet.js, pmd-worklet.js
+    samplja.muc                # MUCOM88: 日本語コメント表示の確認用テストファイル(?debug=1限定)
+    sample_fur_elise.M         # PMD側の同梱サンプル(エリーゼのために冒頭、NOTICE.md参照)
+    sample_fur_elise_mucom.muc # MUCOM88版の同じサンプル(tools/gen_sample_fur_elise.mjsが生成)
   mucomweb/CMakeLists.txt  # ../html を build-web/ へ同期してmucom88.js/.wasmをビルド
   pmdweb/CMakeLists.txt    # ../html を build-web/ へ同期してpmdweb.js/.wasmをビルド
   tools/build_dist.sh      # 両方のbuild-web/からwasmを集め、dist/ を1ディレクトリに組み立てる
@@ -173,10 +175,15 @@ FMSound/
 - `mucomweb/build-web/` `pmdweb/build-web/` は**それぞれ自分の音源ドライバのwasmしか持たない**
   （個別開発・単体確認用。他方の `?driver=` に切り替えると404になるのは既知の制約）。
   **両ドライバを切り替え可能な状態で確認するには `tools/build_dist.sh` で組み立てた `dist/` を見ること**
-- MUCOM88側は `sampl1.muc` 等の従来サンプルを同梱。PMD側は東方Projectアレンジ曲
-  （権利未確認）を同梱から外し、代わりに自作サンプル `html/sample_fur_elise.M`
-  （エリーゼのために冒頭、パブリックドメイン曲からのMML書き起こし）を同梱している
-  （`NOTICE.md`、`tools/sample_fur_elise.mml`、`tools/verify_sample_fur_elise.mjs`参照）
+- 同梱サンプルは自作曲のみで、両ドライバとも同じ曲（エリーゼのために冒頭、
+  パブリックドメイン曲からのMML書き起こし）にしている。PMD側は東方Projectアレンジ曲
+  （権利未確認）を同梱から外し `html/sample_fur_elise.M` を同梱、MUCOM88側は
+  古代祐三氏の従来サンプル（`sampl1.muc`等、GitHubから取得するものも含む）の同梱を
+  やめ、同じ曲を移植した `html/sample_fur_elise_mucom.muc` を同梱している
+  （`NOTICE.md`、`tools/sample_fur_elise.mml`、`tools/sample_fur_elise_mucom.mml`、
+  `tools/verify_sample_fur_elise.mjs`、`tools/verify_mucom_fur_elise.mjs`参照）。
+  MUCOM88側の `samplja.muc`（日本語コメント表示の確認用テストファイル）は
+  利用者向けサンプルではないため、`?debug=1` のときだけリンクを表示する。
 
 ### 検証手順（確立済み）
 
