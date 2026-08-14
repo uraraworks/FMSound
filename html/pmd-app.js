@@ -4,9 +4,20 @@
 // 旧 pmdweb/html/index.html(素のプレイヤー、独自のtable/controlsマークアップ)を
 // mucomweb/html/index.html(完成済みUI)と同じ構成
 // (.console-card+.console-footer/再生一時停止トグル/停止/曲を開く/設定/フルスクリーン/
-// ?debug=1限定のデバッグ表示)へ展開したもの。エディタモードは今回のスコープ外
-// (コンパイラと一緒に別タスクで追加する)なので、MUCOM88側にあるエディタモード
-// 切替ボタン・MMLテキスト編集UIはここには無い。
+// ?debug=1限定のデバッグ表示)へ展開したもの。
+//
+// エディタモード(MMLを書いて・鳴らして・直す)は html/mucom-app.js と同じ作り
+// (行番号ガター+構文色つけ+透明textarea/背面pre重ね合わせ+dirty追跡)を踏襲する。
+// MUCOM88との違いは「コンパイラがwasm側(Module.compileMML)ではなくJS側」という点だけ:
+// PMDの`.M`コンパイラは compiler/pmd_mml_compiler.mjs(旧tools/、ブラウザ実行できるよう
+// 移設した。詳細はcompiler/内のコメントとREADME参照)にあり、ここでMMLテキストから
+// `.M`バイト列を作ってから Module.FS.writeFile()+Module.playMusic() でwasm側へ渡す。
+// エラーは{line, message}の構造化配列で返ってくる(compiler/pmd_mml_parser.mjs)ので、
+// MUCOM側のようなテキスト正規表現での行番号抽出は不要。
+//
+// 「曲を開く」(.m/.M バイナリファイルを開く/ドラッグ&ドロップ)は元々コンパイラを
+// 経由しない機能なので、エディタモードの有無に関わらず従来通りバイナリを直接
+// Module.FS.writeFile()+Module.playMusic()する(このパスは変更していない)。
 //
 // 一時停止はMUCOM側と同じ方式: wasm側にpause APIが無いため、
 // AudioContext.suspend()/resume() だけで音声レンダリングを止める/再開する
@@ -22,12 +33,15 @@ import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment, commentScroll } from './fmdsp/comment.js';
 import * as rightpane from './fmdsp/rightpane.js';
-import { ICONS, svgIcon } from './ui/icons.js';
+import { ICONS, iconButton, svgIcon } from './ui/icons.js';
+import { setupMmlEditor } from './mml-editor.js';
+import { PMD_TOKEN_RULES, PMD_MACRO_HEADER_RE, PMD_PART_LETTER_RE } from './mml-tokens.js';
+import { compileMml } from './compiler/pmd_mml_compiler.mjs';
 
 export async function init(ctx) {
   const {
-    canvas, consoleCard,
-    btnPlayPause, btnStop, btnOpenFile,
+    canvas, consoleCard, toolbar,
+    btnPlayPause, btnStop, btnOpenFile, btnFullscreen,
     fileInput, sampleLinksEl, enginePaneEl, footerCreditsEl, rescale,
   } = ctx;
 
@@ -41,24 +55,48 @@ export async function init(ctx) {
   // --- 曲を開く導線。東方Projectアレンジ曲(PC-98_Hartmann_s_Youkai_GIrl.M、
   // 権利不明のため同梱をやめた)の代わりに自作サンプル(エリーゼのために冒頭、
   // ベートーヴェンWoO 59はパブリックドメイン。MMLアレンジは本プロジェクトの著作物。
-  // 詳細はNOTICE.md参照)を同梱する。
+  // 詳細はNOTICE.md参照)を同梱する。プレイヤーモードではコンパイル済みの.Mを直接
+  // 再生し、エディタモードではMMLソース(sample_fur_elise.mml、
+  // tools/gen_sample_fur_elise.mjsが同じソースから.Mと.mmlの両方を生成しているので
+  // 内容は常に一致する)をエディタへ読み込んでからコンパイル&再生する。
   sampleLinksEl.innerHTML =
     '<a href="javascript:void(0);" id="dlSampleFurElise">sample_fur_elise.M(エリーゼのために・冒頭)</a>' +
     '　「曲を開く」から手元の.M/.mファイルを選ぶこともできます。';
   document.getElementById('dlSampleFurElise').addEventListener('click', async () => {
+    if (uiMode === 'editor') {
+      const response = await fetch('./sample_fur_elise.mml');
+      const text = await response.text();
+      mmlTextarea.value = text;
+      mmlEditorApi.render();
+      mmlDirty = false;
+      compileAndPlay();
+      return;
+    }
     const response = await fetch('./sample_fur_elise.M');
     const buffer = await response.arrayBuffer();
     await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M');
   });
 
-  // --- コメント欄(曲名・作曲者・編曲者・メモ)のスクロール操作。エディタは無いが
-  // これは実際に使うプレイヤー機能のため、editor-pane相当の領域を流用して常時表示する
-  // (MUCOM88と違いモード切替に紐付かない、hiddenを外したままにする)。
+  // --- エンジン固有領域: コメント欄操作(常時表示) + MMLエディタ(モード切替で表示)。
   enginePaneEl.classList.remove('hidden');
   enginePaneEl.innerHTML = `
     <div class="pmd-comment-controls">
       <button id="commentPrev" type="button">&uarr; コメント</button>
       <button id="commentNext" type="button">&darr; コメント</button>
+    </div>
+    <div class="editor-pane hidden" id="mmlEditorPane">
+      <div class="mml-editor" id="mmlEditor">
+        <div class="mml-gutter" id="mmlGutter" aria-hidden="true"><div class="mml-gutter-inner" id="mmlGutterInner"></div></div>
+        <div class="mml-code-wrap" id="mmlCodeWrap">
+          <div class="mml-current-line" id="mmlCurrentLine"></div>
+          <pre class="mml-highlight" id="mmlHighlight" aria-hidden="true"><code id="mmlHighlightCode"></code></pre>
+          <textarea id="mml" wrap="off" spellcheck="false"></textarea>
+        </div>
+      </div>
+      <div class="editor-actions">
+        <button id="btnClearMML" type="button">Clear MML</button>
+      </div>
+      <div id="result"></div>
     </div>
     <details class="debug-table debug-only" id="debugTable">
       <summary>デバッグ用テーブル(生のトラック状態、切り分け用に残す)</summary>
@@ -73,11 +111,121 @@ export async function init(ctx) {
     <div id="audioDebug" class="debug-only">AudioWorklet: inactive</div>
   `;
 
+  // --- モード(player/editor)。localStorageに保存し、次回も同じモードで開く(MUCOM88と同じ作法) ---
+  const UI_MODE_KEY = 'fmsound-pmd-ui-mode';
+  const mmlEditorPane = document.getElementById('mmlEditorPane');
+
+  const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
+  toolbar.insertBefore(btnEditorMode, btnFullscreen);
+
+  let uiMode = 'player';
+
+  function applyUiMode(mode) {
+    uiMode = mode;
+    mmlEditorPane.classList.toggle('hidden', mode !== 'editor');
+    btnEditorMode.classList.toggle('active', mode === 'editor');
+    btnEditorMode.title = mode === 'editor' ? 'プレイヤーモードへ切替' : 'エディタモードへ切替';
+    btnEditorMode.setAttribute('aria-label', btnEditorMode.title);
+    rescale();
+    updateTransportButtonUI();
+  }
+
+  function currentUiMode() {
+    try {
+      const saved = localStorage.getItem(UI_MODE_KEY);
+      return saved === 'editor' ? 'editor' : 'player';
+    } catch {
+      return 'player';
+    }
+  }
+
+  function setUiMode(mode) {
+    try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* ignore (private mode等) */ }
+    applyUiMode(mode);
+  }
+
+  btnEditorMode.addEventListener('click', () => {
+    setUiMode(uiMode === 'editor' ? 'player' : 'editor');
+  });
+
+  // --- MMLエディタ(行番号ガター+構文色つけ+現在行ハイライト)。トークン定義だけ
+  // PMD用(mml-tokens.js PMD_TOKEN_RULES)に差し替える。mml-editor.js自体はエンジンに
+  // 依存しない共通実装(MUCOM88と共用)。
+  const mmlTextarea = document.getElementById('mml');
+  const mmlEditorApi = setupMmlEditor({
+    textarea: mmlTextarea,
+    gutterInner: document.getElementById('mmlGutterInner'),
+    highlightCode: document.getElementById('mmlHighlightCode'),
+    highlightPre: document.getElementById('mmlHighlight'),
+    currentLineEl: document.getElementById('mmlCurrentLine'),
+    rules: {
+      tokenRules: PMD_TOKEN_RULES,
+      macroHeaderRe: PMD_MACRO_HEADER_RE,
+      partLetterRe: PMD_PART_LETTER_RE,
+    },
+  });
+
+  let mmlDirty = false;
+  function markMmlDirty() {
+    if (mmlDirty) return;
+    mmlDirty = true;
+    updateTransportButtonUI();
+  }
+  mmlTextarea.addEventListener('input', markMmlDirty);
+
+  const resultEl = document.getElementById('result');
+  // MUCOM側(mml-editor.js extractErrorLine())と違い、PMDコンパイラのエラーは
+  // 最初から{line, message}の構造化配列で返ってくる(compiler/pmd_mml_parser.mjs)ため、
+  // テキストから行番号を正規表現で抜き出す必要が無い。複数エラーをそれぞれ
+  // クリック可能な行として並べる。
+  function renderCompileErrors(errors) {
+    resultEl.replaceChildren();
+    if (errors.length === 0) {
+      resultEl.textContent = 'コンパイル成功';
+      return;
+    }
+    for (const e of errors) {
+      const div = document.createElement('div');
+      div.textContent = e.line != null ? `line ${e.line}: ${e.message}` : e.message;
+      if (e.line != null) {
+        div.classList.add('mml-error-line');
+        div.title = `クリックでMML ${e.line}行目へ移動`;
+        div.addEventListener('click', () => mmlEditorApi.jumpToLine(e.line));
+      }
+      resultEl.appendChild(div);
+    }
+  }
+
+  document.getElementById('btnClearMML').addEventListener('click', function() {
+    const ta = mmlTextarea;
+    if (ta.value.length > 0) {
+      const ok = window.confirm(
+        '編集中のMMLを消去します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
+      );
+      if (!ok) return;
+    }
+    ta.focus();
+    ta.select();
+    const undoable = typeof document.execCommand === 'function' &&
+      document.execCommand('insertText', false, '');
+    if (!undoable) {
+      ta.value = '';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
+
   rescale();
   requestAnimationFrame(rescale);
 
+  // moduleReadyはupdateTransportButtonUI()(applyUiMode()経由で即座に呼ばれる)が
+  // 参照するため、letのTemporal Dead Zoneを踏まないよう先に宣言しておく
+  // (実測で「Cannot access 'moduleReady' before initialization」を確認して気づいた)。
+  let moduleReady = false;
+
+  applyUiMode(currentUiMode());
+
   const Module = await createPmdWeb();
-  let moduleReady = true;
+  moduleReady = true;
 
   const vram = new Vram(PC98_W, PC98_H);
   const canvasCtx = canvas.getContext('2d');
@@ -247,8 +395,11 @@ export async function init(ctx) {
     }
   }
 
-  // --- トランスポート(再生/一時停止/停止)。MMLコンパイルが無いぶんMUCOM88より単純:
-  // 「曲を開く」で読み込み即再生、btnPlayPauseは既にロード済みの曲の一時停止/再開専用。
+  // --- トランスポート(再生/一時停止/停止)。
+  // プレイヤーモード: MUCOM側と違いMMLコンパイルが無いぶん単純。「曲を開く」で
+  // 読み込み即再生、btnPlayPauseは既にロード済みの曲の一時停止/再開専用。
+  // エディタモード: MUCOM88と同じ。編集中(dirty)または未再生ならbtnPlayPauseは
+  // 「コンパイル&再生」として働き、コンパイル成功後は一時停止/再開ボタンに戻る。
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
 
@@ -257,6 +408,18 @@ export async function init(ctx) {
     const hasPlayback = Boolean(audioState?.playback);
     const paused = Boolean(audioState?.paused);
     const playing = hasPlayback && !paused;
+    const needsCompile = uiMode === 'editor' && (mmlDirty || !hasPlayback);
+
+    if (needsCompile) {
+      btnPlayPause.disabled = !moduleReady;
+      btnStop.disabled = !moduleReady || !hasPlayback;
+      btnPlayPause.replaceChildren(svgIcon(ICONS.play.path ?? ICONS.play, ICONS.play.extra ?? ''));
+      btnPlayPause.title = 'コンパイル&再生';
+      btnPlayPause.setAttribute('aria-label', 'コンパイル&再生');
+      btnPlayPause.classList.remove('active');
+      btnPlayPause.classList.add('dirty');
+      return;
+    }
 
     btnPlayPause.disabled = !moduleReady || !hasPlayback;
     btnStop.disabled = !moduleReady || !hasPlayback;
@@ -267,6 +430,7 @@ export async function init(ctx) {
     btnPlayPause.title = label;
     btnPlayPause.setAttribute('aria-label', label);
     btnPlayPause.classList.toggle('active', paused);
+    btnPlayPause.classList.remove('dirty');
   }
 
   function setAudioPaused(paused) {
@@ -277,9 +441,36 @@ export async function init(ctx) {
     updateTransportButtonUI();
   }
 
+  function compileAndPlay() {
+    if (!moduleReady) return;
+    const source = mmlTextarea.value;
+    const { file, errors } = compileMml(source);
+    if (errors.length > 0) {
+      renderCompileErrors(errors);
+      updateTransportButtonUI();
+      return;
+    }
+    Module.FS.writeFile('/edited.M', file);
+    const error = Module.playMusic('/edited.M');
+    if (error) {
+      renderCompileErrors([{ line: null, message: `再生エラー: ${error}` }]);
+      updateTransportButtonUI();
+      return;
+    }
+    renderCompileErrors([]);
+    mmlDirty = false;
+    commentOffset = 0;
+    setAudioPaused(false);
+  }
+
   btnPlayPause.addEventListener('click', () => {
     if (btnPlayPause.disabled) return;
     const audioState = globalThis.pmdAudioState;
+    const hasPlayback = Boolean(audioState?.playback);
+    if (uiMode === 'editor' && (mmlDirty || !hasPlayback)) {
+      compileAndPlay();
+      return;
+    }
     if (!audioState || !audioState.context) return;
     if (audioState.paused) {
       audioState.context.resume();

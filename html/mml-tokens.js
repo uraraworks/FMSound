@@ -58,3 +58,58 @@ export const MUCOM_TOKEN_RULES = [
 // 行頭のパート文字(A～K、readme.txt「チャンネル(A～K)」)。
 // 行頭の空白をスキップした直後の1文字がA~K(大文字小文字問わず)の場合のみ対象。
 export const MUCOM_PART_LETTER_RE = /^([ \t]*)([A-Ka-k])/;
+
+// --- PMD MML用のトークン定義 ---
+//
+// 出典: docs/pmd-compiler-spec.md、tools/pmd_mml_parser.mjs(現在地: compiler/pmd_mml_parser.mjs)
+// の実装そのもの。「実際にコンパイラが認識する記号だけを色付けする」方針
+// (推測でトークンを決めない)のため、パーサのtokenizeBody()が受理する文字だけを
+// 対象にしている。パーサが大文字小文字を区別する箇所(音符 c-b は小文字のみ、
+// o/O・T/t・V/v は両方等)はそのまま反映した。
+//
+// コメント記法について(必ず確認すること、との指示のため出典を明記する):
+//   PMDMML.MAN §1-4「コメントの表記方法」(WebFetch+生バイト実測でCP932デコードして
+//   確認済み、tools/PMDMML.MAN取得ログ相当)によれば
+//     1. ';' から改行までを行コメントにできる(§16-5)
+//     2. 行頭が空白/TABで始まる行は ';' が無くても行全体がコメット扱いになる
+//     3. '`'(バッククォート)で囲むと複数行/行内コメントになる(§16-6)
+//   のうち、tools/pmd_mml_parser.mjs(compiler/pmd_mml_parser.mjs) が実装しているのは
+//   1.の ';' 行コメントのみ(parseMml()冒頭でraw.indexOf(';')により除去)。
+//   2.と3.はコンパイラ未実装(マニュアル通りに書くと現状のパーサはエラーにする)。
+//   ここで '`' を色付けすると「コメントとして安全に書ける」という誤った見た目に
+//   なってしまうため、判断がつかない(=未実装の)ものとして意図的に色を付けない。
+export const PMD_TOKEN_RULES = [
+  // ';' から行末までの行コメント(PMDMML.MAN §1-4、パーサ実装あり)。
+  { type: 'comment', regex: /^;.*/ },
+  // @音色番号(例: @1, @78) - tokenizeBody() の '@' + 数値。
+  { type: 'voice', regex: /^@[0-9]+/ },
+  // ループ [ ] : (tokenizeBody()の'['=loopOpen, ']n'=loopClose, ':'=loopExit)。
+  { type: 'loop', regex: /^[\[\]:]/ },
+  // 全体ループ L (globalLoop)。
+  { type: 'loop', regex: /^L/ },
+  // タイ &
+  { type: 'tie', regex: /^&/ },
+  // オクターブ操作 o/O(数値付き)・</>(相対1段)。
+  { type: 'octave', regex: /^[oO<>]/ },
+  // デフォルト音長 l(小文字のみ、パーサはLを別コマンド=globalLoopとして扱う)。
+  { type: 'length', regex: /^l/ },
+  // テンポ T(TimerB絶対/相対)/t(テンポ絶対/相対)。
+  { type: 'tempo', regex: /^[Tt]/ },
+  // 音量 V(絶対値・細かい)/v(絶対値・大雑把)。
+  { type: 'vol', regex: /^[Vv]/ },
+  // 数値(音長数値・オクターブ数値・音色番号・ループ回数等をまとめて「数値」として色分け)。
+  { type: 'number', regex: /^[0-9]+/ },
+  // 音符/休符(小文字cdefgabのみ有効。大文字A-Gはパーサ非対応のため対象外)。
+  // 休符はr/Rどちらも有効(tokenizeBody()参照)。
+  { type: 'note', regex: /^[cdefgabrR]/ },
+];
+
+// PMDにはMUCOM88のようなマクロ定義行("#nn{...}")の仕組みが無い(v1コンパイラは
+// '#'始まりの行を一切扱わない)。setupMmlEditor()はmacroHeaderReを必須で使うため、
+// 「絶対にマッチしない」ダミー正規表現を渡す(空の否定先読み)。
+export const PMD_MACRO_HEADER_RE = /(?!)/;
+
+// 行頭のパート文字(A～I、PART_LETTERS=FM1-6,SSG1-3。compiler/pmd_mml_parser.mjs参照)。
+// パーサは複数文字の連続指定("ABC cdefg"のように同じMMLを複数パートへ)を許すため、
+// MUCOM版と異なり1文字ではなく連続するA-Iをまとめて1トークンにする。
+export const PMD_PART_LETTER_RE = /^([ \t]*)([A-Ia-i]+)/;
