@@ -159,13 +159,14 @@ MUCOM が時間サンプリングなのは submodule 非改変の制約。実用
 ### 検証手順（確立済み）
 
 ```bash
+# リポジトリのルート(このREADME.mdがあるディレクトリ)を起点にする
 # MUCOM88
-cd /Users/haruurara/MyProject/_emulator/FMSound && source ./emsdk/emsdk_env.sh
 cd mucomweb
+source ../emsdk/emsdk_env.sh
 emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
 
 # PMD
-cd /Users/haruurara/MyProject/_emulator/FMSound/pmdweb
+cd ../pmdweb
 emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
 ```
 
