@@ -335,6 +335,55 @@ header.app-header .app-tagline {
   color: var(--text-dim);
 }
 
+/* 課題D: ダウンロードポップオーバー(.settings-popoverの構造を共有し、中身だけ違う)。 */
+.download-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.download-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.download-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.download-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.download-btn {
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.download-btn:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.download-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* サンプルMMLリンク。カード直下の控えめな一行。 */
 .sample-links {
   width: 100%;

@@ -121,13 +121,17 @@ window.addEventListener('orientationchange', rescale);
 
 // --- ツールバー共通ボタン ---
 const toolbar = document.getElementById('toolbar');
-const btnPlayPause = iconButton(ICONS.play, 'コンパイル&再生');
-const btnStop = iconButton(ICONS.stop, '停止');
+// 課題C: ボタンのtitleにショートカットを明記する(気づけるようにする目的。
+// 実際のキー配線はengine-app側(html/pmd-app.js・html/mucom-app.js)が
+// ui/shortcuts.js setupTransportShortcuts()経由で行う)。
+const btnPlayPause = iconButton(ICONS.play, 'コンパイル&再生 (⌘/Ctrl+Enter)');
+const btnStop = iconButton(ICONS.stop, '停止 (Esc)');
 const btnOpenFile = iconButton(ICONS.open, '曲を開く');
+const btnDownload = iconButton(ICONS.download, 'ダウンロード');
 const btnSettings = iconButton(ICONS.settings, '設定');
 const btnFullscreen = iconButton(ICONS.fullscreen, 'フルスクリーン');
 // エンジン固有ボタン(MUCOM88のエディタモード切替等)はこのボタンの手前に挿し込む。
-toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnSettings, btnFullscreen);
+toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnDownload, btnSettings, btnFullscreen);
 btnPlayPause.disabled = true;
 btnStop.disabled = true;
 
@@ -147,7 +151,9 @@ const ctx = {
   btnPlayPause,
   btnStop,
   btnOpenFile,
+  btnDownload,
   btnSettings,
+  settingsPopoverEl: document.getElementById('settingsPopover'),
   btnFullscreen,
   fileInput: document.getElementById('fileInput'),
   sampleLinksEl: document.getElementById('sampleLinks'),

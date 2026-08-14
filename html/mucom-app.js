@@ -618,6 +618,13 @@ export async function init(ctx) {
 
   const cp932MessageDecoder = new TextDecoder('shift_jis');
 
+  // 課題D: ダウンロード用に「直近で実際にコンパイルできたバイト列(.mub)」を
+  // 保持する。CompileMML()はコンパイル結果を仮想FS上の固定パス"/mucom.mub"へ
+  // 書く(mucomweb/src/MucomWeb.cpp のmubPath)。PMD側と違いJS側でバイト列を
+  // 作っていない(コンパイラがwasm内)ため、Module.FS.readFile()で読み戻す。
+  const MUB_PATH = '/mucom.mub';
+  let lastCompiledBytes = null;
+
   function compileAndPlay() {
     if (!moduleReady) return;
     const mml = document.getElementById('mml').value;
@@ -635,6 +642,11 @@ export async function init(ctx) {
     if (compiledOk) {
       mmlDirty = false;
       hasCompiled = true;
+      try {
+        lastCompiledBytes = Module.FS.readFile(MUB_PATH);
+      } catch {
+        lastCompiledBytes = null; // 実測上起きない想定だが、読めなければダウンロード側を無効のままにする
+      }
     }
     setAudioPaused(false);
   }
@@ -740,5 +752,26 @@ export async function init(ctx) {
     consoleCard.classList.remove('dropzone-active');
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     openMmlFile(file);
+  });
+
+  // --- 課題D: ダウンロード(MMLソース/コンパイル済み.mub/asmのdb配列)。
+  const downloadMenu = createDownloadMenu({
+    driverKey: 'mucom',
+    mmlFilename: 'mucom-mml.mml',
+    compiledFilename: 'mucom-song.mub',
+    compiledLabel: '.mub',
+    asmFilename: 'mucom-song-db.asm',
+    asmLabel: 'mucom_song_data',
+    getMmlText: () => mmlTextarea.value,
+    getCompiledBytes: () => lastCompiledBytes,
+  });
+  btnDownload.addEventListener('click', () => downloadMenu.render());
+  setupPopover(btnDownload, downloadMenu.popoverEl);
+
+  // --- 課題C: キーボードショートカット(⌘/Ctrl+Enterでコンパイル&再生、Escで停止)。
+  setupTransportShortcuts({
+    btnPlayPause,
+    btnStop,
+    popovers: [settingsPopoverEl, downloadMenu.popoverEl],
   });
 }

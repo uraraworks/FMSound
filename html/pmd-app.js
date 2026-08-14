@@ -551,6 +551,11 @@ export async function init(ctx) {
     updateTransportButtonUI();
   }
 
+  // 課題D: ダウンロード用に「直近で実際に再生できたコンパイル済みバイト列」を
+  // 保持する。エディタでのコンパイル成功時、プレイヤーでの曲読み込み成功時の
+  // 両方で更新する(playBytes()参照)。
+  let lastCompiledBytes = null;
+
   function compileAndPlay() {
     if (!moduleReady) return;
     const source = mmlTextarea.value;
@@ -568,6 +573,7 @@ export async function init(ctx) {
       return;
     }
     renderCompileErrors([]);
+    lastCompiledBytes = file;
     mmlDirty = false;
     hasCompiled = true;
     commentOffset = 0;
@@ -681,7 +687,11 @@ export async function init(ctx) {
   async function playBytes(bytes, name) {
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
-    if (error) alert(error);
+    if (error) {
+      alert(error);
+    } else {
+      lastCompiledBytes = bytes; // 課題D: 「曲を開く」で読み込んだ.Mもダウンロード対象にする
+    }
     commentOffset = 0;
     setAudioPaused(false);
   }
@@ -711,5 +721,26 @@ export async function init(ctx) {
     consoleCard.classList.remove('dropzone-active');
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) await playBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+  });
+
+  // --- 課題D: ダウンロード(MMLソース/コンパイル済み.M/asmのdb配列)。
+  const downloadMenu = createDownloadMenu({
+    driverKey: 'pmd',
+    mmlFilename: 'pmd-mml.mml',
+    compiledFilename: 'pmd-song.M',
+    compiledLabel: '.M',
+    asmFilename: 'pmd-song-db.asm',
+    asmLabel: 'pmd_song_data',
+    getMmlText: () => mmlTextarea.value,
+    getCompiledBytes: () => lastCompiledBytes,
+  });
+  btnDownload.addEventListener('click', () => downloadMenu.render());
+  setupPopover(btnDownload, downloadMenu.popoverEl);
+
+  // --- 課題C: キーボードショートカット(⌘/Ctrl+Enterでコンパイル&再生、Escで停止)。
+  setupTransportShortcuts({
+    btnPlayPause,
+    btnStop,
+    popovers: [settingsPopoverEl, downloadMenu.popoverEl],
   });
 }

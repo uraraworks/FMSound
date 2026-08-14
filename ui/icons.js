@@ -63,4 +63,6 @@ export const ICONS = {
   // WebNP2/WebX68kと同じ四隅矢印＝フルスクリーン。
   fullscreen:
     'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
+  // 課題D: 下向き矢印+受け皿＝ダウンロード。
+  download: 'M12 3v11 M7 10l5 5 5-5 M4 20h16',
 };
