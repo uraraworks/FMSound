@@ -188,6 +188,13 @@ export async function init(ctx) {
       resultEl.removeAttribute('title');
       resultEl.onclick = null;
     }
+    // 課題B: エディタのすぐ上の状態表示(詳細ログはこのまま下の#resultに残す)。
+    // MUCOMの出力は"line N"を含まないメッセージ(#Device error等)もあるため、
+    // その場合はline番号なしでメッセージ全文(先頭行)だけを状態表示に出す。
+    const firstLine = text.split(/\r\n|\r|\n/, 1)[0] ?? text;
+    setMmlStatus(mmlStatusEl, isError
+      ? { ok: false, line, message: firstLine, onJump: (l) => mmlEditorApi.jumpToLine(l) }
+      : { ok: true });
   }
   btnEditorMode.addEventListener('click', () => {
     setUiMode(currentUiMode() === 'editor' ? 'player' : 'editor');

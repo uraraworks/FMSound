@@ -232,8 +232,18 @@ export async function init(ctx) {
     resultEl.replaceChildren();
     if (errors.length === 0) {
       resultEl.textContent = 'コンパイル成功';
+      // 課題B: エディタのすぐ上の状態表示も更新する(詳細ログはこのまま下に残す)。
+      setMmlStatus(mmlStatusEl, { ok: true });
       return;
     }
+    // 課題B: 状態表示には先頭のエラーだけを1行で出す(複数ある場合の全件は
+    // 従来どおり下の#result側で確認する)。
+    setMmlStatus(mmlStatusEl, {
+      ok: false,
+      line: errors[0].line ?? null,
+      message: errors[0].message,
+      onJump: (line) => mmlEditorApi.jumpToLine(line),
+    });
     for (const e of errors) {
       const div = document.createElement('div');
       div.textContent = e.line != null ? `line ${e.line}: ${e.message}` : e.message;
