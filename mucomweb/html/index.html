@@ -883,27 +883,50 @@
     return Number.isFinite(rate) ? rate : 44100;
   }
 
+  // compileMML()のコンパイルメッセージ(CP932の生バイト)専用のデコーダ。
+  // .muc読み込み用のsjisDecoder(このファイル下部で定義)と役割は同じだが、
+  // 定義順序に依存したくないため独立して持つ(TextDecoderは状態を持たないので
+  // 複数インスタンスを持つコストは無視できる)。
+  const cp932MessageDecoder = new TextDecoder('shift_jis');
+
   function compileAndPlay() {
     if (!moduleReady) return;
     const mml = document.getElementById('mml').value;
     adapter.reset();
     setCommentFromMml(mml);
-    renderCompileResult(Module.compileMML(mml, selectedRate()));
+    // dirty判定用: コンパイル成功(CompileMML()内部でg_player->Stop();...;Play()が
+    // 走った場合)だけstate.generationが変わる(StreamingPlayer::Stop()/Play()が
+    // 呼ばれるたびに++_generationするため、mucomweb/src/StreamingPlayer.cpp参照)。
+    // 失敗時(構文エラー等)はC++側がPlay()まで到達せずgenerationは変化しないので、
+    // 「成功したときだけdirtyを下ろす」判定に使える。state.playback自体は
+    // AudioWorkletの非同期メッセージで遅れてセットされるため、この判定には使えない
+    // (updateTransportButtonUIコメント参照)。
+    const audioStateBefore = globalThis.mucomAudioState;
+    const generationBefore = audioStateBefore ? audioStateBefore.generation : null;
+    // compileMML()の戻り値(std::string)はembind境界でUTF-8変換されるため、中身が
+    // CP932(ゲストのZ80 ROMインタプリタが書くメッセージ/mucomerror.cppのerr_jpn[])の
+    // 生バイトだと文字化けする(mucomweb/src/MucomWeb.cpp CompileMML()直上のコメント
+    // 参照)。戻り値そのものは使わず、別途export したポインタ+長さでHEAPU8を直接読み、
+    // TextDecoder('shift_jis')でデコードする(.mucファイル読み込み時の既存経路と
+    // 同じ作法)。
+    Module.compileMML(mml, selectedRate());
+    const msgPtr = Module.getCompileMessagePointer();
+    const msgLen = Module.getCompileMessageLength();
+    const msgBytes = Module.HEAPU8.subarray(msgPtr, msgPtr + msgLen);
+    renderCompileResult(cp932MessageDecoder.decode(msgBytes));
+    const audioStateAfter = globalThis.mucomAudioState;
+    const compiledOk = Boolean(audioStateAfter) && audioStateAfter.generation !== generationBefore;
+    if (compiledOk) {
+      mmlDirty = false;
+    }
     // 新規コンパイル&再生(g_player->Play()がcontext.resume()まで行う)なので、
-    // 一時停止フラグを引きずらないようにここでクリアする。
+    // 一時停止フラグを引きずらないようにここでクリアする。setAudioPaused()が
+    // 内部でupdateTransportButtonUI()を呼ぶため、mmlDirtyの変更はここで反映される。
     setAudioPaused(false);
   }
 
   btnStop.addEventListener('click', function() {
-      Module.stopMusic();
-      // Stop()はStreamingPlayer::Stop()経由でAudioWorkletStop()を呼ぶだけで
-      // context自体はsuspendされたままになり得るため、次の再生に備えて
-      // resumeしておく(pause機能とは独立した後始末)。
-      const audioState = globalThis.mucomAudioState;
-      if (audioState?.context?.state === 'suspended') {
-        audioState.context.resume();
-      }
-      setAudioPaused(false);
+      stopPlayback();
   });
 
   // Clear MMLは(a)取り消せる経路を優先し、(b)空でなければ確認を出す(2段構え)。

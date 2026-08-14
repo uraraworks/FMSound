@@ -74,7 +74,21 @@ file(GLOB SOURCES
 
 list(APPEND SOURCES "${FFT_UPSTREAM_DIR}/fft/fft.c")
 
-list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/mucomerror.cpp")
+# mucomerror_utf8.cpp(アップストリームがmucomerror.cppの日本語部分を「見た目を保った
+# ままUTF-8へ変換」して作った版)ではなく無印のmucomerror.cpp(CP932)を使う。
+# orgmsg[](ゲストがエラー時にVRAM/メモリへ書き出す半角カナメッセージと1バイト単位で
+# strcmp照合するテーブル)がmucomerror_utf8.cppではUTF-8の3バイト表現へ変換されてしまい
+# 一致しなくなっている(実測で確認: mucomerror_utf8.cpp使用時はどんなMMLエラーでも
+# mucom_geterror()が常に0を返し、cmucom.cppの正しいエラー経路
+# 「#error %d in line %d. -> 日本語(English)」に一切入れない)。CMucomの出力
+# (GetMessageBuffer())は、ROM側が書くゲスト文字列(#Unknown messageのフォールバック分、
+# 常にCP932/JIS X0201の半角カナ1バイト表現)とerr_jpn[]/err[](本来PRINTFで書く分)が
+# 同じバッファに混在するため、バッファ全体を単一エンコーディングとして扱うには
+# 「全部CP932」に統一するしかない(UTF-8化した部分だけ生き残らせる方式は、ゲスト側の
+# 生バイトが必ずCP932である以上バッファ全体としては両立しない)。したがって
+# mucomerror.cpp(CP932)を採用し、JS側(mucomweb/html/index.html)でバッファ全体を
+# TextDecoder('shift_jis')でデコードする(MMLロード時の既存経路と同じ作法)。
+list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/mucomerror_utf8.cpp")
 
 if (EMSCRIPTEN)
     list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/main.cpp")

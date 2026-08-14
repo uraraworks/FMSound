@@ -409,6 +409,35 @@ void AudioWorkletRequest(int requestedFrames, uint32_t generation, uint32_t requ
 	}
 }
 
+// CompileMML()のコンパイルメッセージ(CMucom::GetMessageBuffer()由来)はCP932の
+// 生バイト列(ゲストのZ80 ROMインタプリタがエラー時にVRAM/メモリへ書き出す半角カナ
+// メッセージや、mucomerror.cpp(CP932版、mucomweb/CMakeLists.txt参照)のerr_jpn[]が
+// 混在する)。std::stringの戻り値としてembindに渡すと、embindのstd::string<->JS文字列
+// 変換がUTF-8ToStringで行われるため、CP932の生バイトはUTF-8として不正な並びとなり
+// 文字化けする(U+FFFDへ無言で置換される、実測で確認済み)。std::stringという型自体は
+// 単なるバイト列のコンテナでエンコーディングを一切気にしないため、C++内で扱う分には
+// 問題ないが、embind境界を跨ぐ瞬間にだけ壊れる。
+//
+// 対策として、戻り値はJSに直接渡さず(embindのUTF-8変換を経由させず)、
+// g_lastCompileMessageというグローバルバッファにコピーして保持し、そのポインタと
+// 長さだけをuint32_tでexportする(GetSnapshotRingPointer()と同じ「JS側はHEAPU8を
+// 直接読む」パターン)。JS側(mucomweb/html/index.html)は
+// Module.HEAPU8.subarray(ptr, ptr+len)で生バイトを取り出し、
+// new TextDecoder('shift_jis')でデコードする(.mucファイル読み込み時の既存経路と
+// 同じ作法)。CompileMML()自体の戻り値(std::string)は後方互換のために残すが、
+// 中身が化ける経路なのでJS側では使わないこと。
+static std::string g_lastCompileMessage;
+
+uint32_t GetCompileMessagePointer()
+{
+	return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_lastCompileMessage.data()));
+}
+
+uint32_t GetCompileMessageLength()
+{
+	return static_cast<uint32_t>(g_lastCompileMessage.size());
+}
+
 std::string CompileMML(const std::string& mml, int sampleRate)
 {
 	static const char *mubPath = "/mucom.mub";
@@ -450,7 +479,10 @@ std::string CompileMML(const std::string& mml, int sampleRate)
 			g_player->Play(sampleRate);
 		}
 	}
-	return std::string(mucomCompiler.GetMessageBuffer());
+	// std::string(const char*)は単なるバイトコピーでUTF-8変換を一切行わない
+	// (エンコーディング変換が起きるのはembindがJSへ戻す瞬間だけ)。
+	g_lastCompileMessage.assign(mucomCompiler.GetMessageBuffer());
+	return g_lastCompileMessage;
 }
 
 void StopMusic()
@@ -555,6 +587,11 @@ emscripten::val GetChannelData()
 EMSCRIPTEN_BINDINGS(mucom88)
 {
 	emscripten::function("compileMML", &CompileMML);
+	// CompileMML()の戻り値(std::string)はembind境界でUTF-8変換されるためCP932の
+	// 生バイトが化ける(CompileMML()直上のコメント参照)。JS側はこの2つでHEAPU8を
+	// 直接読み、TextDecoder('shift_jis')でデコードすること。
+	emscripten::function("getCompileMessagePointer", &GetCompileMessagePointer);
+	emscripten::function("getCompileMessageLength", &GetCompileMessageLength);
 	emscripten::function("stopMusic", &StopMusic);
 	emscripten::function("getChannelData", &GetChannelData);
 	emscripten::function("audioWorkletRequest", &AudioWorkletRequest);
