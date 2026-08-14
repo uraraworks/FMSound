@@ -13,8 +13,9 @@
 // 座標定数は fmdsp_sprites.h の enum をそのまま転記し、行ごとに file:line を
 // 付す(trackrow.js の流儀を踏襲)。読み取れなかった値は「未確認」と明記する。
 
-import { drawText, SmallFont } from './font.js';
-import { FONT_SMALL } from './font_small.js';
+import { drawText, drawTextCp932, SmallFont } from './font.js';
+import { FONT_SMALL, FONT_MEDIUM } from './font_small.js';
+import { encodeCp932 } from '../ui/cp932-encode.js';
 import {
   NUM_W, NUM_H, S_NUM, S_NUM_COLON, S_NUM_BAR,
   LOGO_FM_W, LOGO_DS_W, LOGO_P_W, LOGO_H, LOGO_W,
@@ -27,9 +28,14 @@ import {
   S_PLAY, S_STOP, S_PAUSE, S_FADE, S_FF, S_REW, S_FLOPPY,
   CIRCLE_W, CIRCLE_H, S_CIRCLE,
   PANPOT_W, PANPOT_H, S_PANPOT,
+  PLAYING_W, PLAYING_H, S_PLAYING,
 } from './sprites.js';
 
 const SMALL_FONT = new SmallFont(FONT_SMALL); // font_fmdsp_small (5x6)
+// buf_fontm_2/buf_fontm_3相当(fmdsp-pacc.c:1879-1884、曲名バーのPCM種類名/
+// ファイル名にのみ使われる。§10「フォント取り違え点検」参照)。ANK専用
+// (getJisHalf無し=全角は上流と同じくグリフ無しになる。font.js drawText系コメント参照)。
+const MEDIUM_FONT = new SmallFont(FONT_MEDIUM); // font_fmdsp_medium (6x8)
 
 // --- フォントの取り違え点検(2026-08-14) ---
 // 「buf_font_2」という名前から MEDIUM_FONT(tex_fontm, 6x8) を連想しがちだが、
@@ -101,6 +107,17 @@ const DRIVER_TRI_X = DRIVER_TEXT_2_X + 26; // :132
 const DRIVER_TRI_Y = DRIVER_TEXT_Y + 3; // :133
 const FILEBAR_TRI_W = 3; // :58
 const FILEBAR_TRI_H = 3; // :59
+// DRIVER値の表示位置(上流からの逸脱、2026-08-15追加)。
+// upstream/98fmplayer/fmdsp/fmdsp-pacc.c:1180-1191 は"DR"+"IVER"のラベルと
+// 三角(buf_tri_7)を描くだけで、値そのものを描くコードは存在しない
+// (fmdsp.c側にも無い。gtk/main.c等フロントエンド側にも文字列描画は無い。
+// grep -rn "DRIVER_TEXT" upstream/98fmplayer/ で確認済み)。つまり「DRIVER」欄に
+// PMD/FMP等のドライバ名を表示する機能自体が upstream には存在せず、本Web版が
+// PMD/MUCOM88のどちらで開いているかを示すために独自に追加した表示。
+// 位置は三角(DRIVER_TRI_X=347,幅3)の直後、次の静的要素(TIME_TEXT_X=530の
+// "PASSED TIME"ラベル)より手前に収まるよう決めた(上流にレイアウトの前例が
+// 無いため、既存の空白帯に収める形で新規に決定)。
+const DRIVER_VALUE_X = DRIVER_TRI_X + FILEBAR_TRI_W + 4; // = 354
 
 const CURL_LEFT_X = 347; // :136
 const CURL_RIGHT_X = 509; // :137
@@ -213,10 +230,17 @@ export function drawTitle(vram, version = ['??', '??', '??']) {
 // tools/gen_sprites.pyの抽出対象にも含めていないため、ここではベタ塗り
 // 三角相当として fillRect で簡略化する。**未確認: 実際のs_filebar_tri形状は
 // 三角形だが、本モジュールは矩形で代用しており正確な形は再現していない**)。
-export function drawDriverLabel(vram) {
+// driverName: 'PMD' | 'MUCOM88' 等、値表示は上流に存在しない本Web版の追加
+// (上のDRIVER_VALUE_Xのコメント参照)。PMD/MUCOM88のどちらで開いているかは
+// ページ単位(html/pmd-app.js・html/mucom-app.js)で固定なので、曲が変わっても
+// 変化しない静的表示として扱う(drawStaticDecorations経由で1回だけ描く)。
+export function drawDriverLabel(vram, driverName = '') {
   drawText(vram, SMALL_FONT, 'DR', DRIVER_TEXT_X, DRIVER_TEXT_Y, COLOR_7);
   drawText(vram, SMALL_FONT, 'IVER', DRIVER_TEXT_2_X, DRIVER_TEXT_Y, COLOR_7);
   vram.fillRect(DRIVER_TRI_X, DRIVER_TRI_Y, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_7);
+  if (driverName) {
+    drawText(vram, SMALL_FONT, driverName, DRIVER_VALUE_X, DRIVER_TEXT_Y, COLOR_7);
+  }
 }
 
 // CURL(左右装飾)。fmdsp-pacc.c:1192-1199。pacc_mode_copy(スプライト自体に
@@ -335,10 +359,11 @@ export function drawLevelLabels(vram) {
 }
 
 // 静的部分をまとめて1回描画する。初期化時にこれだけ呼べばよい。
-export function drawStaticDecorations(vram, version) {
+// driverName: drawDriverLabel参照('PMD'/'MUCOM88'。省略時は値を出さない)。
+export function drawStaticDecorations(vram, version, driverName = '') {
   drawLogo(vram);
   drawTitle(vram, version);
-  drawDriverLabel(vram);
+  drawDriverLabel(vram, driverName);
   drawCurl(vram);
   drawTimeLabels(vram);
   drawCpuFpsLabels(vram);
@@ -478,6 +503,83 @@ export function drawTransportIcons(vram, { playing, stopped, paused }) {
   vram.blitCopy(S_FF, FF_W, FF_X, FF_Y, FF_W, FF_H);
   vram.blitCopy(S_REW, REW_W, REW_X, REW_Y, REW_W, REW_H);
   vram.blitCopy(S_FLOPPY, FLOPPY_W, FLOPPY_X, FLOPPY_Y, FLOPPY_W, FLOPPY_H);
+}
+
+// --- MUSIC FILE バー(FILEBAR) ---
+// fmdsp-pacc.c:1843-1889 (mode_update内)。"PLAYING"ラベル(sprite) +
+// "MUS"/"IC"/"F"/"ILE"(buf_font_2=small) + 三角(buf_tri) + 曲ファイル名
+// (buf_fontm_2=medium) + PCM種類名バー(可変本数、本Web版では未実装。理由は
+// 下記drawFileBar内コメント参照)。
+//
+// 上流はこの一式を mode_changed 時(=lmode/rmode切替、または
+// fmdsp_pacc_update_file()で曲を切り替えたとき)にだけ static バッファへ
+// 再構築する(§6「更新頻度」参照)。本Web版はtrackrow/commentと同じく
+// 「毎フレーム動的に描き直す」設計に統一しているため、drawDynamic経由で
+// 呼ぶことを想定する(視覚結果は同じで、単純化のため)。
+const PLAYING_X = 0; // fmdsp_sprites.h:45
+const PLAYING_Y = 324; // fmdsp_sprites.h:46
+const FILEBAR_X = 77; // fmdsp_sprites.h:49
+const FILEBAR_MUS_X = FILEBAR_X + 6; // :50 (=83)
+const FILEBAR_IC_X = FILEBAR_MUS_X + 14; // :51 (=97)
+const FILEBAR_F_X = FILEBAR_IC_X + 11; // :52 (=108)
+const FILEBAR_ILE_X = FILEBAR_F_X + 4; // :53 (=112)
+const FILEBAR_TRI_X_POS = FILEBAR_ILE_X + 17; // :56 (=129、上のDRIVER用と同名衝突を避けfilebar固有名にした)
+const FILEBAR_TRI_Y_POS = PLAYING_Y + 4; // :57 (=328)
+const FILEBAR_FILENAME_X = FILEBAR_TRI_X_POS + 8; // :60 (=137)
+// FILEBAR_PCMBAR_X (:184, =551)。PCM種類名バーは未実装(下記コメント参照)だが、
+// 上流のレイアウト意図(曲名の右にPCM欄が続く)を尊重し、曲名の描画幅を
+// この手前で打ち切ってPCM欄用の余白を空けておく。
+const FILEBAR_PCMBAR_X = 551;
+const FILEBAR_FILENAME_MAX_W = FILEBAR_PCMBAR_X - FILEBAR_FILENAME_X - 4; // = 410px
+
+// JS文字列(曲名)をCP932バイト列へ変換する。ui/cp932-encode.js
+// (課題D、TextDecoder実測ベースの変換表)をそのまま流用し、変換不能な文字が
+// 混じっていても全体を諦めず'?'に置き換えて描画する(空白のまま消えるより
+// 「読めない文字がある」とわかる形にする)。
+function toDisplayCp932(text) {
+  const { bytes, unmappable } = encodeCp932(text);
+  if (bytes) return bytes;
+  const unmappableSet = new Set(unmappable);
+  const replaced = [...text].map((ch) => (unmappableSet.has(ch) ? '?' : ch)).join('');
+  return encodeCp932(replaced).bytes ?? new Uint8Array(0);
+}
+
+// songName: 曲の表示名(html/net-load.js resolveSongFromUrl()系が決める
+// 「表示名の決定規則」をそのまま使うこと。ツールバー側のnetStatus表示と
+// 同じ文字列を渡せば画面表示と食い違わない)。null/空文字なら何も描かない
+// (曲が読み込まれていない状態、でっちあげない)。
+//
+// PCM種類名バー(work->pcmtype[]/work->pcmname[]相当)は実装していない:
+// 本Web版のwasm側(PmdCore.c/mucomweb)は #pcm 等の付随音色ファイルの読み込み
+// 自体をサポートしておらず、pcmtype/pcmnameに相当するデータをそもそも
+// 持っていない(grep -rn "pcmtype|pcmname" html/ fmdsp/ で0件、docs/fmdsp-layout.md
+// §10参照)。取れないデータをそれらしく並べると実際の音色と食い違う捏造表示に
+// なるため、PCM種類名バー自体を出さない(枠の余白だけ空けておく、上記
+// FILEBAR_FILENAME_MAX_W参照)。
+//
+// フォント: 上流のbuf_fontm_2(font_fmdsp_medium)はANK専用で全角に非対応
+// (font_fmdsp_small.c: get_half関数ポインタが両フォントとも0=未設定であることを
+// 確認済み)。本Web版のMEDIUM_FONTも同じ制約(getJisHalf無し)なので、全角の
+// 曲名は上流と同じくグリフ無し(何も描かれない)になる。これは本Web版の手抜きではなく
+// upstream自体の仕様。
+export function drawFileBar(vram, songName) {
+  vram.blitCopy(S_PLAYING, PLAYING_W, PLAYING_X, PLAYING_Y, PLAYING_W, PLAYING_H);
+  drawText(vram, SMALL_FONT, 'MUS', FILEBAR_MUS_X, PLAYING_Y + 1, COLOR_2);
+  drawText(vram, SMALL_FONT, 'IC', FILEBAR_IC_X, PLAYING_Y + 1, COLOR_2);
+  drawText(vram, SMALL_FONT, 'F', FILEBAR_F_X, PLAYING_Y + 1, COLOR_2);
+  drawText(vram, SMALL_FONT, 'ILE', FILEBAR_ILE_X, PLAYING_Y + 1, COLOR_2);
+  vram.fillRect(FILEBAR_TRI_X_POS, FILEBAR_TRI_Y_POS, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
+  if (songName) {
+    // 上流はfilenameの描画をpcmcountループの内側に置いており、PCM種類が0件だと
+    // 曲名も出ないという上流側の癖がある(fmdsp-pacc.c:1866-1888、
+    // `if (fp->filename) { ... }` がpcmcountのforループ内にしかない)。
+    // 本Web版はPCM種類名バーを実装しておらずpcmcountは常に0なので、これを
+    // そのまま再現すると「曲名表示が主目的」という要求そのものが満たせなくなる。
+    // そのため意図的にこの依存を切り離し、PCM種類の有無に関わらず曲名を
+    // 独立して描く(上流からの意図的逸脱、docs/fmdsp-layout.md参照)。
+    const bytes = toDisplayCp932(songName);
+    drawTextCp932(vram, MEDIUM_FONT, bytes, FILEBAR_FILENAME_X, PLAYING_Y, COLOR_2, FILEBAR_FILENAME_MAX_W);
+  }
 }
 
 // 動的部分(枠内の値)をまとめて1フレームぶん描画する。

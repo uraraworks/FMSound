@@ -260,3 +260,25 @@ export function drawTrackRows(vram, font, entryTracks) {
     drawTrackRow(vram, font, 0, TRACK_H * row, slotIndex, data);
   });
 }
+
+// PmdCore.c flatten() 相当のフラットレイアウト長。FIELD(上記)の最終フィールド
+// SSG_NOISE=25 が0始まりの最終indexなので+1で26。
+export const FIELD_COUNT = 26;
+
+// 2026-08-15: 曲が読み込まれていない/停止中でもパート行の「枠」(鍵盤地板・
+// TRACK./KN:/TN:/Vl:/GT:/DT:/M:等のラベル、KN:はplaying=falseなので"S")を
+// 描くためのプレースホルダデータ。
+//
+// 出典確認: 上流(fmdsp-pacc.c)はパート行を「曲の有無」で出し分けていない。
+// update_track_without_key/update_track_10 は fp->work が指す
+// fmdriver_track_status を毎フレーム無条件に読んで描画するだけで、
+// 「曲が読み込まれていない」状態を特別扱いする分岐は存在しない
+// (fp->work 自体が起動直後から静的に確保された構造体を指し続ける設計のため、
+// 全フィールド0の「未再生」状態がそのまま描かれる。C側で「表示するかどうか」を
+// 曲の有無で切り替えるコードは無いことをfmdsp-pacc.c全文で確認済み)。
+// 全フィールド0のデータは drawTrackRow() 内で自然に「playing=false」分岐
+// (KN:S、鍵盤ハイライト無し、バーは背景色)に落ちるため、上流と同じ見た目になる。
+export function createIdleEntryTracks() {
+  const maxSlot = TRACK_DISP_TABLE_OPNA.reduce((m, v) => Math.max(m, v), 0);
+  return Array.from({ length: maxSlot + 1 }, () => new Int32Array(FIELD_COUNT));
+}

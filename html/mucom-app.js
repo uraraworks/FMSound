@@ -10,7 +10,7 @@
 import createMucomWeb from './mucom88.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
-import { drawTrackRows } from './fmdsp/trackrow.js';
+import { drawTrackRows, createIdleEntryTracks } from './fmdsp/trackrow.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment } from './fmdsp/comment.js';
@@ -311,6 +311,8 @@ export async function init(ctx) {
 
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
+  // アイドル画面(停止中)で直近に描いた曲名。undefinedは「まだ一度も描いていない」。
+  let idleDrawnSongName;
   // 課題B(2026-08-14): 「曲が終わったこと」を自動検出して頭出し停止する機能を
   // 実装したが、2026-08-15の実機報告(同梱サンプルのループ曲が約6.5秒で止まる)を
   // 受けて再測定した結果、**MUCOM88では信頼できる終了検出手段が無いと判明したため
@@ -450,12 +452,15 @@ export async function init(ctx) {
 
   const palette = PALETTES[0];
 
-  rightpane.drawStaticDecorations(vram, FMSOUND_VERSION_FIELDS);
+  rightpane.drawStaticDecorations(vram, FMSOUND_VERSION_FIELDS, 'MUCOM88');
   const staticVramSnapshot = vram.pixels.slice();
 
   const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
   const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
   let rightPaneFrameCounter = 0;
+  // 曲が読み込まれていない/停止中でもパート行の枠を描くためのプレースホルダ
+  // (trackrow.js createIdleEntryTracks() 参照)。
+  const idleEntryTracks = createIdleEntryTracks();
 
   let fmdspFont = null;
   FmdspFont.load('./fmdsp/shinonome.rom').then((font) => { fmdspFont = font; })
@@ -532,6 +537,9 @@ export async function init(ctx) {
     return header;
   }
 
+  // FMDSP画面の「MUSIC FILE」バーに出す曲名。applyMmlBytes()(課題D注記のとおり
+  // 読み込んだMMLがある限り常にここを通る唯一の窓口)で確定させる。
+  let currentSongName = null;
   let lastLoadedRawBytes = null;
   let lastLoadedText = null;
   // 課題(net配線): 直近に読み込んだMMLの文字コード判定結果('utf-8'|'shift_jis'|null)。
@@ -718,6 +726,7 @@ export async function init(ctx) {
       const levels = readLevels(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
       rightpane.drawLevelMeters(vram, levels, levelPeakState);
+      rightpane.drawFileBar(vram, currentSongName);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
     }
@@ -740,14 +749,23 @@ export async function init(ctx) {
       const writeIndex = Module.getSnapshotWriteIndex() >>> 0;
       if (writeIndex === invalidWriteIndex || writeIndex === 0) {
         debug.innerText = 'snapshot ring: inactive/empty';
-        if (!stoppedFrameDrawn) {
+        // 2026-08-15: PMD側と同じ実機報告(左半分のパート行が真っ黒)への対処。
+        // フォント未ロードの間は再試行し、実際に描けたときだけフラグを立てる
+        // (詳細はhtml/pmd-app.jsの同名分岐のコメント参照)。
+        // idleDrawnSongNameは「?mml=読み込み(非同期fetch)がこの一回描画より後に
+        // 完了し、曲名だけ古いまま固定されてしまう」抜けを防ぐため、曲名が変わったら
+        // stoppedFrameDrawnの状態に関わらず描き直す(html/pmd-app.jsと同じ対処)。
+        if (fmdspFont && (!stoppedFrameDrawn || idleDrawnSongName !== currentSongName)) {
           stoppedFrameDrawn = true;
-          if (fmdspFont) {
-            rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
-            rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
-            rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
-            canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
-          }
+          idleDrawnSongName = currentSongName;
+          vram.pixels.set(staticVramSnapshot);
+          drawTrackRows(vram, fmdspFont, idleEntryTracks);
+          drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
+          rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+          rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
+          rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
+          rightpane.drawFileBar(vram, currentSongName);
+          canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
         }
       } else {
         stoppedFrameDrawn = false;
@@ -917,6 +935,16 @@ export async function init(ctx) {
     // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
     // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
     updateMmlCaveat(text);
+    // FMDSP画面の曲名(FILEBAR)もこの唯一の窓口で確定させる。呼び出し側が
+    // 既に表示名を解決済み(URL/書庫読み込み、opts.name)ならそれを使い、
+    // 無ければ html/net-load.js titleFromMmlHeader() と同じ規則(#titleヘッダ)で
+    // MML本文から拾う。どちらも無ければ捏造せずnull(何も表示しない)。
+    if (opts.name !== undefined) {
+      currentSongName = opts.name;
+    } else {
+      const titleMatch = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(text);
+      currentSongName = titleMatch ? titleMatch[1].trim() || null : null;
+    }
   }
 
   function downloadMML(url) {
@@ -931,7 +959,7 @@ export async function init(ctx) {
     return fetch(url)
       .then(response => response.arrayBuffer())
       .then(buffer => {
-        applyMmlBytes(buffer);
+        applyMmlBytes(buffer, { name: url.split('/').pop() });
         compileAndPlay();
       });
   }
@@ -948,7 +976,7 @@ export async function init(ctx) {
   function openMmlFile(file) {
     if (!file) return;
     file.arrayBuffer().then((buffer) => {
-      applyMmlBytes(buffer);
+      applyMmlBytes(buffer, { name: file.name });
       compileAndPlay();
     });
   }
@@ -1032,12 +1060,12 @@ export async function init(ctx) {
           return;
         }
       }
-      applyMmlBytes(chosen.entry.data);
+      applyMmlBytes(chosen.entry.data, { name: chosen.displayName });
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
       return;
     }
 
-    applyMmlBytes(resolved.bytes);
+    applyMmlBytes(resolved.bytes, { name: resolved.name });
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
   }
 
@@ -1048,7 +1076,7 @@ export async function init(ctx) {
   async function loadDefaultSample() {
     const response = await fetch('./sample_fur_elise_mucom.muc');
     const buffer = await response.arrayBuffer();
-    applyMmlBytes(buffer);
+    applyMmlBytes(buffer, { name: 'sample_fur_elise_mucom.muc' });
   }
 
   if (ctx.songUrl) {

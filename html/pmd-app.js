@@ -28,7 +28,7 @@
 import createPmdWeb from './pmdweb.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
-import { drawTrackRows } from './fmdsp/trackrow.js';
+import { drawTrackRows, createIdleEntryTracks } from './fmdsp/trackrow.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment, commentScroll } from './fmdsp/comment.js';
@@ -367,6 +367,13 @@ export async function init(ctx) {
   // { bytes, name } | null。btnPlayPauseクリックで消費してplayBytes()する
   // (読み込むだけで自動再生はしない。AudioContextはユーザー操作を要求するため)。
   let pendingUrlSong = null;
+  // FMDSP画面の「MUSIC FILE」バーに出す曲名(html/net-load.jsの表示名決定規則
+  // (Content-Disposition→書庫内ファイル名→MMLの#title→URL末尾)で決まった値を
+  // そのまま使う。ツールバー側のnetStatus文言(「読み込みました: ...」)と
+  // 同じ文字列にすることで画面とツールバーの表示を一致させる)。
+  // pendingUrlSong.name / playBytes()のname引数のどちらかが更新されるたびに
+  // ここも一緒に更新する(曲が変わっても古い名前が残らないようにする)。
+  let currentSongName = null;
 
   // --- URL指定読み込み時の状態表示(常時表示。#result/#mmlStatusはmmlEditorPane配下で
   // プレイヤーモード時に隠れるため、その外側(sampleLinksElの直後)に置く)。 ---
@@ -392,12 +399,15 @@ export async function init(ctx) {
   // バージョン文字列: FMPLAYER_VERSION_0/1/2相当の値はwasm側に対応exportが無く、
   // でっち上げないため固定のプレースホルダ('-','-','-')にする(旧pmdweb/html/index.html
   // と同じ方針)。
-  rightpane.drawStaticDecorations(vram, ['-', '-', '-']);
+  rightpane.drawStaticDecorations(vram, ['-', '-', '-'], 'PMD');
   const staticVramSnapshot = vram.pixels.slice();
 
   const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
   const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
   let rightPaneFrameCounter = 0;
+  // 曲が読み込まれていない/停止中でもパート行の枠を描くためのプレースホルダ
+  // (trackrow.js createIdleEntryTracks() 参照)。
+  const idleEntryTracks = createIdleEntryTracks();
 
   let fmdspFont = null;
   FmdspFont.load('./fmdsp/shinonome.rom').then((font) => { fmdspFont = font; })
@@ -583,6 +593,7 @@ export async function init(ctx) {
       const { fft, levels } = readRightPaneData(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
       rightpane.drawLevelMeters(vram, levels, levelPeakState);
+      rightpane.drawFileBar(vram, currentSongName);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
     }
@@ -595,6 +606,8 @@ export async function init(ctx) {
   // 「コンパイル&再生」として働き、コンパイル成功後は一時停止/再開ボタンに戻る。
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
+  // アイドル画面(停止中)で直近に描いた曲名。undefinedは「まだ一度も描いていない」。
+  let idleDrawnSongName;
   // 課題B: 「曲が終わったこと」の検出を1箇所にまとめる(将来の連続再生の土台にもなる
   // ため、updateChannelStatus()内のここだけで判定する)。SNAPSHOT_HEADER.DRIVER_PLAYING
   // がtrue->falseへ変わった瞬間だけ発火させるための直前値。
@@ -735,6 +748,11 @@ export async function init(ctx) {
     mmlDirty = false;
     hasCompiled = true;
     commentOffset = 0;
+    // 課題(FILEBAR): エディタで直接再生した場合はファイル名という概念が無いため、
+    // html/net-load.js titleFromMmlHeader()と同じ規則(#titleヘッダ)でMML本文から
+    // 曲名を拾う。無ければ捏造せず何も表示しない(currentSongName=null)。
+    const titleMatch = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(source);
+    currentSongName = titleMatch ? titleMatch[1].trim() || null : null;
     setAudioPaused(false);
   }
 
@@ -792,14 +810,29 @@ export async function init(ctx) {
     const writeIndex = Module.getSnapshotWriteIndex() >>> 0;
     if (writeIndex === invalidIndex || writeIndex === 0) {
       debug.innerText = 'snapshot ring: inactive/empty';
-      if (!stoppedFrameDrawn) {
+      // 2026-08-15: 実機報告「再生前は左半分のパート行が真っ黒」への対処。
+      // 以前は fmdspFont 未ロードの間でも stoppedFrameDrawn を true にしてしまい、
+      // 初回rAFの時点(shinonome.romのfetchがまだ終わっていない)でこの分岐自体を
+      // 二度と通らなくなっていた(=パート行が永遠に描かれない)。フォントが
+      // 揃うまでは毎フレーム再試行し、実際に描けたときだけフラグを立てる。
+      // idleDrawnSongNameは「?mml=読み込み(非同期fetch)がこの一回描画より後に
+      // 完了し、曲名だけ古いまま固定されてしまう」抜けを防ぐため、曲名が変わったら
+      // stoppedFrameDrawnの状態に関わらず描き直す。
+      if (fmdspFont && (!stoppedFrameDrawn || idleDrawnSongName !== currentSongName)) {
         stoppedFrameDrawn = true;
-        if (fmdspFont) {
-          rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
-          rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
-          rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
-          canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
-        }
+        idleDrawnSongName = currentSongName;
+        vram.pixels.set(staticVramSnapshot);
+        drawTrackRows(vram, fmdspFont, idleEntryTracks);
+        const modePmd = Module.getCommentModePmd() !== 0;
+        const triangles = [];
+        drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
+          (row, x, y) => triangles.push({ row, x, y }));
+        lastTriangles = triangles;
+        rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
+        rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
+        rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
+        rightpane.drawFileBar(vram, currentSongName);
+        canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
       }
     } else {
       stoppedFrameDrawn = false;
@@ -870,6 +903,7 @@ export async function init(ctx) {
     // compileAndPlay()側のclearCompileStatus()を通らない)。
     clearCompileStatus();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
+    currentSongName = name;
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
     if (error) {
@@ -968,6 +1002,7 @@ export async function init(ctx) {
       // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。
       if (uiMode === 'editor') setUiMode('player');
       pendingUrlSong = { bytes: chosen.entry.data, name: chosen.displayName };
+      currentSongName = chosen.displayName;
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
       updateTransportButtonUI();
       return;
@@ -975,6 +1010,7 @@ export async function init(ctx) {
 
     if (uiMode === 'editor') setUiMode('player');
     pendingUrlSong = { bytes: resolved.bytes, name: resolved.name };
+    currentSongName = resolved.name;
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
     updateTransportButtonUI();
   }
@@ -997,6 +1033,7 @@ export async function init(ctx) {
     mmlEditorApi.render();
     mmlDirty = false;
     pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M' };
+    currentSongName = 'sample_fur_elise.M';
     updateTransportButtonUI();
   }
 

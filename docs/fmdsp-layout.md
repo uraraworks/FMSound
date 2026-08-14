@@ -458,3 +458,126 @@ upstreamの比率をそのまま2桁化して踏襲したもの。終端は`VER_
   完全な識別子`YYYY-MM-DD HH:MM JST (ハッシュ7桁)`(`FMSOUND_VERSION_FOOTER`)。
   同日に複数回コミットした場合に区別するための一意識別子として、不具合報告時に使う。
   国内利用者が多いため日本時間(JST)で表示し、基準が分かるよう`JST`と明記する。
+
+## 12. DRIVER値・MUSIC FILEバー(曲名)の実装(2026-08-15)
+
+### DRIVER値: 上流に対応物が無い、本Web版独自の追加
+
+`fmdsp-pacc.c:1180-1191`(`init_default`内)を確認した結果、DRIVERラベル
+("DR"+"IVER")と三角(`buf_tri_7`)を描くだけで、**値そのものを描くコードが
+upstream(`fmdsp-pacc.c`・`fmdsp.c`いずれにも)存在しない**
+(`grep -rn "DRIVER_TEXT" upstream/98fmplayer/` で用途を全数確認)。
+gtk/main.c等のフロントエンド側にもDRIVER欄への文字列描画は無い。
+つまり「DRIVERの値表示」という機能自体がupstreamに存在せず、本Web版が
+「いまPMD/MUCOM88のどちらで開いているか」を示すために独自に追加したもの。
+
+- 表示: `PMD` / `MUCOM88`(`fmdsp/rightpane.js` `drawDriverLabel(vram, driverName)`)。
+  ページ単位(`html/pmd-app.js`/`html/mucom-app.js`)で固定なので、
+  `drawStaticDecorations(vram, version, driverName)`経由で1回だけ描く静的表示。
+- 位置: `DRIVER_VALUE_X`(=三角`DRIVER_TRI_X`の直後+4px、354)。upstreamに
+  レイアウトの前例が無いため、次の静的要素(`TIME_TEXT_X`=530の"PASSED TIME")
+  より手前の空白帯に新規に決めた(`fmdsp/rightpane.js`該当コメント参照)。
+- 色: `buf_font_7`と同じ`COLOR_7`(ラベルと揃える)。
+
+### MUSIC FILEバー(FILEBAR): 上流の位置・書式に従い実装、PCM欄は未実装
+
+出典: `fmdsp-pacc.c:1843-1889`(`mode_update`内)、`fmdsp_sprites.h:45-61,184-189`。
+実装は`fmdsp/rightpane.js` `drawFileBar(vram, songName)`。
+
+- **PLAYINGラベル(`s_playing`スプライト)**: `tools/gen_sprites.py`に抽出処理を
+  追加し`fmdsp/sprites.js`へ`S_PLAYING`として出力(既存の抽出ロジックとの
+  diffが追加分のみであることを確認済み)。
+- **"MUS"/"IC"/"F"/"ILE"** + 三角: upstreamと同じ`buf_font_2`相当
+  (実体はSMALL_FONT、§10参照)・座標(`FILEBAR_MUS_X`等)。
+- **曲名(ファイル名)**: `buf_fontm_2`相当(medium、`FONT_MEDIUM`を
+  `font_small.js`から再importした。§10で一度削除したがFILEBAR実装で再び
+  必要になった)。`drawTextCp932()`(`fmdsp/font.js`、CP932描画+`maxWidth`
+  打ち切りを標準装備)をそのまま使い、全角の混在・長い名前の「枠に収まる
+  ように切る」要求の両方をこの既存関数の作法に委ねた(独自の切り詰め処理は
+  書いていない)。
+  - **全角非対応は upstream 自体の仕様**: `font_fmdsp_small.c`の
+    `font_fmdsp_small`/`font_fmdsp_medium`はいずれも`get_half`(全角取得)関数
+    ポインタが`0`(未設定)であることを確認済み。本Web版の`MEDIUM_FONT`も
+    同じ制約(`getJisHalf`なし)なので、全角の曲名は upstream と同じく
+    グリフ無し(何も描かれない)になる。手抜きではなく仕様を継承した結果。
+  - **文字数上限**: `FILEBAR_FILENAME_MAX_W`(=410px)で打ち切る。upstreamの
+    レイアウト意図(曲名の右にPCM欄`FILEBAR_PCMBAR_X`=551が続く)を尊重し、
+    PCM欄未実装でもその手前で余白を空けている(実測: PNGレンダリングで
+    極端に長い名前を与え、非0ピクセルの最大xが543(<640)に収まることを確認)。
+- **上流からの意図的逸脱(1箇所)**: upstreamは`fp->filename`の描画を
+  `pcmcount`のforループの内側に置いており(`fmdsp-pacc.c:1866-1888`)、
+  **PCM種類が0件だと曲名も描かれない**という upstream 側の癖(バグの可能性が
+  高いが未確認)がある。本Web版は「曲名表示が主目的」という要件と両立しない
+  ため、この依存を意図的に切り離し、PCM種類の有無に関わらず曲名を独立して
+  描く。
+- **PCM種類名バー(`work->pcmtype[]`/`work->pcmname[]`相当)は未実装**:
+  本Web版のwasm側(PmdCore.c/MucomWeb)は`#pcm`等の付随音色ファイルの読み込み
+  自体をサポートしておらず、`pcmtype`/`pcmname`に相当するデータを持っていない
+  (`grep -rn "pcmtype|pcmname" html/ fmdsp/`で0件)。取れないデータを
+  それらしく並べる(捏造する)ことは避け、PCM種類名バー自体を出さない
+  (枠の余白だけ空けておく、上記`FILEBAR_FILENAME_MAX_W`参照)。
+
+### 曲名の決定規則(表示名の一致)
+
+FILEBARに出す曲名は`html/net-load.js`の表示名決定規則
+(`resolveSingleFileName`: Content-Disposition → MMLの`#title` → URL末尾。
+書庫の場合は`findSongCandidates()`が決める`displayName`)をそのまま使う。
+呼び出し側(`html/pmd-app.js`/`html/mucom-app.js`)は`currentSongName`という
+単一のJS変数に集約し、以下のすべての読み込み経路で更新する:
+
+- PMD: `playBytes(bytes, name)`(曲を開く/D&D/URL読み込み確定後の実再生、
+  唯一の実再生経路)、および`pendingUrlSong`を設定する3箇所(URL単体/書庫/
+  同梱サンプル、いずれも「読み込み済みだが未再生」の段階)。エディタで
+  MMLを直接コンパイル&再生した場合はファイル名という概念が無いため、
+  `#title`ヘッダから同じ規則で拾い、無ければ何も表示しない。
+- MUCOM88: `applyMmlBytes(bytesOrBuffer, opts)`(「読み込んだMMLがある限り
+  常にここを通る唯一の窓口」という既存コメントのとおりの一元化ポイント)に
+  `opts.name`を追加。呼び出し側が表示名を解決済み(URL/書庫)ならそれを使い、
+  無ければ(ローカルファイル開く/サンプル固定名以外)MML本文の`#title`
+  ヘッダから同じ規則で拾う。
+
+ツールバー側の`netStatus`表示(「読み込みました: ...」)も同じ文字列
+(`resolved.name`/`chosen.displayName`)を使っているため、画面とツールバーの
+表示は常に一致する。
+
+## 13. パート行の「起動直後は空白」不具合の修正(2026-08-15)
+
+### 症状と原因
+
+実機報告: 曲を読み込む前(リロード直後・下書き復元のみ)は画面左半分の
+パート行10行が完全に空白(真っ黒)で、「読み込めていない」ように見えた。
+再生を始めると正常に描かれる。
+
+上流(`fmdsp-pacc.c`)を確認した結果、パート行は「曲の有無」で出し分ける
+分岐を持たない。`update_track_without_key`/`update_track_10`は`fp->work`
+(起動直後から静的に確保された`fmdriver_track_status`)を毎フレーム無条件に
+読んで描くだけで、全フィールド0の「未再生」状態がそのまま描かれる
+(=鍵盤地板・ラベルは常に見え、`KN:`は`S`表示になるだけ)。
+
+本Web版(`html/pmd-app.js`/`html/mucom-app.js`)の`updateChannelStatus()`は、
+演奏スナップショットが1つも無い(`writeIndex`が無効/0)間は
+「アイドル画面」を1回だけ描く設計だったが、**そのフラグ
+(`stoppedFrameDrawn`)を、実際に描画できたかどうかに関わらず立てていた**。
+`shinonome.rom`(`fmdspFont`)の非同期fetchが初回rAFの時点でまだ終わっていない
+と、パート行を1度も描かないままフラグだけが立ち、以後は実演奏が始まるまで
+永遠に描かれない、という抜けがあった。
+
+### 対処
+
+- `fmdsp/trackrow.js`に`createIdleEntryTracks()`を追加。全フィールド0の
+  `Int32Array(FIELD_COUNT=26)`をトラックスロット分並べたプレースホルダで、
+  `drawTrackRow()`の`playing=false`分岐(既存)にそのまま乗る。
+- 両アプリの「アイドル画面」分岐を、`fmdspFont`が実際に揃うまで毎フレーム
+  再試行する形に変更(`stoppedFrameDrawn`を条件の中でのみtrueにする)。
+- 併せて`drawComment()`・`drawFileBar()`・曲名(`currentSongName`)もこの
+  アイドル画面に含めた。曲名は非同期(`?mml=`のfetch等)で後から確定する
+  ことがあるため、`idleDrawnSongName`で直近に描いた曲名を記録し、
+  `stoppedFrameDrawn`済みでも曲名が変わっていれば描き直す。
+
+### 検証
+
+- `tools/verify_trackrow.mjs`(既存、PASS)はパート行そのものの描画ロジック
+  (`drawTrackRow`)を検証しており、`playing=false`ケースも対象に含む。
+- 目視: ブラウザでリロード直後(再生前)にパート行10行・鍵盤・ラベルが
+  揃って表示されること、PLAY/STOP/PAUSE/FADE/FF/REW/FLOPPYアイコンや
+  DRIVER値・MUSIC FILEバーも同時に見えることを両ドライバで確認した。
