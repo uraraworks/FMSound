@@ -212,5 +212,172 @@ Unexpected token uint64_t
   あるのか（`toolchain/smallerc-src/readme.txt`に「32-bit 80386+ assembly code」の記載があり、
   `__SMALLER_C_32__`ビルドなら`long`が使える可能性はあるが、WorkbenchNP2の`compile.mjs`が
   使っているのは`-seg16`（16bitモード）と確認しただけで、32bitモード自体を試していない）。
+  → **下記(追記)で実測済み。`-huge`で`long`は通ることを確認した。**
 - TSR/割り込みハンドラの最小サンプルをWorkbenchNP2上で実際に書いて動かす検証（本調査は
   既存ドキュメントの再確認に留めた）。
+
+## (追記 2026-08-14) `-huge` での全体コンパイル
+
+前節(4-2)で見つかった`uint64_t`/`int64_t`の壁を実際に取り除き、`fmdriver_pmd.c`本体が
+`-huge`で最後まで通るかを実測した。作業ファイルは全て
+`scratchpad/pmdcompile/`（`src/`に`upstream/98fmplayer/fmdriver/*.{c,h,inc}`のコピー、
+`shim/`に差し替えヘッダ）に置き、`WorkbenchNP2`・`upstream`はどちらも読むだけ
+（作業後`git -C WorkbenchNP2 status`・`git -C FMSound status`とも clean を確認済み）。
+
+### 5-1. `ppz8`は「切り離せる」——ただし切り離せるのは型定義であって実装ではない
+
+`fmdriver_pmd.c`全体を実測grepしたところ、`work->ppz8`（不透明ポインタ）と
+`work->ppz8_functbl->関数(...)`（関数ポインタ経由の呼び出し）だけが使われており、
+**`struct ppz8`のフィールドを直接参照する箇所（`ppz8->xxx`や`ppz8.xxx`）は0件**だった
+（`grep -n 'ppz8->\|\.ppz8\.'`で確認）。`ppz8_init`/`ppz8_mix`/`ppz8_pvi_load`等の
+実体関数や`enum ppz8_interp`・`struct ppz8_pcmvoice`等の型も`fmdriver_pmd.c`からは
+一切参照されていない。
+
+これを踏まえ、本物の`ppz8.h`（`uint64_t`を使う`struct ppz8_channel`や
+`stdbool.h`/`stdatomic.h`/`leveldata.h`依存を含む）を、`struct ppz8`を前方宣言のみの
+不透明型にし、`struct ppz8_functbl`は`uint32_t`以下の型だけで再構成したシム
+（`scratchpad/pmdcompile/shim/ppz8.h`）に差し替えた。これで`fmdriver_pmd.c`単体の
+コンパイルからは`uint64_t`・`stdatomic.h`・`leveldata.h`への依存が消えた。
+
+**ただし**これは「PPZ8機能を切り離せる」という意味ではない。`work->ppz8`が非NULLで
+実際にPPZ8実装（`ppz8.c`）と組み合わせて動かす場合、`ppz8.c`自身は本物の
+`struct ppz8_channel`（`uint64_t ptr`等、固定小数点の再生位置管理に64bit幅を使っている）
+に依存しており、**`uint64_t`の壁は`ppz8.c`側にそのまま残る**。今回シムで迂回できたのは
+あくまで「`fmdriver_pmd.c`が`ppz8.c`の実装を知らずに関数ポインタ越しにしか触らない」
+という構造を使って、`fmdriver_pmd.c`単体のコンパイル確認から`ppz8.c`を除外しただけ。
+`ppz8.c`自体のSmallerC移植性は本調査の対象外で未確認のまま。
+
+### 5-2. `fmdriver_pmd.c:1892`の`int64_t`は「32bit加算のオーバーフロークランプ」
+
+該当行（PPZ8チャンネルへの周波数出力`pmd_ppz8_freq_out`内）:
+```c
+det += part->detune;
+det *= freq >> 8;
+int64_t outfreq = freq + det;
+if (outfreq < 0) outfreq = 0;
+if (outfreq > INT32_MAX) outfreq = INT32_MAX;
+part->output_freq = outfreq;
+```
+`freq`は`uint32_t`（PPZ8用の周波数値、`actual_freq`とその上位16bitの合成）、
+`det`はLFO・ポルタメント由来のデチューン値（`int32_t`）。**int64_tへの拡張は
+「freq + detが32bit符号付き範囲を超えないかを安全に判定するためだけ」**で、
+音程を決めるロジック自体は単純な加算とクランプであり、64bit精度の演算結果を
+使っているわけではない（出力は最終的に`INT32_MAX`でクランプされる`int32_t`相当の値）。
+
+これを、64bit整数を使わずに同じクランプ結果を得られるよう、符号なし演算の
+ラップアラウンド検出に書き換えた:
+```c
+int32_t outfreq;
+if (det >= 0) {
+  uint32_t sum = freq + (uint32_t)det;
+  if (sum < freq || sum > (uint32_t)INT32_MAX) {
+    outfreq = INT32_MAX;
+  } else {
+    outfreq = (int32_t)sum;
+  }
+} else {
+  uint32_t sub = (uint32_t)0 - (uint32_t)det;  /* -det をdet==INT32_MINでもUB無しで計算 */
+  if (sub > freq) {
+    outfreq = 0;
+  } else {
+    outfreq = (int32_t)(freq - sub);
+  }
+}
+part->output_freq = outfreq;
+```
+`sum < freq`は「符号なし加算で桁上がりが起きた（= 数学的な真値がuint32_tの範囲を
+超えた）」ことの標準的な検出方法で、元の`int64_t`版と同じ条件で`0`/`INT32_MAX`へ
+クランプする。`det`が`INT32_MIN`の場合の単項マイナスは符号あり整数のオーバーフロー
+（未定義動作）になるため、`(uint32_t)0 - (uint32_t)det`という符号なし減算で計算し回避した。
+**桁あふれの可能性について**: `freq`自体が`actual_freq_upper`の値次第で理論上
+`INT32_MAX`を超えうる（元コードもこのケースをクランプ対象にしていた）。書き換え後の
+コードもこのケースを正しくクランプする（`det=0`でも`sum(=freq) > INT32_MAX`ならクランプ）
+ことをコード上のロジックで確認済み。**ただし実際に鳴らして音程が正しいかは未確認**
+（このロジックの正しさの主張は上記のコード上の対応関係のみに基づく）。
+
+`ppz8.h`シム化により`ppz8.h`側の`uint64_t`（`struct ppz8_channel`の4フィールド）は
+`fmdriver_pmd.c`のコンパイルパスから除外されたため、上記1箇所の書き換えだけで
+`fmdriver_pmd.c`本体からの64bit整数演算は消えた。
+
+### 5-3. `-huge`でのコンパイル実測: 新たに2つの壁が見つかり、いずれも回避
+
+1. **`inline`キーワード非対応**: `doc/smlrc.md`に明記の通り（「**inline**, **_Bool**」は
+   非サポート）、`fmdriver_common.h`の`static inline`関数5個（`read16le`/`read32le`/
+   `u8s8`/`u16s16`/`fmdriver_fillpcmname`）がエラーになった
+   （`Error in "/include/fmdriver_common.h" (6:14): Unexpected token inline`）。
+   → `static inline` → `static`に機械的に置換して解決（SmallerCはそもそもインライン展開を
+   しないコンパイラなので、`static`だけで意味は保たれる。5箇所、`sed`一発）。
+2. **`Identifier table exhausted`（新発見、`-seg16`/`-seg32`検証では未到達だった壁）**:
+   `inline`修正後、`-huge`コンパイルは`Identifier table exhausted`で失敗した。
+   `smallerc-src/v0100/smlrc.c:191`で`MAX_IDENT_TABLE_LEN`は
+   `(4096+1024+512) = 5632`バイトに固定定義されており（`smlrc.c:190-191`）、
+   これは**識別子（変数名・関数名・構造体メンバ名等）の名前文字列を格納する
+   コンパイラ内部テーブルの総バイト数**で、コマンドラインフラグでの変更手段は無い
+   （`smlrc.c`の引数パース部を全数確認したが該当オプションは存在しない。ソース側の
+   `#define`を書き換えて`smlrc`本体をリビルドしない限り拡張できない）。
+   `fmdriver_pmd.c`（6114行）だけで、この5632バイトの識別子名前表を使い切ってしまう。
+   **切り分け実験**: `fmdriver_pmd.h`＋`fmdriver_common.h`のヘッダだけ（関数本体なしの
+   `main`のみ）を同条件でコンパイルしたところ`exit=0`で問題なく通った
+   （`scratchpad/pmdcompile/try4_headers_only.mjs`で実測）。つまり**ヘッダ側の型・宣言群
+   だけでは枯渇しない。`fmdriver_pmd.c`本体（6114行の関数群・ローカル変数・静的関数名の
+   総量）が原因**であることを確認した。
+   → **今回はこの壁を機械的に回避する試みはしていない**（`fmdriver_pmd.c`を複数の
+   翻訳単位に分割する必要があり、それ自体が構造への手を入れる作業になるため、
+   本調査のスコープ外と判断）。
+
+### 5-4. 結論: `-huge`で`fmdriver_pmd.c`はコンパイルできたか
+
+**できなかった。** `int64_t`の書き換えと`inline`の機械的置換で従来の壁は超えたが、
+**`Identifier table exhausted`という、SmallerCコンパイラ自体の固定内部リソース
+（5632バイトの識別子名前表）に起因する新しい壁で止まった。** これは`-seg16`/`-seg32`/
+`-huge`のどのモードでも同じ値（`MAX_IDENT_TABLE_LEN`はモード非依存の定数）であり、
+**32bit/64bit整数の話とは独立した、別種の制約**。
+
+したがって:
+- **サイズ実測（コード/データが64KBに収まるか）は今回も未達**。`.asm`が出力されない
+  ため測定不能（`out3.asm`は生成されていないことを確認済み。
+  `scratchpad/pmdcompile/out3.i`は166,534バイトのプリプロセス結果のみ残っている）。
+- 識別子テーブルの壁を超えるには、`fmdriver_pmd.c`を複数の`.c`ファイルへ分割し、
+  現在`static`な関数・変数の一部を`extern`化する必要がある。これは
+  「機械的な修正」の範囲を超え、**ファイル構成そのものの再設計**になる
+  （かつ分割後は今度は`MAX_GLOBALS_TABLE_LEN`——`cgx86.c:43`で
+  `MAX_IDENT_TABLE_LEN`と同値と定義——の制約が新たに効いてくる可能性があり、
+  「分割すれば必ず収まる」という保証も無い。これは未確認）。
+
+## 結論の更新: (b)の見通し
+
+**従来の結論（32bit/64bit整数の壁）に加えて、識別子テーブル枯渇という第三の壁が
+新たに実測で確認された。** 3つの壁の関係:
+
+1. `long`（32bit整数）の壁 → `-huge`／`-unreal`で**解消済み**（実測確認）。
+2. `long long`（64bit整数）の壁 → `ppz8.h`を不透明型シムに差し替え、`fmdriver_pmd.c`側の
+   唯一の実演算箇所(`:1892`)を32bit安全な書き換えに直すことで、**`fmdriver_pmd.c`単体に
+   関しては解消済み**（実測確認）。ただし`ppz8.c`本体側は未解決のまま。
+3. **識別子テーブル枯渇（新発見）→ 未解決**。`fmdriver_pmd.c`（6114行）を単一の翻訳単位
+   としてコンパイルする限り、SmallerCの固定5632バイト予算を超える。回避には
+   ファイル分割という設計変更が要る。
+
+**(b)は依然として「現実的」と断言できない。** むしろ、1と2の壁を実際に取り除いたことで
+初めて3番目の壁が見え、**まだ壁の全体像が確定していない**（3を超えた先にさらに別の壁が
+無いとは言えない）ことが分かった、というのが今回の実測の到達点。
+
+## 次に確かめるべきこと（(b)の可否確定に向けて）
+
+- **識別子テーブル枯渇の正確な発生量**: `fmdriver_pmd.c`のどこまでの行数・関数数で
+  枯渇するかを二分探索的に実測し、「分割するなら何個の`.c`ファイルに、どういう単位で
+  切ればよいか」の見積もりを作る。
+- **分割後の`MAX_GLOBALS_TABLE_LEN`（`cgx86.c:43`、`MAX_IDENT_TABLE_LEN`と同値）の影響**:
+  現状`static`な関数・変数を`extern`化すると、リンク時にグローバルシンボルとして
+  積み上がる。分割すれば本当に解決するのか、それとも別の場所でまた枯渇するのかを
+  実測する必要がある。
+- **`ppz8.c`本体側の`uint64_t`依存の実測**: 今回は`fmdriver_pmd.c`が`ppz8.c`の型を
+  知らないという構造を使って迂回しただけで、PPZ8（PCM音源）を実際に鳴らすには
+  `ppz8.c`自身の64bit整数依存（固定小数点の再生位置`ptr`等）を解決する必要がある。
+  未着手・未計測。
+- **TSR/割り込み**: 今回のスコープ外だが、`-huge`が実モード/仮想8086モードのままである
+  ことを確認できた（DPMI不要）点は、TSR化の設計を考える上でのプラス材料として
+  次回に持ち越せる。ただし「識別子テーブル枯渇を解決してファイル分割した後の
+  コード配置が、TSR常駐部とどう共存するか」は全くの未検証。
+- **(c)（PMD.ASM移植）との比較**: 今回の実測で(b)側に新たな壁（識別子テーブル）が
+  見つかったことで、(c)との工数比較の必要性はさらに高まった。(c)側の実装量は
+  引き続き本調査の対象外で未計測。
