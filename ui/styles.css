@@ -134,26 +134,9 @@ header.app-header .app-tagline {
   color: var(--footer-text);
 }
 
-/* PMDのコメント欄スクロール操作(エディタが無いのでeditor-paneを軽量に流用)。 */
-.pmd-comment-controls {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-}
-
-.pmd-comment-controls button {
-  padding: 6px 12px;
-  font-size: 12px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.pmd-comment-controls button:hover {
-  background: var(--border);
-}
+/* 課題B: PMDコメント欄スクロールの専用ボタン(「↑コメント」「↓コメント」)は
+   キャンバス内の三角マーククリックへ移した(html/pmd-app.js参照)ため廃止した。
+   このルールは意図的に残していない(不要CSSとして削除済み、2026-08-14)。 */
 
 #app {
   display: flex;

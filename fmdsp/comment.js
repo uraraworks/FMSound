@@ -39,8 +39,15 @@ export function drawTri(vram, x, y, color) {
 // color: パレットインデックス。本家はテクスチャの1bppマスクに後段で色を
 //   乗せる方式(comment_tex_bufは0/1のみ)なので単色。fmdsp-pacc.c 2064系の
 //   buf_font_1相当としてラベル・本文とも同色(COLOR_LABEL=1)を既定にする。
+// onTri(row, x, y): 三角マーカーを実際に描いた位置を呼び出し側へ通知する
+// (課題B: 「↑コメント」「↓コメント」ボタンを廃止し、キャンバス上の三角マーク
+// クリックでスクロールする形にするため。html/pmd-app.js がこれを使って
+// 「今フレームどこに三角が描かれたか」を記録し、クリック座標との当たり判定に使う。
+// row(0/1/2)は上からの行インデックスで、上段(0)=↑相当/下段(2)=↓相当として扱う
+// 想定。中段(1)はCOMPOSER/ARRANGERの2本で方向が一意に決まらないため、
+// 呼び出し側では反応させない設計にしている(comment.js自体は関知しない)。
 export function drawComment(
-  vram, smallFont, bigFont, bytesFor, commentModePmd, commentOffset, color = 1
+  vram, smallFont, bigFont, bytesFor, commentModePmd, commentOffset, color = 1, onTri
 ) {
   if (commentModePmd) {
     for (let i = 0; i < 3; ++i) {
@@ -55,6 +62,7 @@ export function drawComment(
           drawText(vram, smallFont, 'T', 40, rowY + 12, color);
           drawText(vram, smallFont, 'ITLE', 44, rowY + 12, color);
           drawTri(vram, 65, rowY + 15, color);
+          onTri?.(i, 65, rowY + 15);
           drawTextCp932(vram, bigFont, bytes, 80, rowY + 4, color, 0);
         }
       } else if (n === 1) {
@@ -63,12 +71,14 @@ export function drawComment(
         if (composer) {
           drawText(vram, smallFont, 'COMPOSER', 24, rowY + 12, color);
           drawTri(vram, 65, rowY + 15, color);
+          onTri?.(i, 65, rowY + 15);
           drawTextCp932(vram, bigFont, composer, 80, rowY + 4, color, 224);
         }
         const arranger = bytesFor(2);
         if (arranger) {
           drawText(vram, smallFont, 'ARRANGER', 312, rowY + 12, color);
           drawTri(vram, 353, rowY + 15, color);
+          onTri?.(i, 353, rowY + 15);
           drawTextCp932(vram, bigFont, arranger, 368, rowY + 4, color, 0);
         }
       } else {
@@ -77,6 +87,7 @@ export function drawComment(
         if (bytes) {
           drawText(vram, smallFont, 'MEMO', 44, rowY + 12, color);
           drawTri(vram, 65, rowY + 15, color);
+          onTri?.(i, 65, rowY + 15);
           drawTextCp932(vram, bigFont, bytes, 80, rowY + 4, color, 0);
         }
       }

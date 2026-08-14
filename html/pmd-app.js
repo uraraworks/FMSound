@@ -80,10 +80,6 @@ export async function init(ctx) {
   // --- エンジン固有領域: コメント欄操作(常時表示) + MMLエディタ(モード切替で表示)。
   enginePaneEl.classList.remove('hidden');
   enginePaneEl.innerHTML = `
-    <div class="pmd-comment-controls">
-      <button id="commentPrev" type="button">&uarr; コメント</button>
-      <button id="commentNext" type="button">&darr; コメント</button>
-    </div>
     <div class="editor-pane hidden" id="mmlEditorPane">
       <div class="mml-editor" id="mmlEditor">
         <div class="mml-gutter" id="mmlGutter" aria-hidden="true"><div class="mml-gutter-inner" id="mmlGutterInner"></div></div>
@@ -273,13 +269,41 @@ export async function init(ctx) {
     const pointer = Module.getCommentPointer();
     return Module.HEAPU8.slice(pointer, pointer + length);
   }
-  document.getElementById('commentPrev').addEventListener('click', () => {
-    const modePmd = Module.getCommentModePmd() !== 0;
-    commentOffset = commentScroll(commentOffset, false, modePmd, commentBytesFor);
-  });
-  document.getElementById('commentNext').addEventListener('click', () => {
-    const modePmd = Module.getCommentModePmd() !== 0;
-    commentOffset = commentScroll(commentOffset, true, modePmd, commentBytesFor);
+  // 課題B: 以前は編集エリアとサンプルリンクの間に置いていた「↑コメント」「↓コメント」
+  // ボタンを廃止し、キャンバス内の三角マーク(fmdsp/comment.js drawTri()、
+  // upstream/98fmplayer/fmdsp/fmdsp-pacc.c draw_tri()の移植)をクリックしたら
+  // スクロールする形にする(機能自体はFMDSPの正当な要素なので削除しない。
+  // 置き場所だけを本家の見た目・操作に近づける)。
+  //
+  // draw()内で毎フレーム drawComment() に onTri を渡し、実際に三角が描かれた
+  // (row, x, y)を lastTriangles に記録しておく。「三角が無いときは反応しない」を
+  // 満たすため、当たり判定はこの「実際に描かれた三角」の集合に対してのみ行う
+  // (commentModePmdでない=MUCOM側や、内容が無い行は三角自体が描かれないので
+  // 自然に無反応になる)。
+  let lastTriangles = [];
+  // 三角そのものは3x3px(640x400内部座標)しかなく実用上クリックできないため、
+  // 周囲に余白を持たせて当たり判定にする。行の高さ(COMMENT_H=19px)より小さくして
+  // 隣の行と重ならないようにする。
+  const TRI_HIT_PAD_X = 20;
+  const TRI_HIT_PAD_Y = 8;
+  canvas.addEventListener('click', (event) => {
+    if (lastTriangles.length === 0) return; // 三角が1つも描かれていない=反応しない
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    // 表示上のクリック座標(CSS px、rescale()でcanvas.style.width/heightが可変)を
+    // キャンバスの内部解像度(640x400、PC98_W/PC98_H)へ変換する。ここを素通しすると
+    // 縮小・拡大時にクリック位置がずれて三角に当たらなくなる(実測で確認)。
+    const x = (event.clientX - rect.left) * (PC98_W / rect.width);
+    const y = (event.clientY - rect.top) * (PC98_H / rect.height);
+    for (const tri of lastTriangles) {
+      // 中段(row===1、COMPOSER/ARRANGERの2本)は↑/↓のどちらとも決め難いため無反応にする。
+      if (tri.row === 1) continue;
+      if (Math.abs(x - tri.x) > TRI_HIT_PAD_X || Math.abs(y - tri.y) > TRI_HIT_PAD_Y) continue;
+      const modePmd = Module.getCommentModePmd() !== 0;
+      const down = tri.row === 2; // 上段(row0)=↑(前へ)、下段(row2)=↓(次へ)
+      commentOffset = commentScroll(commentOffset, down, modePmd, commentBytesFor);
+      return;
+    }
   });
 
   const ringSize = 2048;
@@ -380,7 +404,10 @@ export async function init(ctx) {
       vram.pixels.set(staticVramSnapshot);
       drawTrackRows(vram, fmdspFont, entryTracks);
       const modePmd = Module.getCommentModePmd() !== 0;
-      drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset);
+      const triangles = [];
+      drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
+        (row, x, y) => triangles.push({ row, x, y }));
+      lastTriangles = triangles;
 
       const audioState = globalThis.pmdAudioState;
       const hasPlayback = Boolean(audioState?.playback);
