@@ -60,7 +60,16 @@
 </div>
 <div id="result"></div>
 <script type="module">
-  import Module from './mucom88.js';
+  import createMucomWeb from './mucom88.js';
+
+  const btnCompile = document.getElementById('btnCompile');
+  const btnStop = document.getElementById('btnStop');
+  btnCompile.disabled = true;
+  btnStop.disabled = true;
+
+  const Module = await createMucomWeb();
+  btnCompile.disabled = false;
+  btnStop.disabled = false;
 
   const channelTableBody = document.querySelector('#channelStatus tbody');
   const snapshotRingSize = 2048;

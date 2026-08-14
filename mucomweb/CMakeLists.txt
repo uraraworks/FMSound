@@ -22,7 +22,6 @@ file(GLOB SOURCES
 list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/mucomerror.cpp")
 
 if (EMSCRIPTEN)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     list(FILTER SOURCES EXCLUDE REGEX "/mucom88/src/main.cpp")
 
     set(CMAKE_CXX_FLAGS_DEBUG "-g")
@@ -33,14 +32,16 @@ add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
 
 if (EMSCRIPTEN)
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE --bind)
-    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -sEXPORTED_RUNTIME_METHODS=HEAP32)
+    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -sMODULARIZE=1
+        -sEXPORT_ES6=1
+        -sEXPORT_NAME=createMucomWeb
+        -sENVIRONMENT=web,node
+        -sALLOW_MEMORY_GROWTH=1
+        -sEXPORTED_RUNTIME_METHODS=FS,HEAP32,HEAPU8)
     if (NOT WEB_BROWSER)
         target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -sNODERAWFS=1)
     endif()
-
-    add_custom_command(
-        TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-        COMMAND "${Python3_EXECUTABLE}" ARGS "${MUCOM88_DIR}/clion/PostBuild.py" "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.js")
 endif()
 
 target_include_directories(${CMAKE_PROJECT_NAME}
@@ -64,8 +65,8 @@ add_custom_target(sync_html ALL
 # サンプル MML。README には「ビルド後に毎回手でコピー」とあったがこの機会に自動化。
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/mucom88/package/sampl1.muc"
+        "${MUCOM88_DIR}/package/sampl1.muc"
         "${CMAKE_CURRENT_BINARY_DIR}/sampl1.muc"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/mucom88/package/sampl2.muc"
+        "${MUCOM88_DIR}/package/sampl2.muc"
         "${CMAKE_CURRENT_BINARY_DIR}/sampl2.muc")
