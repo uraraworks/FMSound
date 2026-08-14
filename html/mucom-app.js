@@ -27,12 +27,24 @@ import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
-// 押した直後にそのまま再生すると音が鳴ることを実測確認済み(A C120 o5 l4 v10 ...)。
 // MUCOM88のテンポ'C'はPMDの't'と違い4分音符基準のBPMそのまま(PMD側は2分音符基準、
 // html/pmd-app.js PMD_NEW_MML_TEMPLATE参照。基準が違うので注意書きを添える)。
+//
+// 【不具合修正・2026-08-15】以前の雛形は `@`(音色指定)が無く、コンパイルは成功し
+// FMDSPの鍵盤も動くのに実際には無音だった(利用者報告)。原因はMUCOM88がFMチャンネルの
+// 発音に音色バンクの選択(`@`)を要求する作りで、未指定だと有効な音色が載らずノートは
+// 処理されるが音が出ないため(鍵盤の動き=ドライバがノートを処理している証拠であって、
+// 音が出ている証拠ではない。表示と音は別物)。
+// `@`の有無だけを変えてrenderFramesForTest()のPCM絶対値和(absSum)を実測して確認した
+// (tools/verify_mucom_new_template.mjs参照): `@`無し=absSum 0(無音)、
+// `@78`あり=absSum 630905732(非0)。`voice.dat`(#voice)を読み込んでいなくても
+// エンジン内蔵の音色バンクだけで鳴る番号(78)を実測で選定した(upstream同梱の
+// sampl1.muc が使う番号の一つ。#78のコンパイルログにも"Used FM voice"が出る)。
 const MUCOM_NEW_MML_TEMPLATE = `; 新規作成ひな形(MUCOM88): そのまま再生すると音が鳴ります。
 ; C はテンポ(4分音符基準のBPMそのまま。PMDの t とは基準が違うので注意)。
-A C120 o5 l4 v10 cdefgab>c<
+; @ は音色バンク選択(必須。無いと発音処理はされるが無音になる。実測で確認済み)。
+; ここでは voice.dat 無しでも鳴る内蔵音色(78番)を指定している。
+A @78 C120 o5 l4 v10 cdefgab>c<
 `;
 
 export async function init(ctx) {
