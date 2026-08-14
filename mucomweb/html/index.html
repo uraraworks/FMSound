@@ -65,12 +65,24 @@
 
   <!-- エディタモードでのみ表示する領域。プレイヤーモード(既定)では非表示。 -->
   <div class="editor-pane hidden" id="editorPane">
-    <textarea id="mml" cols="80" rows="20" spellcheck="false"></textarea>
+    <!-- 「透明textarea+背面pre」方式の重ね合わせエディタ。行番号ガター・色付きpre・
+         本物のtextareaの3つを同じ枠(overflow:hidden)の中に収め、textareaのscrollを
+         正として他の2つを追従させる(mucomweb/html/mml-editor.js参照)。 -->
+    <div class="mml-editor" id="mmlEditor">
+      <div class="mml-gutter" id="mmlGutter" aria-hidden="true"><div class="mml-gutter-inner" id="mmlGutterInner"></div></div>
+      <div class="mml-code-wrap" id="mmlCodeWrap">
+        <div class="mml-current-line" id="mmlCurrentLine"></div>
+        <pre class="mml-highlight" id="mmlHighlight" aria-hidden="true"><code id="mmlHighlightCode"></code></pre>
+        <textarea id="mml" wrap="off" spellcheck="false"></textarea>
+      </div>
+    </div>
     <div class="editor-actions">
       <button id="btnClearMML" type="button">Clear MML</button>
     </div>
     <div id="result"></div>
-    <details class="debug-table" open>
+    <!-- 既定では非表示(?debug=1で表示。utils/debug-visibility.md相当の説明はREADME参照)。
+         削除はしない: PMD側の配線時にもそのまま必要になり、不具合報告時の案内先にもなる。 -->
+    <details class="debug-table debug-only" id="debugTable">
       <summary>デバッグ用テーブル(生のPCHDATA、切り分け用に残す)</summary>
       <table id="channelStatus">
         <thead>
@@ -79,7 +91,7 @@
         <tbody></tbody>
       </table>
     </details>
-    <div id="snapshotDebug">snapshot ring: inactive</div>
+    <div id="snapshotDebug" class="debug-only">snapshot ring: inactive</div>
     <div id="audioDebug">AudioWorklet: inactive</div>
   </div>
 </div>
@@ -105,6 +117,8 @@
   import { MucomFmdspAdapter, CH_TO_SLOT, CH_TO_CHSTAT, MUCOM_CH_COUNT, PCH_FIELD_COUNT } from './adapter.js';
   import { ICONS, iconButton, svgIcon } from './ui/icons.js';
   import { setupFullscreen, setupPopover } from './ui/shell.js';
+  import { setupMmlEditor, extractErrorLine } from './mml-editor.js';
+  import { MUCOM_TOKEN_RULES, MUCOM_MACRO_HEADER_RE, MUCOM_PART_LETTER_RE } from './mml-tokens.js';
   import { FMSOUND_VERSION_FIELDS, FMSOUND_VERSION_FOOTER } from './ui/version.js';
 
   // フッターに完全な識別子(日時+コミットハッシュ)を表示する。gen_version.pyが
@@ -203,6 +217,14 @@
     btnEditorMode.classList.toggle('active', mode === 'editor');
     btnEditorMode.title = mode === 'editor' ? 'プレイヤーモードへ切替' : 'エディタモードへ切替';
     btnEditorMode.setAttribute('aria-label', btnEditorMode.title);
+    // エディタ欄(rows相当で縦に長い)がページ全体を押し広げてフッター(ライセンス表記、
+    // 表示はライセンス要件)を画面外に出してしまわないよう、エディタモード中はbodyの
+    // 高さを100vhに固定して内部(エディタ欄)だけがスクロールする構成にする
+    // (styles.css body.mode-editor参照)。rescale()はeditorPaneの高さ変化を
+    // 即座にキャンバスサイズへ反映するために呼ぶ(呼ばないと次のwindow.resizeまで
+    // 古いサイズのまま)。
+    document.body.classList.toggle('mode-editor', mode === 'editor');
+    rescale();
   }
 
   function currentUiMode() {
@@ -239,6 +261,50 @@
   btnStop.disabled = true;
 
   applyUiMode(currentUiMode());
+
+  // --- デバッグ表示(?debug=1が付いているときだけ表示) ---
+  // 生のPCHDATAテーブルと同期情報(#snapshotDebug)は通常の利用者には不要なので既定で
+  // 隠す。削除はしない(PMD側の配線やトラブル報告時の切り分けに引き続き必要)。
+  // 同期較正(ms)の入力(#calibrationMs)は利用者向け機能なので対象外(設定ポップオーバーに残す)。
+  const debugEnabled = new URLSearchParams(location.search).get('debug') === '1';
+  document.body.classList.toggle('debug-enabled', debugEnabled);
+
+  // --- MMLエディタ(行番号ガター+構文色つけ+現在行ハイライト) ---
+  const mmlTextarea = document.getElementById('mml');
+  const mmlEditorApi = setupMmlEditor({
+    textarea: mmlTextarea,
+    gutterInner: document.getElementById('mmlGutterInner'),
+    highlightCode: document.getElementById('mmlHighlightCode'),
+    highlightPre: document.getElementById('mmlHighlight'),
+    currentLineEl: document.getElementById('mmlCurrentLine'),
+    rules: {
+      tokenRules: MUCOM_TOKEN_RULES,
+      macroHeaderRe: MUCOM_MACRO_HEADER_RE,
+      partLetterRe: MUCOM_PART_LETTER_RE,
+    },
+  });
+
+  // --- エラー行ジャンプ ---
+  // compileMML()の戻り文字列に実際に行番号が含まれるかを実測で確認した上で実装している
+  // (upstream/mucom88/src/cmucom.cpp CMucom::Compile()の
+  //  "#error %d in line %d." / "#unknown error in line %d." 相当の出力を、実機の
+  //  compileMML()で意図的な構文エラーMMLを与えて確認済み)。行番号が取れない出力の
+  // 場合はextractErrorLine()がnullを返すので、その場合はクリック機能を出さない
+  // (それらしい行への当て推量ジャンプはしない)。
+  const resultEl = document.getElementById('result');
+  function renderCompileResult(text) {
+    resultEl.textContent = text;
+    const line = extractErrorLine(text);
+    if (line != null) {
+      resultEl.classList.add('result-has-error-line');
+      resultEl.title = `クリックでMML ${line}行目へ移動`;
+      resultEl.onclick = () => mmlEditorApi.jumpToLine(line);
+    } else {
+      resultEl.classList.remove('result-has-error-line');
+      resultEl.removeAttribute('title');
+      resultEl.onclick = null;
+    }
+  }
   btnEditorMode.addEventListener('click', () => {
     setUiMode(currentUiMode() === 'editor' ? 'player' : 'editor');
   });
@@ -751,7 +817,7 @@
     const mml = document.getElementById('mml').value;
     adapter.reset();
     setCommentFromMml(mml);
-    document.getElementById('result').innerText = Module.compileMML(mml, selectedRate());
+    renderCompileResult(Module.compileMML(mml, selectedRate()));
     // 新規コンパイル&再生(g_player->Play()がcontext.resume()まで行う)なので、
     // 一時停止フラグを引きずらないようにここでクリアする。
     setAudioPaused(false);
@@ -769,8 +835,32 @@
       setAudioPaused(false);
   });
 
+  // Clear MMLは(a)取り消せる経路を優先し、(b)空でなければ確認を出す(2段構え)。
+  // (a): value=''の直接代入はブラウザ標準の取り消し履歴(Cmd/Ctrl+Z)を破壊する。
+  // document.execCommand('insertText', ...)は「本物の編集操作」として履歴に積まれるため、
+  // 実機でCmd/Ctrl+Zを押すとテキストが復元できる(このリポジトリの自動ブラウザ環境で
+  // execCommand('undo')による復元を実測済み。ただし合成キーイベントが実キー入力として
+  // 届かない既知の制約があるため、実際のCmd/Ctrl+Zキー操作そのものは利用者側での
+  // 確認をお願いする)。execCommandが使えない環境ではvalue=''に
+  // フォールバックする(その場合は取り消し不可)。
   document.getElementById('btnClearMML').addEventListener('click', function() {
-      document.getElementById('mml').value = '';
+      const ta = document.getElementById('mml');
+      if (ta.value.length > 0) {
+        const ok = window.confirm(
+          '編集中のMMLを消去します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
+        );
+        if (!ok) return;
+      }
+      ta.focus();
+      ta.select();
+      const undoable = typeof document.execCommand === 'function' &&
+        document.execCommand('insertText', false, '');
+      if (!undoable) {
+        ta.value = '';
+        // execCommand経路は'input'イベントを自前で発火するが、フォールバック経路は
+        // 発火しないため、背面のハイライト/行番号を再描画するために手動で発火する。
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       lastLoadedRawBytes = null;
       lastLoadedText = null;
   });
@@ -785,7 +875,10 @@
     const text = sjisDecoder.decode(buffer);
     lastLoadedRawBytes = rawBytes;
     lastLoadedText = text;
-    document.getElementById('mml').value = text;
+    mmlTextarea.value = text;
+    // value直接代入は'input'イベントを発火しないため、背面ハイライト/行番号ガターを
+    // 手動で再描画する(発火させないとロード直後だけ古い表示のまま残る)。
+    mmlEditorApi.render();
   }
 
   function downloadMML(url) {

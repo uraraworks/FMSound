@@ -307,16 +307,130 @@ header.app-header .app-tagline {
   display: none;
 }
 
-.editor-pane textarea {
+/*
+ * MMLエディタ(行番号ガター + 背面色付きpre + 前面透明textarea)。
+ *
+ * 「透明textarea+背面pre」重ね合わせ方式(react-simple-code-editor等で知られる
+ * 標準パターン)。ズレの原因になりやすいプロパティ(font/line-height/padding/
+ * border/box-sizing/white-space/tab-size)は.mml-gutter-inner/.mml-highlight/
+ * #mmlの3者で必ず同じ値を使うこと。
+ *
+ * 高さはビューポート相対(vh)で決める(固定pxにしない)。エディタ欄自体は
+ * flex-growさせない: rescale()がcomputeAvailable()でこの要素の実測高さを
+ * 引いてキャンバスの残り高さを決めており、双方向の依存(flex-growでの
+ * 高さ変動)を持たせると循環してしまうため、高さはCSSだけで確定させる。
+ */
+.mml-editor {
+  display: flex;
   width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  height: clamp(140px, 30vh, 420px);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px;
   background: var(--bg-panel);
-  color: var(--text);
+  overflow: hidden;
 }
+
+.mml-gutter {
+  flex: 0 0 auto;
+  width: 3.5em;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding-top: 8px;
+  user-select: none;
+}
+
+.mml-gutter-inner {
+  will-change: transform;
+}
+
+.mml-gutter-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: right;
+  padding-right: 6px;
+  color: var(--text-dim);
+}
+
+.mml-gutter-line.mml-gutter-line-current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mml-code-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.mml-current-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  background: rgba(74, 144, 217, 0.08);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.mml-highlight,
+.mml-editor textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  /* padding-rightは意図的に0にする: Chromium系textareaはscrollWidthの計算に
+     padding-rightを含めない(実測で確認した既知の食い違い。<pre>側はpaddingを
+     素直に含めるため、右パディングを付けると長い行でtextarea側の
+     scrollWidthだけが常に一定量小さく報告され、ズレの数値検査が通らない)。
+     左右非対称になるが、ズレを本当に0にするための実測結果に基づく選択。 */
+  padding: 8px 0 8px 8px;
+  border: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+  word-wrap: normal;
+}
+
+.mml-highlight {
+  color: var(--text);
+  background: transparent;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.mml-highlight code {
+  font: inherit;
+}
+
+.mml-editor textarea {
+  z-index: 2;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.mml-editor textarea::selection {
+  background: rgba(74, 144, 217, 0.35);
+}
+
+/* トークン色分け(mml-tokens.js参照。仕様が確認できなかったトークンには
+   意図的に色を付けていない)。 */
+.mml-tok-tag { color: var(--accent-dim); font-weight: 600; }
+.mml-tok-tagvalue { color: var(--text-dim); }
+.mml-tok-part { color: #b5651d; font-weight: 700; }
+.mml-tok-note { color: #1a7f37; }
+.mml-tok-number { color: #8250df; }
+.mml-tok-voice { color: #cf222e; }
+.mml-tok-loop { color: #9a6700; font-weight: 700; }
+.mml-tok-tie { color: #0969da; font-weight: 700; }
 
 .editor-actions {
   display: flex;
@@ -342,6 +456,23 @@ header.app-header .app-tagline {
   font-size: 12px;
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* エラー行ジャンプ: compileMML()の出力から行番号が取れた場合だけ付与される
+   (mucomweb/html/mml-editor.js extractErrorLine()参照。取れない場合はクリック不可のまま)。 */
+#result.result-has-error-line {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+/* デバッグ用の表示は既定で隠す(?debug=1のときだけ表示。body.debug-enabled参照)。
+   削除はしない(PMD配線時・不具合切り分け時に必要)。 */
+.debug-only {
+  display: none;
+}
+
+body.debug-enabled .debug-only {
+  display: revert;
 }
 
 details.debug-table {
@@ -374,6 +505,29 @@ details.debug-table summary {
   font-family: monospace;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/*
+ * エディタモード中は、縦に長いエディタ欄(内部スクロール式、.mml-editor参照)を
+ * 含めてヘッダー・console-card・エディタ欄・ページフッターの4者が1画面(100vh)に
+ * 収まるようにする。フッターにはライセンス表記があり非表示は許容できないため、
+ * position:fixed/sticky でフッターだけ浮かせる方式ではなく、body の高さを
+ * ビューポートに固定して #app 側を縮める(rescale()がキャンバスを可変フィットさせる
+ * 既存の仕組みと同じ経路に乗せる)。
+ */
+body.mode-editor {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.mode-editor #app {
+  /* rescale()の積み上げ計算(#appのgap分は含まれない)が完全に一致しない場合の保険として
+     hiddenではなくautoにする: フッター(#appの外、兄弟要素)は#appがflex:1 min-height:0で
+     縮む限りビューポート内に収まり続けるので、#app内部だけが必要に応じて微小スクロールする
+     ほうが「フッターは常に見える」という要件に対して安全。 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
 
 /* ページ最下部の全幅帯。body が flex column + #app が flex:1 で伸びるため、

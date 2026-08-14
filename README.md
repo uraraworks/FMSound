@@ -177,6 +177,8 @@ emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build buil
   冪等に自動適用される（`git apply --reverse --check`で未適用時のみ適用、
   適用失敗時はビルドを止める）。upstream作業ツリー自体は素のまま追跡不要
 - MUCOM の MML は **Shift_JIS**。`new TextDecoder('shift_jis')` でデコードして textarea へ入れる
+- `mucomweb`のエディタモードは既定でデバッグ表示（生PCHDATAテーブル・同期情報行）を隠す。
+  URLに `?debug=1` を付けると表示される（例: `http://localhost:8777/?debug=1`）
 - PMD のテストデータは `upstream/pmdmini/PC-98_Hartmann_s_Youkai_GIrl.M`
 - **AudioContext はユーザー操作が要る。** JS から `compileMML()` を呼ぶだけでは音が出ない
   （リングは進むので「動いてるように見えて無音」になり紛らわしい）。実際にボタンをクリックすること
