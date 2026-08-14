@@ -77,12 +77,15 @@ export async function init(ctx) {
   } = ctx;
 
   // --- footer credits ---
+  // 課題C: 上流の出典表示(ライセンス上の要求のため削除しない)に加えて、
+  // FMSound自身のリポジトリへの導線を末尾に足す。
   footerCreditsEl.innerHTML =
     '<a href="https://github.com/onitama/mucom88" target="_blank" rel="noopener">OPEN MUCOM88</a> ' +
     '<a href="https://github.com/onitama/mucom88/blob/master/package/license.txt" target="_blank" rel="noopener">(LICENSE)</a> | ' +
     '<a href="https://github.com/aosoft/MucomWeb" target="_blank" rel="noopener">MUCOM88 on Web</a> ' +
     '<a href="https://github.com/aosoft/MucomWeb/blob/master/LICENSE" target="_blank" rel="noopener">(LICENSE)</a> / ' +
-    '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>';
+    '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a> | ' +
+    '<a href="https://github.com/uraraworks/FMSound" target="_blank" rel="noopener">FMSound on GitHub</a>';
 
   fileInput.accept = '.muc';
 

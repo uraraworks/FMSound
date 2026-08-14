@@ -69,9 +69,12 @@ export async function init(ctx) {
   } = ctx;
 
   // --- footer credits ---
+  // 課題C: 上流の出典表示(ライセンス上の要求のため削除しない)に加えて、
+  // FMSound自身のリポジトリへの導線を末尾に足す。
   footerCreditsEl.innerHTML =
     '<a href="https://github.com/myon98/98fmplayer" target="_blank" rel="noopener">98fmplayer</a> ' +
-    '<a href="https://github.com/myon98/98fmplayer/blob/master/LICENSE" target="_blank" rel="noopener">(BSD 2-Clause)</a>';
+    '<a href="https://github.com/myon98/98fmplayer/blob/master/LICENSE" target="_blank" rel="noopener">(BSD 2-Clause)</a> | ' +
+    '<a href="https://github.com/uraraworks/FMSound" target="_blank" rel="noopener">FMSound on GitHub</a>';
 
   fileInput.accept = '.m,.M';
 
