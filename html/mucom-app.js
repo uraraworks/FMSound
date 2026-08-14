@@ -306,6 +306,63 @@ export async function init(ctx) {
 
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
+  // 課題B: 「曲が終わったこと」の検出を1箇所にまとめる(updateChannelStatus()内)。
+  //
+  // 実測で判明した制約: MUCOM88(このport)には PMD の fmdriver_work.playing に相当する
+  // 単一の「再生中/終了」フラグが無い。GetStatus(MUCOM_STATUS_PLAYING)はcmucom.cppの
+  // playflag(Play()でtrue、Stop()を呼んだ時だけfalse)をそのまま返すだけで、
+  // ループしない曲が末尾に到達しても自動ではfalseにならない(実測:非ループ曲を
+  // 400tick以上再生してもGetStatus(PLAYING)は常に1のまま。intCountも上限なく
+  // 増え続ける)。よってこのAPIは終了検出に使えない。
+  //
+  // 代わりに docs/mucom-pchdata-mapping.md §3 で確認済みの PCHDATA.flag bit0
+  // (LOOPEND FLAG)を使う。ただしbit0単体は「ループ点(またはパート末尾)に
+  // 到達したか」を示すだけで、Lコマンドで曲がループする場合も*最初の1周目*で
+  // 同じように1が立ち、その後も1のまま推移する(実測: tools/verify_mucom_song_end.mjs
+  // 参照。Lありの曲でbit0がstep19で1になった後もcodeが変化し続け、ループが
+  // 継続していることを確認した)。bit0だけを終了判定に使うと、ループする曲の
+  // 最初の1周目で誤発火してしまう。
+  //
+  // そこで「flag bit0が立っている」*かつ*「そのパートのcode(音程コード)が
+  // 一定ポーリング回数(STABLE_POLLS)変化していない」の両方が揃ったときだけ
+  // 「そのパートは終了した」とみなす(ループする曲はbit0が立った後もcodeが
+  // 変化し続けるため、この条件を満たさない)。実際に曲で使われた(過去に
+  // code!==0になったことがある)パート全てがこの条件を満たしたとき、
+  // 曲全体が終了したと判定する。
+  const MUCOM_END_STABLE_POLLS = 3; // 「フレーム基準の隙間はポーリング2回ぶん」より1回分余裕を持たせる
+  const mucomEndState = {
+    usedParts: new Set(),
+    lastCode: new Array(MUCOM_CH_COUNT).fill(null),
+    stableCount: new Array(MUCOM_CH_COUNT).fill(0),
+  };
+  function resetMucomEndState() {
+    mucomEndState.usedParts.clear();
+    mucomEndState.lastCode.fill(null);
+    mucomEndState.stableCount.fill(0);
+  }
+  // 曲全体が終了したかどうかを1回分のスナップショットから判定し、内部状態を更新する。
+  function checkMucomSongEnded(latest) {
+    let anyUsed = false;
+    let allEnded = true;
+    for (let ch = 0; ch < MUCOM_CH_COUNT; ch++) {
+      const base = snapshotHeaderWordCount + ch * PCH_FIELD_COUNT;
+      const code = latest[base + 7] & 0xff;   // PCH.CODE
+      const flag = latest[base + 8] & 0xff;   // PCH.FLAG
+      if (code !== 0) mucomEndState.usedParts.add(ch);
+      if (!mucomEndState.usedParts.has(ch)) continue;
+      anyUsed = true;
+      if (code === mucomEndState.lastCode[ch]) {
+        mucomEndState.stableCount[ch]++;
+      } else {
+        mucomEndState.stableCount[ch] = 0;
+      }
+      mucomEndState.lastCode[ch] = code;
+      const loopEnd = (flag & 1) !== 0;
+      const partEnded = loopEnd && mucomEndState.stableCount[ch] >= MUCOM_END_STABLE_POLLS;
+      if (!partEnded) allEnded = false;
+    }
+    return anyUsed && allEnded;
+  }
 
   // 症状③⑥の根本原因(PMD側と共通): 以前はここで毎フレーム無条件に
   // btnPlayPause.replaceChildren(...)していたため、ボタンの中身(アイコンのsvg)が
@@ -360,6 +417,7 @@ export async function init(ctx) {
       audioState.context.resume();
     }
     setAudioPaused(false);
+    resetMucomEndState();
   }
 
   function setAudioPaused(paused) {
@@ -737,6 +795,16 @@ export async function init(ctx) {
         displaySnapshot(selected);
         draw(selected);
 
+        // 課題B: 曲が終わったこと(頭出し停止)の検出。latest(遅延の無い最新値)で
+        // 判定する。実際に再生中(hasPlayback&&!paused)のときだけ発火させる。
+        {
+          const ended = checkMucomSongEnded(latest);
+          const activelyPlaying = Boolean(playback) && !Boolean(audioState?.paused);
+          if (ended && activelyPlaying) {
+            stopPlayback();
+          }
+        }
+
         const t = selected.subarray(snapshotHeaderWordCount, snapshotHeaderWordCount + 15);
         const dbgPassTick = selected[SNAPSHOT_HEADER.PASS_TICK] | 0;
         const dbgIntCount = (selected[SNAPSHOT_HEADER.INT_COUNT] | 0) >>> 0;
@@ -791,6 +859,7 @@ export async function init(ctx) {
     // 要求どおりの箇所として明示的に置く)。
     clearCompileStatus();
     adapter.reset();
+    resetMucomEndState();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;

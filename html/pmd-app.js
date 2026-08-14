@@ -274,8 +274,10 @@ export async function init(ctx) {
   function renderCompileErrors(errors) {
     resultEl.replaceChildren();
     if (errors.length === 0) {
-      resultEl.textContent = 'コンパイル成功';
-      // 課題B: エディタのすぐ上の状態表示も更新する(詳細ログはこのまま下に残す)。
+      // 課題C: PMDのコンパイラは詳細出力(バナー等)を持たないため、成功時は
+      // 上の状態表示(#mmlStatus、'コンパイル成功')と下の#resultに全く同じ文言が
+      // 二重に出ていた。#resultは「詳細ログ専用」にし、詳細が無い(=成功)ときは
+      // 何も書かない(CSSの#result:empty{display:none}で領域ごと消える)。
       setMmlStatus(mmlStatusEl, { ok: true });
       return;
     }
@@ -456,6 +458,10 @@ export async function init(ctx) {
     LOOP_CNT: 3,
     TIMERB_CNT_LOOP: 4,
     LOOP_TIMERB_CNT: 5,
+    // 課題B: fmdriver_work.playing(PmdCore.c push_snapshot()参照)。ループしない曲が
+    // 末尾に到達したときだけfalseになる(ループする曲はloop.loopedがtrueのまま保たれる
+    // ため常にtrue。upstream/98fmplayer/fmdriver/fmdriver_pmd.c:5692参照)。
+    DRIVER_PLAYING: 6,
   };
   const tbody = document.querySelector('#channelStatus tbody');
   const calibrationInput = document.getElementById('calibrationMs');
@@ -585,6 +591,10 @@ export async function init(ctx) {
   // 「コンパイル&再生」として働き、コンパイル成功後は一時停止/再開ボタンに戻る。
   let pausedFrameDrawn = false;
   let stoppedFrameDrawn = false;
+  // 課題B: 「曲が終わったこと」の検出を1箇所にまとめる(将来の連続再生の土台にもなる
+  // ため、updateChannelStatus()内のここだけで判定する)。SNAPSHOT_HEADER.DRIVER_PLAYING
+  // がtrue->falseへ変わった瞬間だけ発火させるための直前値。
+  let wasDriverPlaying = false;
 
   // 症状③⑥の根本原因: 以前はここで毎フレーム(rAFループ経由)無条件に
   // btnPlayPause.replaceChildren(...)していたため、ボタンの中身(アイコンのsvg)が
@@ -800,6 +810,22 @@ export async function init(ctx) {
           `latency=${(outputLatency * 1000).toFixed(1)}ms calibration=${calibrationMs.toFixed(1)}ms`;
       }
       draw(selected);
+
+      // 課題B: 「曲が終わったこと」の検出(1箇所にまとめる)。latest(最新スナップショット、
+      // 同期表示用のselectedより遅延が無い)のDRIVER_PLAYINGがtrue->falseへ変わった
+      // 瞬間だけ、実際に再生中(hasPlayback&&!paused)なら停止状態へ遷移する(頭出し)。
+      // ループする曲はfmdriver_work.playingがtrueのままなので、ここは発火しない
+      // (tools/verify_pmd_new_template.mjs等の検証参照)。
+      {
+        const driverPlaying = (latest[SNAPSHOT_HEADER.DRIVER_PLAYING] >>> 0) !== 0;
+        const s = globalThis.pmdAudioState;
+        const activelyPlaying = Boolean(s?.playback) && !Boolean(s?.paused);
+        if (wasDriverPlaying && !driverPlaying && activelyPlaying) {
+          stopPlayback();
+        }
+        wasDriverPlaying = driverPlaying;
+      }
+
       debug.textContent = `${syncText}\n` +
         `snapshot: selectedFrame=${selected[0] >>> 0} writeIndex=${writeIndex}\n` +
         `counters: timerbCnt=${selected[SNAPSHOT_HEADER.TIMERB_CNT] >>> 0} ` +

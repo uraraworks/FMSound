@@ -54,7 +54,11 @@ async function main() {
   const Module = await createPmdWeb();
 
   const headerWordCount = Module.getSnapshotHeaderWordCount();
-  check('getSnapshotHeaderWordCount() === 6', headerWordCount === 6, `actual=${headerWordCount}`);
+  // 課題B(2026-08-15、tools/verify_song_end_detection.mjs参照)でヘッダ末尾に
+  // driver_playing(fmdriver_work.playing)を1語追加したため6->7になった。
+  // このテストが読む先頭6語(frame/timerb_cnt/timerb/loop_cnt/timerb_cnt_loop/
+  // loop_timerb_cnt、下のbase+0..5)のオフセットは変わっていない。
+  check('getSnapshotHeaderWordCount() === 7', headerWordCount === 7, `actual=${headerWordCount}`);
 
   // --- 再生前: スナップショット無効 ---
   check('再生前はスナップショットリングが無効', readLatest(Module, headerWordCount) === null);

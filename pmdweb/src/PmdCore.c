@@ -63,6 +63,12 @@ struct flat_level_status {
 // - work->timerb: TIMER B CYCLE表示の元データ(0-255、uint8_tを素直にint32へ拡張)
 // - work->loop_cnt: LOOP COUNT表示の元データ(0-255)
 // - work->timerb_cnt_loop / work->loop_timerb_cnt: ループ進捗バー(drawLoopBar)の分子/分母
+// - work->playing: 課題B(ループしない曲の再生終了検出)用。upstream/98fmplayer/
+//   fmdriver/fmdriver_pmd.c:5692 (pmd_update_note_meas) で
+//   「ループ点が無い(pmd->loop.looped===false)まま曲末尾に到達した」ときだけ
+//   falseになる(ループする曲はloop.loopedがtrueのままなので、ここは常にtrueで
+//   落ちてこない=誤発火しない)。JS側(pmd-app.js)はこれがtrue->falseへ変わった
+//   瞬間を「曲が終わった」の唯一のトリガーとして使う。
 struct status_snapshot {
   uint32_t frame;
   uint32_t timerb_cnt;
@@ -70,6 +76,7 @@ struct status_snapshot {
   uint32_t loop_cnt;
   uint32_t timerb_cnt_loop;
   uint32_t loop_timerb_cnt;
+  uint32_t driver_playing;
   struct flat_track_status tracks[TRACK_COUNT];
   uint8_t fft[FFT_BIN_COUNT_PADDED];  // [0..FFT_BIN_COUNT) が有効値(0-31)。末尾2byteは常に0の明示パディング
   struct flat_level_status levels[LEVEL_COUNT];
@@ -78,7 +85,7 @@ struct status_snapshot {
 // frame を含む、frameに続くヘッダのワード数。JS側がハードコードせずに済むよう
 // pmdweb_get_snapshot_header_word_count() で export する
 // (mucomweb の getSnapshotHeaderWordCount() と同じ命名)。
-enum { SNAPSHOT_HEADER_WORD_COUNT = 6 };  // frame, timerb_cnt, timerb, loop_cnt, timerb_cnt_loop, loop_timerb_cnt
+enum { SNAPSHOT_HEADER_WORD_COUNT = 7 };  // frame, timerb_cnt, timerb, loop_cnt, timerb_cnt_loop, loop_timerb_cnt, driver_playing
 
 _Static_assert(TRACK_COUNT == 21, "98fmplayer track count changed");
 _Static_assert(LEVEL_COUNT == 19, "FMDSP_LEVEL_COUNT changed");
@@ -333,6 +340,7 @@ static void push_snapshot(void) {
   snapshot->loop_cnt = g_player.work.loop_cnt;
   snapshot->timerb_cnt_loop = g_player.work.timerb_cnt_loop;
   snapshot->loop_timerb_cnt = g_player.work.loop_timerb_cnt;
+  snapshot->driver_playing = g_player.work.playing ? 1 : 0;
   for (int track = 0; track < TRACK_COUNT; ++track) {
     snapshot->tracks[track] = flatten(&g_player.work.track_status[track]);
   }
