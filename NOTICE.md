@@ -57,6 +57,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 FMDSP 風の画面描画ロジック(パート行 / コメント欄 / 右半分の各表示)は、
 98fmplayer の実装を参考にWeb版へ移植したものである。
 
+## `html/sample_fur_elise.M`(PMD側の同梱サンプル曲)
+
+- 曲: ルートヴィヒ・ヴァン・ベートーヴェン「エリーゼのために」(Für Elise) WoO 59。
+  作曲者の没後長期間が経過しており、曲そのものはパブリックドメイン。
+- 参照した楽譜: Mutopia Project (`https://www.mutopiaproject.org/`) の浄書版
+  (`エリーゼのために.pdf`)。フッターに
+  "Placed in the public domain by the typesetter — free to distribute, modify,
+  and perform" と明記されており、版面(エングレービング)自体も自由に利用できる。
+- 範囲: 上げ拍(アナクルーシス)+ 4小節分(楽譜冒頭、"Poco moto"の有名な開始フレーズ)。
+- **MML アレンジ(音符のパート割り当て・音色定義・伴奏の和音進行)は本プロジェクトの
+  著作物**。旋律の音程列は上記楽譜から実測で書き起こしたもので、他人が作成した
+  MML/MIDI ファイルは一切参照・使用していない(`tools/sample_fur_elise.mml` 冒頭コメント、
+  `tools/verify_sample_fur_elise.mjs` 参照)。
+- 生成元: `tools/sample_fur_elise.mml`(MML ソース)→ `tools/gen_sample_fur_elise.mjs`
+  (自作 PMD MML コンパイラ、`docs/pmd-compiler-spec.md` 参照)→ `html/sample_fur_elise.M`。
+
 ## 含まないもの
 
 ROM イメージ(PC-98 本体 BIOS 等)や市販ソフトウェアのデータは、

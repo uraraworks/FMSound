@@ -39,11 +39,17 @@ export async function init(ctx) {
   fileInput.accept = '.m,.M';
 
   // --- 曲を開く導線。東方Projectアレンジ曲(PC-98_Hartmann_s_Youkai_GIrl.M、
-  // 権利不明のため同梱をやめた)の代わりは次のタスクで自作サンプルを用意する。
-  // それまでは「曲を開く」ボタンでローカルの.Mファイルを選ぶ以外に再生手段が無い旨を明記する。
+  // 権利不明のため同梱をやめた)の代わりに自作サンプル(エリーゼのために冒頭、
+  // ベートーヴェンWoO 59はパブリックドメイン。MMLアレンジは本プロジェクトの著作物。
+  // 詳細はNOTICE.md参照)を同梱する。
   sampleLinksEl.innerHTML =
-    '同梱サンプルはありません(東方Projectアレンジ曲は権利未確認のため同梱を取りやめました。' +
-    '自作サンプルは別タスクで追加予定)。「曲を開く」から手元の.M/.mファイルを選んでください。';
+    '<a href="javascript:void(0);" id="dlSampleFurElise">sample_fur_elise.M(エリーゼのために・冒頭)</a>' +
+    '　「曲を開く」から手元の.M/.mファイルを選ぶこともできます。';
+  document.getElementById('dlSampleFurElise').addEventListener('click', async () => {
+    const response = await fetch('./sample_fur_elise.M');
+    const buffer = await response.arrayBuffer();
+    await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M');
+  });
 
   // --- コメント欄(曲名・作曲者・編曲者・メモ)のスクロール操作。エディタは無いが
   // これは実際に使うプレイヤー機能のため、editor-pane相当の領域を流用して常時表示する
