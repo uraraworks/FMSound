@@ -11,7 +11,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
-import { buildSingleFmNoteFile, noteByte } from './gen_pmd_min.mjs';
+import { buildSingleFmNoteFile, noteByte } from '../compiler/gen_pmd_min.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 void __dirname;

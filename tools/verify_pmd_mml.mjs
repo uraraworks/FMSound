@@ -22,8 +22,8 @@
 // 実行: node tools/verify_pmd_mml.mjs
 
 import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
-import { compileMml } from './pmd_mml_compiler.mjs';
-import { noteByte } from './gen_pmd_min.mjs';
+import { compileMml } from '../compiler/pmd_mml_compiler.mjs';
+import { noteByte } from '../compiler/gen_pmd_min.mjs';
 
 let failCount = 0;
 let passCount = 0;

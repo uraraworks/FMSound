@@ -17,7 +17,7 @@
 // 実行: node tools/verify_pmd_tone_def.mjs
 
 import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
-import { compileMml } from './pmd_mml_compiler.mjs';
+import { compileMml } from '../compiler/pmd_mml_compiler.mjs';
 
 let failCount = 0;
 let passCount = 0;

@@ -55,7 +55,10 @@ add_custom_target(sync_html ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../ui"
         "${CMAKE_CURRENT_BINARY_DIR}/ui"
-    COMMENT "html/ と fmdsp/ と ui/ を build-web/ へ同期")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../compiler"
+        "${CMAKE_CURRENT_BINARY_DIR}/compiler"
+    COMMENT "html/ と fmdsp/ と ui/ と compiler/ を build-web/ へ同期")
 add_dependencies(sync_html generate_version)
 
 target_include_directories(pmdweb PRIVATE "${UPSTREAM_DIR}")
