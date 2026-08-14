@@ -22,6 +22,16 @@ import { FMSOUND_VERSION_FOOTER } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
 import { urlBaseName } from './net-load.js';
 
+// --- 課題B(最優先・データ消失防止): ページのどこにファイルを落としても、
+// ブラウザの既定動作(そのファイルを開いてページ遷移する。編集中のMMLが画面から
+// 消える)を起こさせない。以前は consoleCard 内にしか drop ハンドラが無く、
+// カード外に落とすとここに引っかからずブラウザへ抜けていた。
+// engine-app の読み込み(下の動的import、失敗もありうる)を待たず、このスクリプト
+// の実行直後から効かせる。実際の受け取り処理(視覚的な目印・複数ファイル時の案内)
+// は setupPageDropZone() が engine 初期化後に配線する(下部参照)。
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
 const VALID_DRIVERS = ['pmd', 'mucom'];
 // 既定ドライバ: pmd。このツール一式の目的は「Webで PC-98 のゲームを作る」ことで、
 // PC-98の音源ドライバはPMD。MUCOM88はPC-88用で本来は側枝にあたる
@@ -178,6 +188,11 @@ const ctx = {
   debugPaneEl: document.getElementById('debugPane'),
   footerCreditsEl: document.getElementById('footerCredits'),
   rescale,
+  // 課題B: engine-app(mucom-app.js/pmd-app.js)が init() の中でこれを差し替え、
+  // 「ドロップされたFileListを実際に読み込む処理」を登録する。ページ全体の
+  // ドロップ受付(setupPageDropZone、下部)はここを呼ぶだけで、曲の解釈自体は
+  // 引き続きengine側の責務にする(1件目だけ使う判断もengine側のopenMmlFile等に揃える)。
+  handleDroppedFiles: null,
 };
 
 // 音源ドライバの選択は?driver=だけで決まり、選ばれた側のモジュールだけを動的import
@@ -185,3 +200,37 @@ const ctx = {
 const modulePath = driver === 'pmd' ? './pmd-app.js' : './mucom-app.js';
 const engineApp = await import(modulePath);
 await engineApp.init(ctx);
+
+// --- 課題B: ページ全体をドロップの受け入れ範囲にする ---
+// 「カード上にしか無い」と落とせる場所を探させてしまう問題への対応。ドラッグ中は
+// ページ全体に目印(枠+中央のメッセージ、ui/styles.cssの.page-dropzone-active)を出す。
+// dragenter/dragleaveは子要素をまたぐたびにも発火する(バブリング)ため、単純な
+// on/offだと出入りのたびにちらつく。カウンタで「本当にページの外へ出た」ときだけ
+// 目印を消す(よくあるドラッグオーバーレイの実装作法)。
+function setupPageDropZone(ctx) {
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth += 1;
+    document.body.classList.add('page-dropzone-active');
+  });
+  window.addEventListener('dragover', (e) => {
+    // 継続的にpreventDefault()しないとdropイベント自体が発火しないブラウザがある。
+    e.preventDefault();
+  });
+  window.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) document.body.classList.remove('page-dropzone-active');
+  });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('page-dropzone-active');
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    if (typeof ctx.handleDroppedFiles === 'function') {
+      ctx.handleDroppedFiles(files);
+    }
+  });
+}
+setupPageDropZone(ctx);

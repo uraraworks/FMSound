@@ -190,10 +190,26 @@ header.app-header .app-tagline {
   touch-action: none;
 }
 
-/* ドラッグ&ドロップで曲を開く際の受け皿ハイライト(ディスク専用ではない汎用のドロップ表示)。 */
-.dropzone-active {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
+/* 課題B: ドラッグ&ドロップで曲を開く際の目印。以前は.console-card(consoleCard)
+   限定だったが、受け入れ範囲をページ全体に広げたのに合わせてbody基準にした
+   (落とせる場所を探させないため。html/app.js setupPageDropZone参照)。 */
+.page-dropzone-active {
+  outline: 3px dashed var(--accent);
+  outline-offset: -6px;
+}
+.page-dropzone-active::after {
+  content: "ここにファイルをドロップ";
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--accent-dim);
+  background: rgba(74, 144, 217, 0.12);
+  pointer-events: none;
+  z-index: 1000;
 }
 
 .console-footer {

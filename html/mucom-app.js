@@ -995,23 +995,17 @@ export async function init(ctx) {
     openMmlFile(fileInput.files && fileInput.files[0]);
   });
 
-  for (const evt of ['dragenter', 'dragover']) {
-    consoleCard.addEventListener(evt, (e) => {
-      e.preventDefault();
-      consoleCard.classList.add('dropzone-active');
-    });
-  }
-  for (const evt of ['dragleave', 'dragend']) {
-    consoleCard.addEventListener(evt, () => {
-      consoleCard.classList.remove('dropzone-active');
-    });
-  }
-  consoleCard.addEventListener('drop', (e) => {
-    e.preventDefault();
-    consoleCard.classList.remove('dropzone-active');
-    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    openMmlFile(file);
-  });
+  // 課題B: ドロップの受付はapp.js側(ページ全体、setupPageDropZone)に一本化した。
+  // ここでは「ドロップされたファイルをどう解釈するか」だけを登録する(1件目のみ
+  // 使う。複数件落とされた場合は黙って捨てず、netStatusで案内する)。
+  ctx.handleDroppedFiles = (files) => {
+    if (files.length > 1) {
+      setNetStatus(
+        `複数のファイル(${files.length}件)がドロップされましたが、1件目「${files[0].name}」のみ読み込みます`,
+        false);
+    }
+    openMmlFile(files[0]);
+  };
 
   // --- 課題D: ダウンロード(MMLソース/コンパイル済み.mub/asmのdb配列)。
   const downloadMenu = createDownloadMenu({
