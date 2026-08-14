@@ -23,4 +23,8 @@
 # 追跡しない(mucomweb/CMakeLists.txt の generate_version ターゲット参照)。
 /ui/version.js
 
+# tools/gen_net_config.py が環境変数 DISK_PROXY_URL から生成する中継サーバー設定。
+# forkしたリポジトリ・手元ビルドごとに値が変わりうる(公開先の中継URLを埋め込むため)。
+/net/config.js
+
 .DS_Store

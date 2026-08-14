@@ -26,15 +26,22 @@ if [ ! -f "$PMD_BUILD/pmdweb.wasm" ]; then
   exit 1
 fi
 
+# net/config.js(中継サーバーURL)を環境変数 DISK_PROXY_URL から生成する。
+# ui/version.jsと同じ作法(tools/gen_version.py)。DISK_PROXY_URL未設定でも空文字列で
+# 生成され、ビルド自体は通る(中継しないだけ。forkしたリポジトリ向けの既定挙動)。
+python3 tools/gen_net_config.py
+
 rm -rf "$DIST"
 mkdir -p "$DIST"
 
-# 共通シェル・エンジンモジュール・共有描画層・共有UI・共有PMD MMLコンパイラ(html/app.jsから見た相対パスは
-# 常にこのディレクトリ直下を前提にしているため、サブディレクトリへ逃がさずルート直下へ置く)。
+# 共通シェル・エンジンモジュール・共有描画層・共有UI・共有PMD MMLコンパイラ・net層
+# (曲データの取得/書庫展開。html/app.jsから見た相対パスは常にこのディレクトリ直下を
+# 前提にしているため、サブディレクトリへ逃がさずルート直下へ置く)。
 cp -R html/. "$DIST/"
 cp -R fmdsp "$DIST/fmdsp"
 cp -R ui "$DIST/ui"
 cp -R compiler "$DIST/compiler"
+cp -R net "$DIST/net"
 
 # MUCOM88側のwasmとサンプルMML(東方Projectとは無関係、Yuzo Koshiro氏の同梱サンプル)。
 cp "$MUCOM_BUILD/mucom88.js" "$MUCOM_BUILD/mucom88.wasm" "$DIST/"

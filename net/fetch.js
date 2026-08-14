@@ -1,12 +1,17 @@
 // URLから曲データ(書庫または単体ファイル)を取得する共通ロジック。
 // PC98/WebNP2/src/api/disk-fetch.ts の移植。ビルドツール(Vite)を前提にしないため、
-// import.meta.env は使わず、下の NET_PROXY_BASE 定数を直接書き換える方式にした。
+// import.meta.env は使わず、tools/gen_net_config.py が生成する ./config.js から
+// 値を受け取る方式にした(ui/version.js・tools/gen_version.pyと同じ作法。
+// 2026-08-15 net/配線タスクで変更)。
 // ロジック自体は無改変(t()による多言語化のみ、プレーンな日本語文言に置き換えている)。
 
-// 中継サービスのベースURL。既定は空文字列(=中継しない。直接fetchのみ)。
-// 中継を有効化したい場合は、ここに中継サーバーのベースURL(例: 'https://example.com/proxy')を
-// 直接書き換える。FMSound はビルドツールを持たない静的アプリのため、環境変数からの注入はしない。
-export const NET_PROXY_BASE = '';
+// 中継サービスのベースURL。tools/gen_net_config.py が環境変数 DISK_PROXY_URL から
+// 生成する ./config.js (gitignore対象) を再exportする。未生成/未設定時は空文字列
+// (=中継しない。直接fetchのみ)。config.js が無い場合にimportエラーで全体が
+// 壊れないよう、必ずビルド/検証の最初のステップとして
+// `python3 tools/gen_net_config.py` を走らせること(tools/build_dist.sh参照)。
+import { NET_PROXY_BASE } from './config.js';
+export { NET_PROXY_BASE };
 
 // OneDriveの共有リンクは実測で中継しても取得できないことが判明しているため、中継を試さず
 // 即座に案内を出すためのホスト一覧。
