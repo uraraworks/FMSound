@@ -892,15 +892,18 @@ export async function init(ctx) {
     // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
     // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
     updateMmlCaveat(text);
-    // FMDSP画面の曲名(FILEBAR)もこの唯一の窓口で確定させる。呼び出し側が
-    // 既に表示名を解決済み(URL/書庫読み込み、opts.name)ならそれを使い、
-    // 無ければ html/net-load.js titleFromMmlHeader() と同じ規則(#titleヘッダ)で
-    // MML本文から拾う。どちらも無ければ捏造せずnull(何も表示しない)。
+    // FMDSP画面のファイル名(FILEBAR)もこの唯一の窓口で確定させる。呼び出し側が
+    // 渡すopts.nameは常に「ファイル名」であること(html/net-load.js resolveSongFromUrl()
+    // のfileNameフィールド、File.name、書庫エントリ名等)。
+    //
+    // 課題B(2026-08-15): 以前はopts.name省略時にMML本文の#titleヘッダへフォールバック
+    // していたが、FILEBARは半角専用フォントで描くため全角の曲名を渡すと文字が
+    // 途中で欠けて中途半端に見える不具合になっていた。本家どおり「ファイル名」専用に
+    // 統一したため、ここでタイトルを拾うのはもう適切ではない。opts.name省略時
+    // (文字コード切替による再デコード等、新しいファイルの読み込みを伴わない呼び出し)は
+    // currentSongNameに触れず、既存のファイル名表示をそのまま保つ。
     if (opts.name !== undefined) {
       currentSongName = opts.name;
-    } else {
-      const titleMatch = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(text);
-      currentSongName = titleMatch ? titleMatch[1].trim() || null : null;
     }
   }
 
@@ -1022,7 +1025,10 @@ export async function init(ctx) {
       return;
     }
 
-    applyMmlBytes(resolved.bytes, { name: resolved.name });
+    // 課題B: FILEBAR(FMDSP)にはファイル名専用のresolved.fileNameを渡す。
+    // ツールバーの「読み込みました」表示は従来どおり曲名(タイトル)を優先する
+    // resolved.nameのまま(役割が違ってよい、利用者判断)。
+    applyMmlBytes(resolved.bytes, { name: resolved.fileName });
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
   }
 

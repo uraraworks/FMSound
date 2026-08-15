@@ -15,7 +15,7 @@
 
 import { drawText, drawTextCp932, SmallFont } from './font.js';
 import { FONT_SMALL, FONT_MEDIUM } from './font_small.js';
-import { encodeCp932 } from '../ui/cp932-encode.js';
+import { encodeCp932, isAsciiOnly } from '../ui/cp932-encode.js';
 import {
   NUM_W, NUM_H, S_NUM, S_NUM_COLON, S_NUM_BAR,
   LOGO_FM_W, LOGO_DS_W, LOGO_P_W, LOGO_H, LOGO_W,
@@ -544,10 +544,15 @@ function toDisplayCp932(text) {
   return encodeCp932(replaced).bytes ?? new Uint8Array(0);
 }
 
-// songName: 曲の表示名(html/net-load.js resolveSongFromUrl()系が決める
-// 「表示名の決定規則」をそのまま使うこと。ツールバー側のnetStatus表示と
-// 同じ文字列を渡せば画面表示と食い違わない)。null/空文字なら何も描かない
+// fileName: 曲の「ファイル名」(html/net-load.js resolveSongFromUrl()の
+// fileNameフィールド、File.name、書庫エントリ名等)。null/空文字なら何も描かない
 // (曲が読み込まれていない状態、でっちあげない)。
+//
+// 課題B(2026-08-15、利用者報告): 以前はここに「曲名」(MML #titleヘッダ由来。
+// 全角を含みうる)を渡していたが、下記のとおりMEDIUM_FONTはANK専用のため
+// 全角文字がグリフ無し(空白)になり、「(WoO 59)」のような半角部分だけが
+// 中途半端に表示されて壊れて見える不具合になっていた。本家どおり「ファイル名」を
+// 渡す方針にした(曲名は画面下部のコメント欄に既に出るため重複しない)。
 //
 // PCM種類名バー(work->pcmtype[]/work->pcmname[]相当)は実装していない:
 // 本Web版のwasm側(PmdCore.c/mucomweb)は #pcm 等の付随音色ファイルの読み込み
@@ -559,25 +564,34 @@ function toDisplayCp932(text) {
 //
 // フォント: 上流のbuf_fontm_2(font_fmdsp_medium)はANK専用で全角に非対応
 // (font_fmdsp_small.c: get_half関数ポインタが両フォントとも0=未設定であることを
-// 確認済み)。本Web版のMEDIUM_FONTも同じ制約(getJisHalf無し)なので、全角の
-// 曲名は上流と同じくグリフ無し(何も描かれない)になる。これは本Web版の手抜きではなく
-// upstream自体の仕様。
-export function drawFileBar(vram, songName) {
+// 確認済み)。本Web版のMEDIUM_FONTも同じ制約(getJisHalf無し)。
+//
+// 日本語を含むファイル名への対応方針(課題B、2026-08-15決定): ファイル名は通常
+// ASCIIだが、日本語ファイル名が来た場合にASCII部分だけをそのまま描くと上と同じ
+// 「一部だけ中途半端に表示される」問題を再発するため、isAsciiOnly()で判定し
+// 非ASCIIを1文字でも含む場合はファイル名をそのまま出さず、代わりに
+// FILEBAR_UNSUPPORTED_NAME(「読めない文字がある」とわかる固定の英字メッセージ)を
+// 表示する(空白のまま消えるより分かりやすい。固定メッセージ自体もANKのみで
+// 構成しているため確実に描画できる)。
+const FILEBAR_UNSUPPORTED_NAME = '(FILENAME HAS NON-ASCII CHARS)';
+
+export function drawFileBar(vram, fileName) {
   vram.blitCopy(S_PLAYING, PLAYING_W, PLAYING_X, PLAYING_Y, PLAYING_W, PLAYING_H);
   drawText(vram, SMALL_FONT, 'MUS', FILEBAR_MUS_X, PLAYING_Y + 1, COLOR_2);
   drawText(vram, SMALL_FONT, 'IC', FILEBAR_IC_X, PLAYING_Y + 1, COLOR_2);
   drawText(vram, SMALL_FONT, 'F', FILEBAR_F_X, PLAYING_Y + 1, COLOR_2);
   drawText(vram, SMALL_FONT, 'ILE', FILEBAR_ILE_X, PLAYING_Y + 1, COLOR_2);
   vram.fillRect(FILEBAR_TRI_X_POS, FILEBAR_TRI_Y_POS, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
-  if (songName) {
+  if (fileName) {
     // 上流はfilenameの描画をpcmcountループの内側に置いており、PCM種類が0件だと
-    // 曲名も出ないという上流側の癖がある(fmdsp-pacc.c:1866-1888、
+    // ファイル名も出ないという上流側の癖がある(fmdsp-pacc.c:1866-1888、
     // `if (fp->filename) { ... }` がpcmcountのforループ内にしかない)。
     // 本Web版はPCM種類名バーを実装しておらずpcmcountは常に0なので、これを
-    // そのまま再現すると「曲名表示が主目的」という要求そのものが満たせなくなる。
-    // そのため意図的にこの依存を切り離し、PCM種類の有無に関わらず曲名を
+    // そのまま再現すると「ファイル名表示が主目的」という要求そのものが満たせなくなる。
+    // そのため意図的にこの依存を切り離し、PCM種類の有無に関わらずファイル名を
     // 独立して描く(上流からの意図的逸脱、docs/fmdsp-layout.md参照)。
-    const bytes = toDisplayCp932(songName);
+    const displayName = isAsciiOnly(fileName) ? fileName : FILEBAR_UNSUPPORTED_NAME;
+    const bytes = toDisplayCp932(displayName);
     drawTextCp932(vram, MEDIUM_FONT, bytes, FILEBAR_FILENAME_X, PLAYING_Y, COLOR_2, FILEBAR_FILENAME_MAX_W);
   }
 }

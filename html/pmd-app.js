@@ -748,11 +748,13 @@ export async function init(ctx) {
     mmlDirty = false;
     hasCompiled = true;
     commentOffset = 0;
-    // 課題(FILEBAR): エディタで直接再生した場合はファイル名という概念が無いため、
-    // html/net-load.js titleFromMmlHeader()と同じ規則(#titleヘッダ)でMML本文から
-    // 曲名を拾う。無ければ捏造せず何も表示しない(currentSongName=null)。
-    const titleMatch = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(source);
-    currentSongName = titleMatch ? titleMatch[1].trim() || null : null;
+    // 課題B(2026-08-15): エディタで直接再生した場合はファイル名という概念が無い。
+    // 以前はMML本文の#titleヘッダを拾って代わりに表示していたが、FILEBARは
+    // 半角専用フォントで描くため全角の曲名が途中で欠けて中途半端に見える不具合に
+    // なっていた。本家どおり「ファイル名」専用に統一したため、ここでタイトルへ
+    // フォールバックするのはもう適切ではない。ファイル名が無い以上、捏造せずnull
+    // (何も表示しない)。
+    currentSongName = null;
     setAudioPaused(false);
   }
 
@@ -763,9 +765,9 @@ export async function init(ctx) {
       return;
     }
     if (pendingUrlSong && uiMode !== 'editor') {
-      const { bytes, name } = pendingUrlSong;
+      const { bytes, name, fileName } = pendingUrlSong;
       pendingUrlSong = null;
-      playBytes(bytes, name);
+      playBytes(bytes, name, fileName);
       return;
     }
     const audioState = globalThis.pmdAudioState;
@@ -897,13 +899,20 @@ export async function init(ctx) {
   }
   requestAnimationFrame(updateChannelStatus);
 
-  async function playBytes(bytes, name) {
+  // fileNameForBar: FILEBAR(FMDSP)専用のファイル名(課題B、2026-08-15)。
+  // nameは仮想FS書き込み(Module.FS.writeFile)にも使う都合上、URL読み込み時は
+  // 表示名(#titleへのフォールバックを含みうる。html/net-load.jsのname参照)の
+  // ままにしておく必要がある一方、FILEBARには#titleへ絶対フォールバックしない
+  // ファイル名だけを渡したいため、両者を分離できるよう引数を分けた。省略時は
+  // nameをそのまま使う(sample_fur_elise.M・ローカルファイルのFile.name等、
+  // 元々ファイル名そのものである呼び出しはこれで正しい)。
+  async function playBytes(bytes, name, fileNameForBar = name) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
     clearCompileStatus();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
-    currentSongName = name;
+    currentSongName = fileNameForBar;
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
     if (error) {
@@ -1009,8 +1018,12 @@ export async function init(ctx) {
     }
 
     if (uiMode === 'editor') setUiMode('player');
-    pendingUrlSong = { bytes: resolved.bytes, name: resolved.name };
-    currentSongName = resolved.name;
+    // 課題B: nameは仮想FS書き込み用にそのまま(#titleへのフォールバックを含みうる
+    // 表示名)残し、FILEBARにはfileNameForBar(=fileName、ファイル名専用)を渡す
+    // (playBytes()のfileNameForBar引数参照)。ツールバーの「読み込みました」は
+    // 従来どおり曲名(タイトル)を優先するresolved.nameのまま(役割が違ってよい)。
+    pendingUrlSong = { bytes: resolved.bytes, name: resolved.name, fileName: resolved.fileName };
+    currentSongName = resolved.fileName;
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
     updateTransportButtonUI();
   }

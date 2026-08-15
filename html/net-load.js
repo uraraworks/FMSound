@@ -94,12 +94,36 @@ function resolveSingleFileName(url, bytes, headers) {
 }
 
 /**
+ * 単体ファイル取得時の「ファイル名」だけを決める(表示名resolveSingleFileName()とは別)。
+ * 課題B(2026-08-15): FMDSPの MUSIC FILE バーは半角専用フォントで描いており、
+ * MMLの#titleヘッダ(全角を含みうる)をそのまま渡すと文字が途中で欠けて中途半端に
+ * 見える不具合があった。本家どおり「ファイル名」を出す方針にしたため、
+ * こちらは#titleへは絶対にフォールバックしない(タイトルを一切見ない)。
+ * 優先順位:
+ * 1. Content-Disposition のファイル名
+ * 2. URL末尾(拡張子が無い等、意味を成さない場合は使わない)
+ * どちらも取れなければnull(呼び出し側はFILEBARに何も出さない。捏造しない)。
+ * @param {string} url @param {Headers | null} headers
+ */
+function resolveSingleFileNameOnly(url, headers) {
+  return (
+    filenameFromContentDisposition(headers) ??
+    (looksLikeMeaningfulUrlTail(urlBaseName(url)) ? urlBaseName(url) : null)
+  );
+}
+
+/**
  * URLから曲データを取得し、単体ファイルか書庫かを判定して返す。
  * 書庫の場合はここで展開まで行い、再生候補一覧(findSongCandidates())まで返す
  * (どれを再生するかの選択は呼び出し側の責務)。
+ *
+ * name/fileNameを分けている理由(課題B、2026-08-15): nameは人間向けの表示名
+ * (#titleへのフォールバックを含む。ツールバーの「読み込みました: ...」用)、
+ * fileNameはFMDSPのMUSIC FILEバー専用でファイル名以外へは絶対にフォールバック
+ * しない(上のresolveSingleFileNameOnly()参照)。
  * @param {string} url @param {(loaded:number, total:number|null)=>void} [onProgress]
  * @returns {Promise<
- *   | { kind: 'single', name: string | null, bytes: Uint8Array }
+ *   | { kind: 'single', name: string | null, fileName: string | null, bytes: Uint8Array }
  *   | { kind: 'archive', candidates: import('./net/song-select.js').SongCandidate[] }
  * >}
  */
@@ -116,7 +140,12 @@ export async function resolveSongFromUrl(url, onProgress) {
     const candidates = findSongCandidates(entries);
     return { kind: 'archive', candidates };
   }
-  return { kind: 'single', name: resolveSingleFileName(url, bytes, responseHeaders), bytes };
+  return {
+    kind: 'single',
+    name: resolveSingleFileName(url, bytes, responseHeaders),
+    fileName: resolveSingleFileNameOnly(url, responseHeaders),
+    bytes,
+  };
 }
 
 /**
