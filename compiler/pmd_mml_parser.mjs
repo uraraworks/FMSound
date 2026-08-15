@@ -37,6 +37,39 @@ class ParseError extends Error {
   }
 }
 
+// ヘッダ命令(#Title/#Composer/#Arranger/#Memo)。出典: PMDMML.MAN §2-6〜§2-9
+// (WebFetchで原文確認。書式は「#コマンド名 + 1個以上のSPACE/TAB + 文字列」、
+// 内容は行末(CR)まで。「後ろに;をつけてコメント等は記せません」と明記されている
+// ため、他の行と違いこの行だけは';'以降をコメントとして切り捨てない
+// (呼び出し元でraw行のまま渡す)。大文字/小文字は原文では#Titleのように先頭大文字
+// 固定の表記だが、他コマンド(v/V等)同様に本コンパイラは寛容側に倒し大小無視で受理する。
+//
+// §2 全般注記: 「#Memo以外のコマンドを重複指定した場合は、後ろの行にあるものが有効」
+// →Title/Composer/Arrangerは上書き(最後勝ち)、Memoのみ複数行を順に蓄積(最大128行)。
+const HEADER_LINE_RE = /^[ \t]*#(Title|Composer|Arranger|Memo)[ \t]+(.*)$/i;
+const MEMO_MAX_LINES = 128; // PMDMML.MAN §2-9 "複数指定が可能で、順に定義されます。最大は128行までです。"
+
+// ヘッダ命令行かどうかを判定し、該当すれば header へ反映して true を返す。
+// 呼び出し元は raw(未加工の行文字列、';'を切り詰める前)を渡すこと。
+function tryParseHeaderLine(raw, lineNo, header, errors) {
+  const m = HEADER_LINE_RE.exec(raw);
+  if (!m) return false;
+  const key = m[1].toLowerCase();
+  const text = m[2];
+  if (key === 'memo') {
+    if (header.memo.length >= MEMO_MAX_LINES) {
+      errors.push({ line: lineNo, message: `#Memo が${MEMO_MAX_LINES}行を超えています(PMDMML.MAN §2-9の上限)` });
+      return true;
+    }
+    header.memo.push(text);
+    header.memoLines.push(lineNo);
+  } else {
+    header[key] = text; // 最後に書かれたものが有効(§2 全般注記)
+    header[`${key}Line`] = lineNo;
+  }
+  return true;
+}
+
 // 数値長 → クロック値。96の約数のみ許容(PMDMML.MAN §2-11、doc 1.3節)。
 function numericLengthToClocks(n, line) {
   if (n <= 0 || MEAS_LEN % n !== 0) {
@@ -367,16 +400,24 @@ function parseToneDefBlock(lines, li, lineNo) {
 }
 
 // MML全文をパースする。戻り値:
-//   { tracks: Map<partLetter, events[]>, tones: Map<tonenum, toneOptions>, errors: [{line,message}] }
+//   { tracks: Map<partLetter, events[]>, tones: Map<tonenum, toneOptions>,
+//     header: {title, composer, arranger: string|null, memo: string[]}, errors: [{line,message}] }
 // 複数パートに同じ行が指定された場合、各パートに同じイベント列(参照は別オブジェクト)を積む。
 export function parseMml(source) {
   const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
   const tones = new Map(); // tonenum -> toneOptions (buildToneEntry用、tonenumはキー側と重複保持)
+  const header = {
+    title: null, composer: null, arranger: null, memo: [],
+    titleLine: null, composerLine: null, arrangerLine: null, memoLines: [],
+  };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);
 
   for (let li = 0; li < lines.length; li++) {
     const lineNo = li + 1;
+    // ヘッダ命令(#Title等)は';'をコメントとして切り詰めない生の行で判定する
+    // (PMDMML.MAN §2-6〜§2-9: 「後ろに;をつけてコメント等は記せません」)。
+    if (tryParseHeaderLine(lines[li], lineNo, header, errors)) continue;
     let raw = lines[li];
     const commentIdx = raw.indexOf(';');
     if (commentIdx >= 0) raw = raw.slice(0, commentIdx);
@@ -462,5 +503,5 @@ export function parseMml(source) {
 
   const trackEvents = new Map();
   for (const [p, info] of tracks) trackEvents.set(p, info.events);
-  return { tracks: trackEvents, tones, errors };
+  return { tracks: trackEvents, tones, header, errors };
 }

@@ -28,6 +28,7 @@ import { setupPopover } from './ui/shell.js';
 import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
+import { encodeCp932 } from './ui/cp932-encode.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 //
@@ -481,67 +482,30 @@ export async function init(ctx) {
     }
     return header;
   }
-  function asciiOnlyCp932Bytes(text) {
+  // 【不具合修正・2026-08-15】以前はここに「読み込み時の生バイト列をCP932決め打ちで
+  // そのままスライスする」経路(旧extractMmlHeaderBytes/asciiOnlyCp932Bytes)があったが、
+  // 同梱サンプルsamplja.mucがCP932保存だったため偶然動いていただけで、UTF-8保存の
+  // MML(tools/sample_fur_elise_mucom.mml等)を読み込むと生バイトは実際はUTF-8なのに
+  // CP932として描画され、コメント欄が文字化けしていた(asciiOnlyCp932Bytes側も非ASCII
+  // は問答無用でnull=非表示だったため、直接入力した日本語ヘッダも出せていなかった)。
+  // どちらも実測(ブラウザでコメント欄をキャンバスから読み出して確認)で発覚。
+  //
+  // 生の文字コードに依存せず、常に「デコード済みJS文字列(mmlText。decodeMmlBytes/
+  // decodeMmlBytesAsで既にUTF-8/CP932どちらからでも正しく復元済み、または利用者が
+  // 直接入力した文字列)」からヘッダを抜き出し(extractMmlHeader、既存)、表示直前に
+  // CP932へ変換する(encodeCp932、PMD側のcompiler/cp932.mjsと同じ手法。ui/cp932-encode.js
+  // は既存でPMD版が使用)方式に統一する。変換できない文字が含まれる場合はその項目だけ
+  // 非表示にする(コンパイル自体は止めない。曲名表示の欠落であって再生の欠落ではないため)。
+  function cp932BytesForComment(text) {
     if (!text) return null;
-    for (let i = 0; i < text.length; i++) {
-      const code = text.charCodeAt(i);
-      if (code < 0x20 || code > 0x7e) return null;
-    }
-    const bytes = new Uint8Array(text.length);
-    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
-    return bytes;
-  }
-
-  const HEADER_KEYWORDS = ['title', 'composer', 'comment'];
-  function isAsciiSpaceByte(c) {
-    return c === 0x20 || c === 0x09;
-  }
-  function matchesAsciiKeywordBytes(bytes, i, end, keyword) {
-    if (i + keyword.length > end) return false;
-    for (let k = 0; k < keyword.length; k++) {
-      let c = bytes[i + k];
-      if (c >= 0x41 && c <= 0x5a) c += 0x20;
-      if (c !== keyword.charCodeAt(k)) return false;
-    }
-    return true;
-  }
-  function parseHeaderLineBytes(bytes, start, end, header) {
-    let i = start;
-    while (i < end && isAsciiSpaceByte(bytes[i])) i++;
-    if (i >= end || bytes[i] !== 0x23 /* '#' */) return;
-    i++;
-    while (i < end && isAsciiSpaceByte(bytes[i])) i++;
-    for (const keyword of HEADER_KEYWORDS) {
-      if (!matchesAsciiKeywordBytes(bytes, i, end, keyword)) continue;
-      const afterKeyword = i + keyword.length;
-      if (afterKeyword < end && !isAsciiSpaceByte(bytes[afterKeyword])) continue;
-      let valueStart = afterKeyword;
-      while (valueStart < end && isAsciiSpaceByte(bytes[valueStart])) valueStart++;
-      let valueEnd = end;
-      while (valueEnd > valueStart && isAsciiSpaceByte(bytes[valueEnd - 1])) valueEnd--;
-      if (header[keyword] === null) header[keyword] = bytes.slice(valueStart, valueEnd);
-      return;
-    }
-  }
-  function extractMmlHeaderBytes(bytes) {
-    const header = { title: null, composer: null, comment: null };
-    let lineStart = 0;
-    for (let i = 0; i <= bytes.length; i++) {
-      if (i === bytes.length || bytes[i] === 0x0a) {
-        let lineEnd = i;
-        if (lineEnd > lineStart && bytes[lineEnd - 1] === 0x0d) lineEnd--;
-        parseHeaderLineBytes(bytes, lineStart, lineEnd, header);
-        lineStart = i + 1;
-      }
-    }
-    return header;
+    const { bytes } = encodeCp932(text);
+    return bytes; // 変換不能文字が1つでもあれば null(=非表示)
   }
 
   // FMDSP画面の「MUSIC FILE」バーに出す曲名。applyMmlBytes()(課題D注記のとおり
   // 読み込んだMMLがある限り常にここを通る唯一の窓口)で確定させる。
   let currentSongName = null;
   let lastLoadedRawBytes = null;
-  let lastLoadedText = null;
   // 課題(net配線): 直近に読み込んだMMLの文字コード判定結果('utf-8'|'shift_jis'|null)。
   // 手動切替ボタン(encodingBadgeEl)の表示・再デコードに使う。
   let lastLoadedEncoding = null;
@@ -597,16 +561,11 @@ export async function init(ctx) {
 
   let commentBytesCache = [null, null, null];
   function setCommentFromMml(mmlText) {
-    if (lastLoadedRawBytes && mmlText === lastLoadedText) {
-      const header = extractMmlHeaderBytes(lastLoadedRawBytes);
-      commentBytesCache = [header.title, header.composer, header.comment];
-      return;
-    }
     const header = extractMmlHeader(mmlText);
     commentBytesCache = [
-      asciiOnlyCp932Bytes(header.title),
-      asciiOnlyCp932Bytes(header.composer),
-      asciiOnlyCp932Bytes(header.comment),
+      cp932BytesForComment(header.title),
+      cp932BytesForComment(header.composer),
+      cp932BytesForComment(header.comment),
     ];
   }
   function commentBytesFor(line) {
@@ -908,7 +867,6 @@ export async function init(ctx) {
     }
     mmlEditorApi.render();
     lastLoadedRawBytes = null;
-    lastLoadedText = null;
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
     clearCompileStatus();
     // 課題D: 新規作成の雛形には#voice/#pcm/リズムが無いため、告知も消す。
@@ -927,7 +885,6 @@ export async function init(ctx) {
       ? { text: decodeMmlBytesAs(rawBytes, forced), encoding: forced }
       : decodeMmlBytes(rawBytes);
     lastLoadedRawBytes = rawBytes;
-    lastLoadedText = text;
     lastLoadedEncoding = encoding;
     mmlTextarea.value = text;
     mmlEditorApi.render();

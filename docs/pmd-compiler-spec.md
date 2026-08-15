@@ -55,9 +55,14 @@ data[1] ...    : 以降、下記ヘッダ〜各パートデータ（このオフ
 対象外とする（詳細は2章）。
 
 **メモ／タイトル文字列テーブル**（`pmd_get_memo`, `fmdriver_pmd.c:5962-5993`）: 曲名・作曲者名等の文字列群が
-`tone_ptr - 4`（メモポインタ表の先頭）以降にある構造が存在することは読み取れたが、**フラグバイトの判定条件
-（`flaglow`/`flaghigh` の意味）やポインタ表の要素数の上限は今回精読していない。未解明のまま残す**
+`tone_ptr - 4`（メモポインタ表の先頭）以降にある構造が存在することは読み取れたが、~~フラグバイトの判定条件
+（`flaglow`/`flaghigh` の意味）やポインタ表の要素数の上限は今回精読していない。未解明のまま残す~~
 （v1の演奏・照合には不要なため、実装優先度は低い）。
+
+**【2026-08-15追記】上記の「未解明」は解消し、実装済み。詳細・出典は8章参照。**
+概要: `flaglow`は`pmd_get_memo`内の`index`シフト量を決めるフィールドで、コンパイラ側は常に`0x40`を
+書き込めばシフトが起きない(素通し)ことを`fmdriver_pmd.c:5975-5980`から特定した。ポインタ表の要素数
+上限は「0x0000終端まで」であり固定上限は無い(該当コードに上限チェックが無いことを確認)。
 
 ### 1.2 パート数と並び
 
@@ -638,3 +643,144 @@ SSG1のスナップショットindexは6ではなく**9**になる(`FM1=0,...,FM
 これらはいずれも「今回の指示範囲(v1完成)」を超えないための意図的な線引きであり、
 「動く」という報告は上記7.5節の実測結果(pmdweb実再生・`flat_track_status`照合・
 陽性対照)に基づく。
+
+## 8. ヘッダ命令(#Title/#Composer/#Arranger/#Memo)対応(2026-08-15)
+
+同梱サンプル(エリーゼのために)に曲名・作曲者が無く、FMDSPのコメント欄が空になっていた
+不具合の修正として、PMDMML.MANのヘッダ命令をコンパイラに実装した。v1範囲(2.1節)には
+無かった機能だが、「MMLファイルが曲名を名乗れる」という最低限の実用性のための追加であり、
+それ以外のMML機能(リズム・ADPCM等)には手を広げていない。
+
+### 8.1 参照した一次情報
+
+1. **`PMDMML.MAN §2-6〜§2-9`**(WebFetchで原文取得。§2冒頭の全般注記も含む)。
+   書式・値の上書き規則(Title/Composer/Arrangerは後勝ち、Memoのみ複数行蓄積・最大128行)の根拠。
+2. **`upstream/98fmplayer/fmdriver/fmdriver_pmd.c`**: 読み出し側の実装(下記8.2節)。
+   コンパイラの書き込み位置は**このファイルから一意に逆算した**(推測で決めていない)。
+3. **`docs/fmdsp-layout.md` §5**(既存ドキュメント。`upstream/.../fmdsp/fmdsp-pacc.c`の
+   コメント欄描画ロジックを解析済み): `comment_mode_pmd==true`のとき
+   `get_comment(work,0)`=タイトル、`get_comment(work,1)`=作曲者、`get_comment(work,2)`=編曲者、
+   `get_comment(work,n+1)`=メモ(nはスクロール窓の行インデックス)であることの根拠。
+
+### 8.2 `.M`内の格納位置(出典つき)
+
+読み出し側は`pmd_get_comment()`→`pmd_get_memo()`の2段(`fmdriver_pmd.c:6008-6014`,`5962-5993`)。
+`pmd_init()`で`work->get_comment = pmd_get_comment`が設定され(`6023`)、
+`work->comment_mode_pmd = true`になる(`6022`。**PMDドライバは常にPMDメモモード**、
+MML側で切り替える手段は無い)。
+
+```
+pmd_get_comment(work, line):
+    return pmd_get_memo(pmd, line + 1)     // fmdriver_pmd.c:6008-6014
+
+pmd_get_memo(pmd, index):
+    if index < -2: return NULL
+    if datalen < 2: return NULL
+    if read16le(data[0]) == 0x18: return NULL      // 旧フォーマット判定(1.1節既存記載)
+    if datalen < 0x18+2: return NULL
+    toneptr = read16le(data[0x18])                  // tone_ptr(既存の1.1節フィールドと同一)
+    if toneptr < 4: return NULL
+    if datalen < toneptr: return NULL
+    flaglow  = data[toneptr-2]
+    flaghigh = data[toneptr-1]
+    if flaglow != 0x40:
+        if flaghigh != 0xfe: return NULL
+        if flaglow < 0x41: return NULL
+    if flaglow >= 0x42: index++
+    if flaglow >= 0x48: index++
+    if index < 0: return NULL
+    memoptr = read16le(data[toneptr-4])             // メモポインタ表の先頭(絶対offset)
+    while datalen >= memoptr+2 and read16le(data[memoptr]) != 0:
+        if index == 0: return pmd_check_str(data, read16le(data[memoptr]))
+        memoptr += 2
+        index--
+    return NULL
+                                                      // fmdriver_pmd.c:5962-5993
+```
+
+これを満たす**最小の書き込み方式**として、`compiler/pmd_mml_compiler.mjs`の`buildMemoBlock()`は
+`tone_ptr`の直前に次の4byteを追加する(それ以外の実装は変更していない。ヘッダ命令を
+使わないMMLの出力バイト列は従来と完全に同一):
+
+```
+[tone_ptr-4, tone_ptr-3] : memoTableOff (2byte LE、絶対offset)
+[tone_ptr-2]             : flaglow  = 0x40固定
+[tone_ptr-1]             : flaghigh = 0x00固定(flaglow==0x40の分岐では読まれないため未使用)
+```
+
+`flaglow=0x40`を選んだ理由: 上記疑似コードの通り`0x40`は「`flaglow!=0x40`」分岐(旧フォーマット
+互換用と見られる`flaghigh==0xfe`必須の経路)を回避しつつ、`index`シフト(`>=0x42`/`>=0x48`)も
+発生しない唯一の値だからである(`fmdriver_pmd.c:5975-5980`)。これにより`index`は呼び出し元が
+渡した値のまま素通しされ、書き込み側(コンパイラ)と読み出し側(ドライバ)のインデックス対応が
+単純になる。
+
+`memoTableOff`が指す先は「2byteポインタの配列、`0x0000`で終端」。各ポインタは文字列の絶対offset
+(null終端、`pmd_check_str`, `fmdriver_pmd.c:5950-5959`)。**インデックス対応**
+(`pmd_get_comment`の`+1`と、`pmd_init`が`index -2/-1/0`をPCMファイル名に使っていること
+`6043-6058`、`fmdsp-layout.md §5`のUI割り当てを突き合わせて確定):
+
+| テーブル index | 意味 | 由来 |
+|---|---|---|
+| 0 | (未使用。PCMファイル名スロット、`pmd_init`の`pmd_get_memo(pmd,0)`用) | `fmdriver_pmd.c:6055-6058` |
+| 1 | タイトル | `get_comment(work,0)` = `pmd_get_memo(1)`。fmdsp-layout.md §5 "MUSIC TITLE" |
+| 2 | 作曲者 | `get_comment(work,1)` = `pmd_get_memo(2)`。同 "COMPOSER" |
+| 3 | 編曲者 | `get_comment(work,2)` = `pmd_get_memo(3)`。同 "ARRANGER" |
+| 4以降 | `#Memo`各行(記述順) | `get_comment(work,n+1)` = `pmd_get_memo(n+2)`。同 "MEMO" |
+
+index0はPCM機能(`#PCM`/`#PPZ`等、v1対応外)用のスロットで、テーブルを辿るための構造的な
+プレースホルダとして空文字列を必ず置く(空にしても`pmd_get_comment`が`!*str`で弾くため実害無し。
+これが無いと`pmd_get_memo`のwhileループがindex1以降へ辿り着けない)。index1-3も、対応する
+`#Title`等が無ければ空文字列を置いて位置を合わせる。
+
+文字列はCP932(Shift_JIS)。エンコーダは`compiler/cp932.mjs`(新規、`TextDecoder('shift_jis')`への
+総当たりでエンコード表を実測生成する方式。値を手で転記しない設計はpmdweb/build-web/ui/cp932-encode.jsと
+同じ手法だが、compiler/はNode/ブラウザ両方からimportされUI層に依存させたくないため独立して持つ)。
+変換できない文字が含まれる場合はコンパイルエラーにする(黙って落とさない)。
+
+### 8.3 MML側の書式(パーサ、`compiler/pmd_mml_parser.mjs`)
+
+`#Title`/`#Composer`/`#Arranger`/`#Memo` + 1個以上のSPACE/TAB + 内容(行末まで)。
+大文字小文字は寛容側に倒し無視(他コマンドと同様の方針。マニュアル原文は`#Title`のように
+先頭大文字表記)。**この4行だけは`;`をコメント区切りとして切り詰めない**(PMDMML.MANの
+「後ろに;をつけてコメント等は記せません」という注記どおり、`;`込みでそのまま文字列になる)。
+Title/Composer/Arrangerは複数回書かれた場合は最後の行が有効、Memoのみ複数行蓄積(最大128行、
+超過はコンパイルエラー)。
+
+### 8.4 検証結果
+
+`tools/verify_pmd_header.mjs`(新規、11 PASS/0 FAIL)。**pmdweb実再生**(pmdweb.js経由の実際の
+`fmdriver_pmd.c`)に対して、`Module.getCommentModePmd()`/`getCommentLength()`/`getCommentPointer()`
+(既存API、`pmdweb/src/PmdCore.c:499-517`。ヘッダ機能追加にあたりwasm側の変更は不要だった)で
+タイトル/作曲者/メモが期待通り取得できること、日本語がCP932バイト値レベルで一致していること
+(「ベ」=`0x83 0x78`、手で転記せず`compiler/cp932.mjs`自身の実測値と突き合わせ)、ヘッダ命令が
+無いMMLは従来通り何も返らないこと(後方互換)、CP932変換不能文字を含むタイトルがコンパイル
+エラーになることを確認した。ブラウザでの実機確認(html/pmd-app.js経由、`dist/`をローカル配信し
+Chrome DevTools MCPで確認)でもコメント欄に3行(タイトル/作曲者/メモ)が正しく表示され、
+文字化けが無いことをスクリーンショットで確認済み。
+
+既存27検証スクリプトすべて回帰無し(合計28本 全PASS)。
+
+### 8.5 「MUSIC FILE」バーとの違い
+
+FMDSP画面上部の「MUSICFILE」バー(`fmdsp-layout.md`参照)は**読み込んだファイル名**を表示する
+別機能であり、`#Title`等のヘッダ命令とは無関係。実機確認でも、ヘッダ追加後に`sample_fur_elise.M`
+を読み込むと同バーは変わらず`SAMPLE_FUR_ELISE.M`(ファイル名の大文字表記)のままで、
+画面下部のコメント欄(本章の機能)だけが新たに曲名・作曲者を表示するようになった。
+両者は独立した表示領域であり、ヘッダ命令はファイル名表示を上書きしない。
+
+### 8.6 副次的に発覚したMUCOM88側の不具合(修正済み)
+
+本タスクの検証中、MUCOM88側(`html/mucom-app.js`)のコメント欄表示が、UTF-8保存のMML
+(`tools/sample_fur_elise_mucom.mml`)を読み込むと文字化けすることが実機確認(ブラウザで
+コメント欄をcanvasから読み出して確認)で発覚した。原因は「読み込み時の生バイト列を
+無条件にCP932とみなしてそのままスライスする」実装(旧`extractMmlHeaderBytes`)で、
+既存の同梱サンプル`samplja.muc`がCP932保存だったため症状が出ていなかっただけだった
+(UTF-8/CP932自動判定は別経路の`net/charset.js`で本文のコンパイルには効いていたが、
+コメント欄表示だけこの判定を経由していなかった)。加えて非ASCII文字を直接入力した場合の
+経路(`asciiOnlyCp932Bytes`)も非ASCIIを問答無用でnull=非表示にしており、日本語ヘッダを
+直接エディタへ打っても表示されない状態だった。
+
+修正: 生バイト列への依存を廃し、常に「デコード済みJS文字列」からヘッダを抜き出し
+(`extractMmlHeader`、既存)、表示直前に`ui/cp932-encode.js`の`encodeCp932`でCP932へ変換する
+方式に統一した(`html/mucom-app.js`)。修正後、UTF-8サンプルと既存のCP932サンプル
+(`samplja.muc`)の両方で正しく日本語が表示されることを実機確認済み(回帰無し)。

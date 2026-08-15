@@ -17,6 +17,14 @@
 ;   (b) 実際にPCM出力(absSum)が非0であること(鳴っていること)
 ;   (c) 4分音符の実時間がPMD版と近い値(実時間で速度が揃っていること)
 ;   を確認済み。
+;
+; --- ヘッダ(曲名・作曲者・メモ) ---
+; html/mucom-app.js extractMmlHeaderBytes()が読む(3行固定のコメント欄に
+; そのまま表示される。ラベル無し)。#title/#composer/#commentの3種のみ対応
+; (PMD版のような#arranger/複数行#memoは無い、MUCOM側の実装のまま)。
+#title エリーゼのために(WoO 59)
+#composer ベートーヴェン
+#comment 原曲はパブリックドメイン。MMLアレンジは本プロジェクトの著作物
 
 A T60 @78 v12 L
 A o5 e16 d+16

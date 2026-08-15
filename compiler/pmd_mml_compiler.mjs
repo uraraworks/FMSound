@@ -18,9 +18,70 @@
 
 import { buildToneEntry, noteByte, REST_NIBBLE } from './gen_pmd_min.mjs';
 import { parseMml, PART_LETTERS } from './pmd_mml_parser.mjs';
+import { encodeCp932 } from './cp932.mjs';
 
 const HEADER_LEN = 0x1a; // 11ポインタ(22) + r_offset(2) + tone_ptr(2)。doc 1.1/1.2節。
 const EMPTY_TRACK_OFF = HEADER_LEN;
+
+// メモ/タイトルテーブル(#Title/#Composer/#Arranger/#Memo)。
+// 出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の pmd_get_memo()(5962-5993)・
+// pmd_get_comment()(6008-6014、`pmd_get_memo(pmd, line+1)`)・
+// fmdsp-pacc.c由来のcomment.js(pmdweb/build-web/fmdsp/comment.js、get_comment(work,0)=
+// タイトル/1=作曲者/2=編曲者/n+1=メモ)を突き合わせて確定した。詳細は
+// docs/pmd-compiler-spec.md 追記分を参照。
+//
+// レイアウト(tone_ptrの直前、`toneptr-4`から): [memoTableOff(2byte LE)][flaglow=0x40][flaghigh]
+// flaglow==0x40 は pmd_get_memo() のindexシフトを起こさない値として選んだ
+// (fmdriver_pmd.c:5975-5980: 0x42/0x48以上で index++ される。0x40はそのどちらの閾値
+// 未満なので素通しになる。flaghighは flaglow==0x40 の分岐では読まれないため任意値)。
+// memoTableOff が指す先はポインタ(2byte LE)の配列、0x0000で終端。
+// index0=予約(PPCファイル名スロット、pmd_get_memo(pmd,0)用。今回はPCM機能を
+// 使わないので常に空文字列を置くだけの位置合わせ)、index1=タイトル、index2=作曲者、
+// index3=編曲者、index4以降=#Memoの各行(この順でpmd_get_comment(work,0..2,n+1)と一致)。
+function buildMemoBlock(header, startOff) {
+  const slots = ['', header.title ?? '', header.composer ?? '', header.arranger ?? '', ...header.memo];
+  const slotLines = [null, header.titleLine, header.composerLine, header.arrangerLine, ...header.memoLines];
+
+  const encoded = slots.map((s, idx) => {
+    const { bytes, unmappable } = encodeCp932(s);
+    if (!bytes) {
+      const where = slotLines[idx] != null ? `${slotLines[idx]}行目付近の` : '';
+      throw new Error(`${where}ヘッダ文字列にCP932へ変換できない文字が含まれています: ${unmappable.join(' ')}`);
+    }
+    return bytes;
+  });
+
+  const tableOff = startOff;
+  const tableBytes = (slots.length + 1) * 2; // 各エントリ2byte + 終端0x0000
+  const stringsOff = tableOff + tableBytes;
+
+  let cursor = stringsOff;
+  const stringOffsets = encoded.map((bytes) => {
+    const off = cursor;
+    cursor += bytes.length + 1; // + null終端
+    return off;
+  });
+
+  const flagsOff = cursor;
+  const totalLen = flagsOff + 4;
+
+  const out = new Uint8Array(totalLen - startOff);
+  function w16(off, val) {
+    out[off - startOff] = val & 0xff;
+    out[off - startOff + 1] = (val >> 8) & 0xff;
+  }
+  encoded.forEach((_, idx) => w16(tableOff + idx * 2, stringOffsets[idx]));
+  w16(tableOff + slots.length * 2, 0); // 終端
+  encoded.forEach((bytes, idx) => {
+    out.set(bytes, stringOffsets[idx] - startOff);
+    out[stringOffsets[idx] - startOff + bytes.length] = 0; // null終端
+  });
+  w16(flagsOff, tableOff); // toneptr-4 位置(memoptr)
+  out[flagsOff - startOff + 2] = 0x40; // flaglow
+  out[flagsOff - startOff + 3] = 0x00; // flaghigh(未使用)
+
+  return { bytes: out, endOff: totalLen };
+}
 
 function sizeOfEvent(ev) {
   switch (ev.type) {
@@ -135,7 +196,7 @@ function layoutTrack(events, startAddr) {
 // layout には検証スクリプトが使う各トラックの先頭アドレス・終端アドレス・
 // イベント列(アドレス付き)・使用した音色テーブル(tones)を含む。
 export function compileMml(source, { tones, opmFlag = 0 } = {}) {
-  const { tracks, tones: parsedTones, errors: parseErrors } = parseMml(source);
+  const { tracks, tones: parsedTones, header, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
   const toneTable = {};
@@ -166,6 +227,21 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
     cursor = endAddr;
   }
 
+  // ヘッダ命令(#Title/#Composer/#Arranger/#Memo)が1つでもあれば、tone_ptr直前に
+  // メモテーブルを差し込む(buildMemoBlock、doc参照)。無ければ従来通り何も挟まない
+  // (後方互換: ヘッダ命令を使わないMMLの出力バイト列は変化しない)。
+  const hasHeader = header.title != null || header.composer != null
+    || header.arranger != null || header.memo.length > 0;
+  let memoBlock = null;
+  if (hasHeader) {
+    try {
+      memoBlock = buildMemoBlock(header, cursor);
+    } catch (e) {
+      return { file: null, errors: [{ line: header.titleLine ?? 1, message: e.message }], layout: null };
+    }
+    cursor = memoBlock.endOff;
+  }
+
   const toneNums = Object.keys(toneTable).map(Number).sort((a, b) => a - b);
   const toneOff = cursor;
   const toneEntries = toneNums.map((tn) => buildToneEntry({ ...toneTable[tn], tonenum: tn }));
@@ -176,6 +252,7 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
     rel[off] = val & 0xff;
     rel[off + 1] = (val >> 8) & 0xff;
   }
+  if (memoBlock) rel.set(memoBlock.bytes, memoBlock.endOff - memoBlock.bytes.length);
 
   // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)。
   // PART_LETTERS(pmd_mml_parser.mjs)の配列indexが、そのままこのヘッダindexと一致するよう設計してある
