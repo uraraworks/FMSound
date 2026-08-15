@@ -51,4 +51,11 @@ cp "$MUCOM_BUILD/mucom88.js" "$MUCOM_BUILD/mucom88.wasm" "$DIST/"
 # PMD側のwasm。同梱サンプル曲は無し(pmdweb/README.md参照)。
 cp "$PMD_BUILD/pmdweb.js" "$PMD_BUILD/pmdweb.wasm" "$DIST/"
 
+# 課題A(2026-08-15): GitHub Pagesはレスポンスヘッダのキャッシュ制御を我々が
+# 設定できない(実測: HTML/JS/wasmいずれもcache-control: max-age=600)ため、
+# 「更新のたびにURLを変える」方式で確実に新しい版を届ける。既存のビルドID
+# (tools/gen_version.py、コミットハッシュ)を流用し、静的importのURLへ
+# ?v=<hash> を機械的に付与する。詳細はtools/apply_cache_bust.py参照。
+python3 tools/apply_cache_bust.py "$DIST"
+
 echo "[build_dist.sh] $DIST/ を組み立てた。"

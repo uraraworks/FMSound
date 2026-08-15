@@ -18,7 +18,7 @@
 import { PC98_W, PC98_H } from './fmdsp/vram.js';
 import { ICONS, iconButton } from './ui/icons.js';
 import { setupFullscreen, setupPopover } from './ui/shell.js';
-import { FMSOUND_VERSION_FOOTER } from './ui/version.js';
+import { FMSOUND_VERSION_FOOTER, FMSOUND_BUILD_ID } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
 import { urlBaseName } from './net-load.js';
 
@@ -197,7 +197,14 @@ const ctx = {
 
 // 音源ドライバの選択は?driver=だけで決まり、選ばれた側のモジュールだけを動的import
 // する(=選ばれなかった側のwasmは一切fetchされない)。
-const modulePath = driver === 'pmd' ? './pmd-app.js' : './mucom-app.js';
+//
+// 課題A(2026-08-15、iPhone利用者の「line 22が...で始まる必要があります」報告):
+// GitHub Pagesはヘッダ側でキャッシュを制御できないため、更新のたびにURLそのものを
+// 変える。静的import(tools/apply_cache_bust.pyがビルド時に './x.js' へ ?v=<hash> を
+// 機械的に付与)と違い、ここはパスを実行時に組み立てる動的importなのでテキスト置換の
+// 対象にならない。同じ「コミットハッシュ」を情報源にして自前で付与する。
+const modulePath =
+  (driver === 'pmd' ? './pmd-app.js' : './mucom-app.js') + `?v=${FMSOUND_BUILD_ID}`;
 const engineApp = await import(modulePath);
 await engineApp.init(ctx);
 

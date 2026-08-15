@@ -24,6 +24,12 @@
     区別するための一意な識別子として使う(不具合報告用)。国内利用者が多いため
     日本時間(JST=UTC+9固定)で表示する(2026-08-14 変更。以前はUTC表示だった)。
   FMSOUND_VERSION_OK: 取得に成功したかどうかのbool。
+  FMSOUND_BUILD_ID: コミットハッシュ短縮7桁のみ(2026-08-15追加)。
+    tools/apply_cache_bust.pyが静的import分のURLへ ?v=<hash> を付与するのに対し、
+    app.js内の動的import(driver選択でmucom-app.js/pmd-app.jsを切り替える箇所)は
+    パスが実行時に組み立てられ静的なテキスト置換では書き換えられないため、
+    この値をコードから直接importして使う(同じ「コミットハッシュ」という情報源
+    なので二重管理ではない)。
 """
 import json
 import subprocess
@@ -70,11 +76,13 @@ def main():
         dt = datetime.fromtimestamp(commit_ts, tz=JST)
         fields = [dt.strftime("%y"), dt.strftime("%m"), dt.strftime("%d")]
         footer = f"{dt.strftime('%Y-%m-%d %H:%M')} JST ({commit_hash})"
+        build_id = commit_hash
     except Exception as e:  # noqa: BLE001 - ビルドを止めず'unknown'で明示する方針
         ok = False
         error = str(e)
         fields = ["??", "??", "??"]
         footer = "unknown"
+        build_id = "unknown"
 
     js_lines = [
         "// 自動生成: tools/gen_version.py。手編集しないこと。",
@@ -84,6 +92,7 @@ def main():
         f"export const FMSOUND_VERSION_FIELDS = {json.dumps(fields)};",
         f"export const FMSOUND_VERSION_FOOTER = {json.dumps(footer)};",
         f"export const FMSOUND_VERSION_OK = {json.dumps(ok)};",
+        f"export const FMSOUND_BUILD_ID = {json.dumps(build_id)};",
         "",
     ]
     DST.parent.mkdir(parents=True, exist_ok=True)
