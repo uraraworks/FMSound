@@ -545,8 +545,15 @@ function toDisplayCp932(text) {
 }
 
 // fileName: 曲の「ファイル名」(html/net-load.js resolveSongFromUrl()の
-// fileNameフィールド、File.name、書庫エントリ名等)。null/空文字なら何も描かない
-// (曲が読み込まれていない状態、でっちあげない)。
+// fileNameフィールド、File.name、書庫エントリ名等)。
+//
+// 課題B追補(2026-08-15、利用者報告「バーに何も出ない」): 以前はnull/空文字のとき
+// 何も描かなかった(「でっちあげない」という方針自体は正しい)が、結果として
+// 「正常に読み込めているが名前だけ分からない」状態と「読み込み自体が壊れている」
+// 状態が画面上で見分けられず、後者だと誤解される実例があった(下書き復元経路の
+// 配線漏れがちょうどこの状態を作っていた)。名前を捏造する代わりに、
+// FILEBAR_NO_FILENAME(状態が分かる固定の英字プレースホルダ)を出すことで
+// 「空白=故障」に見える問題を避ける。
 //
 // 課題B(2026-08-15、利用者報告): 以前はここに「曲名」(MML #titleヘッダ由来。
 // 全角を含みうる)を渡していたが、下記のとおりMEDIUM_FONTはANK専用のため
@@ -574,6 +581,9 @@ function toDisplayCp932(text) {
 // 表示する(空白のまま消えるより分かりやすい。固定メッセージ自体もANKのみで
 // 構成しているため確実に描画できる)。
 const FILEBAR_UNSUPPORTED_NAME = '(FILENAME HAS NON-ASCII CHARS)';
+// fileNameがnull/空文字のとき(下書き復元直後で読み込み元ファイルが無い等)に
+// 出す固定プレースホルダ。ASCIIのみで構成し確実に描画できるようにする。
+const FILEBAR_NO_FILENAME = '(NO FILENAME)';
 
 export function drawFileBar(vram, fileName) {
   vram.blitCopy(S_PLAYING, PLAYING_W, PLAYING_X, PLAYING_Y, PLAYING_W, PLAYING_H);
@@ -582,18 +592,18 @@ export function drawFileBar(vram, fileName) {
   drawText(vram, SMALL_FONT, 'F', FILEBAR_F_X, PLAYING_Y + 1, COLOR_2);
   drawText(vram, SMALL_FONT, 'ILE', FILEBAR_ILE_X, PLAYING_Y + 1, COLOR_2);
   vram.fillRect(FILEBAR_TRI_X_POS, FILEBAR_TRI_Y_POS, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
-  if (fileName) {
-    // 上流はfilenameの描画をpcmcountループの内側に置いており、PCM種類が0件だと
-    // ファイル名も出ないという上流側の癖がある(fmdsp-pacc.c:1866-1888、
-    // `if (fp->filename) { ... }` がpcmcountのforループ内にしかない)。
-    // 本Web版はPCM種類名バーを実装しておらずpcmcountは常に0なので、これを
-    // そのまま再現すると「ファイル名表示が主目的」という要求そのものが満たせなくなる。
-    // そのため意図的にこの依存を切り離し、PCM種類の有無に関わらずファイル名を
-    // 独立して描く(上流からの意図的逸脱、docs/fmdsp-layout.md参照)。
-    const displayName = isAsciiOnly(fileName) ? fileName : FILEBAR_UNSUPPORTED_NAME;
-    const bytes = toDisplayCp932(displayName);
-    drawTextCp932(vram, MEDIUM_FONT, bytes, FILEBAR_FILENAME_X, PLAYING_Y, COLOR_2, FILEBAR_FILENAME_MAX_W);
-  }
+  // 上流はfilenameの描画をpcmcountループの内側に置いており、PCM種類が0件だと
+  // ファイル名も出ないという上流側の癖がある(fmdsp-pacc.c:1866-1888、
+  // `if (fp->filename) { ... }` がpcmcountのforループ内にしかない)。
+  // 本Web版はPCM種類名バーを実装しておらずpcmcountは常に0なので、これを
+  // そのまま再現すると「ファイル名表示が主目的」という要求そのものが満たせなくなる。
+  // そのため意図的にこの依存を切り離し、PCM種類の有無に関わらずファイル名を
+  // 独立して描く(上流からの意図的逸脱、docs/fmdsp-layout.md参照)。
+  const displayName = !fileName
+    ? FILEBAR_NO_FILENAME
+    : isAsciiOnly(fileName) ? fileName : FILEBAR_UNSUPPORTED_NAME;
+  const bytes = toDisplayCp932(displayName);
+  drawTextCp932(vram, MEDIUM_FONT, bytes, FILEBAR_FILENAME_X, PLAYING_Y, COLOR_2, FILEBAR_FILENAME_MAX_W);
 }
 
 // 動的部分(枠内の値)をまとめて1フレームぶん描画する。

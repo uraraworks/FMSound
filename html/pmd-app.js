@@ -42,7 +42,7 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
-import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
+import { resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME } from './net-load.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -373,7 +373,15 @@ export async function init(ctx) {
   // 同じ文字列にすることで画面とツールバーの表示を一致させる)。
   // pendingUrlSong.name / playBytes()のname引数のどちらかが更新されるたびに
   // ここも一緒に更新する(曲が変わっても古い名前が残らないようにする)。
-  let currentSongName = null;
+  //
+  // 課題B追補(2026-08-15、利用者報告「同梱サンプルの経路でバーが空になった」):
+  // 実際の原因は下書き復元(上のhasDraft分岐)がcurrentSongNameに一切触れて
+  // いなかったこと。下書き復元は自動保存(setupMmlAutosave、タブを閉じる/裏に
+  // 回すだけでも保存される)により通常利用でもごく普通に起きる経路なので、
+  // 「読み込み元がファイルではない」ことが分かるFILEBAR_RESTORED_DRAFT_NAMEを
+  // ここで設定しておく(空のまま=壊れて見える、を避ける。fmdsp/rightpane.js
+  // drawFileBar()参照)。
+  let currentSongName = hasDraft ? FILEBAR_RESTORED_DRAFT_NAME : null;
 
   // --- URL指定読み込み時の状態表示(常時表示。#result/#mmlStatusはmmlEditorPane配下で
   // プレイヤーモード時に隠れるため、その外側(sampleLinksElの直後)に置く)。 ---

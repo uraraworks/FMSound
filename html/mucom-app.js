@@ -25,7 +25,7 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
-import { resolveSongFromUrl, pickSongCandidate } from './net-load.js';
+import { resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME } from './net-load.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 import { encodeCp932 } from './ui/cp932-encode.js';
@@ -504,7 +504,15 @@ export async function init(ctx) {
 
   // FMDSP画面の「MUSIC FILE」バーに出す曲名。applyMmlBytes()(課題D注記のとおり
   // 読み込んだMMLがある限り常にここを通る唯一の窓口)で確定させる。
-  let currentSongName = null;
+  //
+  // 課題B追補(2026-08-15、利用者報告「同梱サンプルの経路でバーが空になった」):
+  // 実際の原因は下書き復元(上のhasDraft分岐)がapplyMmlBytes()を経由せず
+  // currentSongNameに一切触れていなかったこと。下書き復元は自動保存
+  // (setupMmlAutosave、タブを閉じる/裏に回すだけでも保存される)により通常
+  // 利用でもごく普通に起きる経路なので、「読み込み元がファイルではない」ことが
+  // 分かるFILEBAR_RESTORED_DRAFT_NAMEをここで設定しておく(空のまま=壊れて
+  // 見える、を避ける。fmdsp/rightpane.js drawFileBar()参照)。
+  let currentSongName = hasDraft ? FILEBAR_RESTORED_DRAFT_NAME : null;
   let lastLoadedRawBytes = null;
   // 課題(net配線): 直近に読み込んだMMLの文字コード判定結果('utf-8'|'shift_jis'|null)。
   // 手動切替ボタン(encodingBadgeEl)の表示・再デコードに使う。

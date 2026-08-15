@@ -10,6 +10,13 @@ import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
 
+// FILEBAR(FMDSP MUSIC FILEバー)専用の固定ラベル。「読み込み元がファイルでない」
+// 経路(下書き復元)向け(課題B追補、2026-08-15、利用者報告)。曲を読み込む経路が
+// 増減してもここ1箇所を見れば足りるよう、engine-app側(html/pmd-app.js・
+// html/mucom-app.js)の下書き復元ブロックはこの定数をそのままcurrentSongNameへ
+// 代入するだけにする。ASCIIのみで構成(fmdsp/rightpane.jsのMEDIUM_FONTはANK専用)。
+export const FILEBAR_RESTORED_DRAFT_NAME = '(RESTORED DRAFT)';
+
 /**
  * URLのパス部分末尾からファイル名相当の文字列を取り出す(拡張子推測・表示名に使う)。
  * `location` が無い環境(Node.jsのverifyスクリプト等)でも動くよう、基準URLの解決に
