@@ -41,11 +41,12 @@ import { loadMmlDraft, setupMmlAutosave, formatSavedAt } from './ui/mml-draft.js
 import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
+import { createOpenMenu } from './ui/open-menu.js';
 import { setupPopover } from './ui/shell.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
-  closeActiveSongPicker,
+  closeActiveSongPicker, reflectLoadedUrlInAddressBar,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 
@@ -182,12 +183,19 @@ export async function init(ctx) {
       playBytes(song.bytes, song.fileName);
     },
   });
+  // 「曲を開く」メニュー(ui/open-menu.js)のポップオーバー制御。btnLibrary側の
+  // クリックハンドラから閉じられるよう、生成(このファイル下部、URL読み込み配線の
+  // 近く)より前に変数を用意しておく(呼ばれるのはinit()完了後のクリック時なので、
+  // クロージャが参照する時点で代入済みになっていれば順序は問題ない)。
+  let openMenuPopover = null;
   // 書庫選択モーダル(net-load.js pickSongCandidate())は全画面オーバーレイの
   // モーダルで、開いている間は他の操作ができない「今の手順」を表す。ライブラリは
   // 「これまでに取り込んだ全部」を見る別の面なので、ライブラリを開く方が後から
-  // 割り込んだ操作として書庫選択モーダルを閉じる(利用者判断、案A)。
+  // 割り込んだ操作として書庫選択モーダルを閉じる(利用者判断、案A)。「曲を開く」
+  // メニューも同じ考え方で閉じる(利用者指示: 重なり対策をURL読み込み機能にも揃える)。
   btnLibrary.addEventListener('click', () => {
     closeActiveSongPicker();
+    if (openMenuPopover) openMenuPopover.close();
     libraryPanel.render();
   });
   const libraryPopover = setupPopover(btnLibrary, libraryPanel.popoverEl);
@@ -957,10 +965,32 @@ export async function init(ctx) {
     setAudioPaused(false);
   }
 
-  btnOpenFile.addEventListener('click', () => {
-    fileInput.value = '';
-    fileInput.click();
+  // 「曲を開く」のメニュー化(ファイルから開く/URLから開く)。「ファイルから開く」は
+  // 従来どおりfileInputを開くだけ(利用者指示: 既存の挙動を変えないこと)。
+  // 「URLから開く」はloadSongFromUrl()(下部、従来の?mml=読み込みと共通)へそのまま合流させる。
+  const openMenu = createOpenMenu({
+    onFileOpen: () => {
+      fileInput.value = '';
+      fileInput.click();
+    },
+    onUrlSubmit: (url) => {
+      loadSongFromUrl(url);
+    },
   });
+  openMenuPopover = setupPopover(btnOpenFile, openMenu.popoverEl);
+  btnOpenFile.addEventListener('click', () => {
+    // setupPopover()自身のクリックハンドラ(上のsetupPopover()呼び出し内で登録済み、
+    // このリスナーより先に実行される)が開閉をトグルした「後」にここへ来る。
+    // 開いた直後だけ、メニュー表示へリセットし、他のポップオーバー/モーダルを閉じる
+    // (利用者指示: 重なり対策。曲ライブラリ・書庫選択モーダル側と同じ「後から開く方を
+    // 優先する」考え方)。
+    if (!openMenu.popoverEl.classList.contains('hidden')) {
+      openMenu.resetToMenu();
+      libraryPopover.close();
+      closeActiveSongPicker();
+    }
+  });
+  openMenu.setCloseHandler(openMenuPopover.close);
   // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
   // そのまま曲ライブラリへ残す。ローカルファイルにはURLが無いため、出所はファイル名
   // だけで識別する(net/library.js computeSongId()参照)。
@@ -1018,13 +1048,15 @@ export async function init(ctx) {
     popovers: [settingsPopoverEl, downloadMenu.popoverEl],
   });
 
-  // --- URL指定での曲読み込み(?mml=<URL>)。net/(取得・書庫展開)を実際にUIへ配線する
-  // 箇所(2026-08-15)。PMDは「曲を開く」「ドラッグ&ドロップ」と同じく.M/.mを常に
+  // --- URL指定での曲読み込み(?mml=<URL> / ツールバー「曲を開く」→「URLから開く」の
+  // 両方から呼ばれる共通関数)。net/(取得・書庫展開)を実際にUIへ配線する箇所
+  // (2026-08-15新設、2026-08-16に「URLから開く」メニューからも合流させた)。
+  // PMDは「曲を開く」「ドラッグ&ドロップ」と同じく.M/.mを常に
   // バイナリ(コンパイル済みデータ)として扱う(MMLソースのコンパイルを経由しない)。
   // 読み込むだけで自動再生はしない(AudioContextはユーザー操作を要求するため。
   // 「リングは進むが無音」という紛らわしい状態を避ける)ので、ここでは
   // pendingUrlSong に保持するだけに留め、再生は既存のbtnPlayPauseクリックへ委ねる。
-  async function loadSongFromUrlParam(url) {
+  async function loadSongFromUrl(url) {
     setNetStatus(`読み込み中: ${url}`, false);
     let resolved;
     try {
@@ -1086,6 +1118,7 @@ export async function init(ctx) {
       currentSongName = chosen.displayName;
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
       updateTransportButtonUI();
+      reflectLoadedUrlInAddressBar(url);
       return;
     }
 
@@ -1098,6 +1131,7 @@ export async function init(ctx) {
     currentSongName = resolved.fileName;
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
     updateTransportButtonUI();
+    reflectLoadedUrlInAddressBar(url);
     // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
     // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。
     persistSongToLibrary({
@@ -1131,7 +1165,7 @@ export async function init(ctx) {
   }
 
   if (ctx.songUrl) {
-    loadSongFromUrlParam(ctx.songUrl);
+    loadSongFromUrl(ctx.songUrl);
   } else if (!hasDraft) {
     loadDefaultSample();
   }

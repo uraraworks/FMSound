@@ -423,6 +423,29 @@ header.app-header .app-tagline {
   cursor: not-allowed;
 }
 
+/* 曲を開くメニュー(.settings-popoverの構造を共有し、中身だけ違う)。
+   「ファイルから開く」「URLから開く」の2択、後者を選ぶとURL入力欄に差し替わる。 */
+.open-menu-btn {
+  width: 100%;
+  text-align: left;
+}
+
+.open-url-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.open-url-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* サンプルMMLリンク。カード直下の控えめな一行。 */
 .sample-links {
   width: 100%;

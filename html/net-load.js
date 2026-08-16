@@ -271,6 +271,27 @@ export function downloadArchiveEntry(entry) {
 }
 
 /**
+ * 取得に成功したURLをアドレスバーへ反映する(`?mml=<url>` の形にする)。URL入力UI
+ * (ui/open-menu.js)から読み込んだ曲を、そのままリンクとして他人に渡せるようにするため
+ * (利用者指示)。`history.replaceState` のみを使い、ページの再読み込みは起こさない。
+ * 既存の `?driver=` 等、他のクエリパラメータは保持する(URLSearchParams.set()は
+ * 対象キーだけを書き換えるため、他のパラメータへは触れない)。
+ * `location`/`history` が使えない環境(Node.jsのverifyスクリプト等)では何もしない。
+ * @param {string} url
+ */
+export function reflectLoadedUrlInAddressBar(url) {
+  if (typeof location === 'undefined' || typeof history === 'undefined') return;
+  try {
+    const next = new URL(location.href);
+    next.searchParams.set('mml', url);
+    history.replaceState(history.state, '', next.toString());
+  } catch {
+    // location.hrefが不正/historyが使えない環境向けの保険。反映できなくても
+    // 曲自体の読み込みは既に成功しているため、例外は投げない。
+  }
+}
+
+/**
  * 書庫内の再生候補一覧から利用者に1つ選ばせるモーダルを表示する。
  * 候補が1件のときは呼び出し側で picker を出さずそのまま使ってよい(ここでは
  * 「選ばせる」ことだけを担当し、0/1件の早期リターン判断は呼び出し側に委ねる)。
