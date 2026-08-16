@@ -83,6 +83,20 @@ FMDSP 風の画面描画ロジック(パート行 / コメント欄 / 右半分�
 同梱していたが、2026-08-15 に方針を変更し、両ドライバとも自作曲のみを同梱するように
 した(`tools/verify_mucom_fur_elise.mjs` 参照)。
 
+## `ui/mucom-voice-table.js`(MUCOM88既定音色バンクの名前一覧)
+
+MUCOM88のZ80コンパイラは `@"名前"` 形式の音色参照で非ASCIIバイト(半角カナ等)を扱えず
+必ずコンパイルエラーになる(実測で確定。`@番号` の数値指定は全件通る)。この制約を
+避けるため、`@"名前"` を該当スロットの `@番号` へ事前置換する機能
+(`ui/mucom-voice-resolve.js`)が参照する「スロット番号 -> 音色名」表。
+
+MUCOM88由来のデータ。CC BY-NC-SA 4.0。
+
+- 生成元: `upstream/MucomWeb/mucom88/src/bin_voice.h`(`bin_voice_dat`、既定音色バンク
+  8192バイト=256スロット×32バイト。名前は各スロットのオフセット26-31の6バイト、
+  `upstream/MucomWeb/mucom88/src/voiceformat.h` の `MUCOM88_VOICEFORMAT.name[6]` と対応)
+- 生成器: `tools/gen_mucom_voice_names.py`
+
 ## 含まないもの
 
 ROM イメージ(PC-98 本体 BIOS 等)や市販ソフトウェアのデータは、

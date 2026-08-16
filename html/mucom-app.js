@@ -29,6 +29,7 @@ import { resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME } fr
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 import { encodeCp932 } from './ui/cp932-encode.js';
+import { resolveMucomVoiceNameRefs } from './ui/mucom-voice-resolve.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 //
@@ -831,11 +832,20 @@ export async function init(ctx) {
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;
-    Module.compileMML(mml, selectedRate());
+    // 課題(音色名解決): `@"名前"` はMUCOM88のZ80コンパイラが非ASCII名で必ず落ちる
+    // (ui/mucom-voice-resolve.js冒頭コメント参照)。コンパイルに渡すテキストだけを
+    // `@番号` へ事前置換し、利用者が編集しているMML本文(mml変数・textarea)自体は
+    // 一切書き換えない(表示は常に原文のまま)。
+    const { text: mmlForCompile, unresolvedNames } = resolveMucomVoiceNameRefs(mml);
+    Module.compileMML(mmlForCompile, selectedRate());
     const msgPtr = Module.getCompileMessagePointer();
     const msgLen = Module.getCompileMessageLength();
     const msgBytes = Module.HEAPU8.subarray(msgPtr, msgPtr + msgLen);
-    renderCompileResult(cp932MessageDecoder.decode(msgBytes));
+    let compileMessage = cp932MessageDecoder.decode(msgBytes);
+    if (unresolvedNames.length > 0) {
+      compileMessage += `\n[注意] 一部の音色名を解決できませんでした: ${unresolvedNames.join(', ')}`;
+    }
+    renderCompileResult(compileMessage);
     const audioStateAfter = globalThis.mucomAudioState;
     const compiledOk = Boolean(audioStateAfter) && audioStateAfter.generation !== generationBefore;
     if (compiledOk) {
