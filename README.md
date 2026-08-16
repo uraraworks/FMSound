@@ -4,6 +4,12 @@ PC-9801 の **PMD**、PC-8801 の **MUCOM88** — 2つの FM 音源ドライバ�
 ブラウザだけで演奏できるプレイヤー兼エディタです。ビルド済みの wasm と共通の
 Web UI で動き、サーバーは不要です。
 
+### ▶ <https://uraraworks.github.io/FMSound/>
+
+インストール不要で、そのままブラウザで試せます。
+（[PMD で開く](https://uraraworks.github.io/FMSound/?driver=pmd) /
+[MUCOM88 で開く](https://uraraworks.github.io/FMSound/?driver=mucom)）
+
 **このリポジトリの一番の特徴**は、ただ音を鳴らすだけでなく、
 [FMDSP](https://github.com/myon98/98fmplayer) 風の画面で
 **パートごとの演奏状態（音色・音程・ゲート・音量）をリアルタイムに描画する**ことです。
