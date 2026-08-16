@@ -140,11 +140,12 @@ header.app-header .app-tagline {
   color: var(--footer-text);
 }
 
-/* 言語切替トグル(driver-switchの隣、2026-08-16にselectから2ボタンへ変更)。
-   driver-switchと同じ見た目の土台(font-size/color/gap)を .lang-switch にも
-   与えつつ、間隔だけ空ける。画面が狭いと折り返す(親がinline-flexなので自然に
-   折り返せる)。ボタンの選択状態はaria-pressed/.activeで示す
-   (toolbar button.icon-btn.activeと同じaccent配色に揃える)。 */
+/* 言語切替トグル(driver-switchの隣、2026-08-16にJA/ENの2ボタンから1つの
+   トグルボタンへ変更)。driver-switchと同じ見た目の土台(font-size/color/gap)を
+   .lang-switch にも与えつつ、間隔だけ空ける。画面が狭いと折り返す(親がinline-flex
+   なので自然に折り返せる)。ボタン1つになり「選択状態」を示す必要が無くなった
+   ため、.active修飾(旧2ボタン時代のaccent配色)は廃止した(利用者判断:
+   aria-pressedも使わない、状態でなく操作の結果を示すボタンのため)。 */
 .driver-switch + .lang-switch {
   margin-left: 10px;
 }
@@ -170,16 +171,6 @@ header.app-header .app-tagline {
 
 .lang-switch .lang-toggle-btn:hover {
   background: var(--footer-btn-bg-hover);
-}
-
-.lang-switch .lang-toggle-btn.active {
-  background: var(--accent-dim);
-  border-color: var(--accent);
-  color: var(--footer-text);
-}
-
-.lang-switch .lang-toggle-btn.active:hover {
-  background: var(--accent);
 }
 
 .lang-switch .lang-toggle-btn:focus-visible {

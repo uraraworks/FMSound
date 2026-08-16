@@ -170,7 +170,16 @@ function main() {
   );
 
   // --- 3. enの値に日本語文字が含まれない(訳し忘れ検出) ---
-  const untranslated = [...enKeys].filter((k) => JAPANESE_RE.test(DICT.en[k]));
+  // 例外: toolbar.langToggleAriaLabel は意図的に逆転させている(2026-08-16、
+  // 利用者判断)。言語切替ボタンの可視文字(ui/i18n.js langToggleLabel())は
+  // 「押したら切り替わる先の言語」をendonymで出すため、aria-labelもそれに言語を
+  // 揃える設計。結果としてjaの値が英語("Switch to English")、enの値が日本語
+  // ("日本語に切り替える")になるのが正しく、これは訳し忘れではないので
+  // このキーだけ検出対象から除外する(ui/i18n.js該当キーのコメントも参照)。
+  const I18N_DIRECTION_EXEMPT_KEYS = ['toolbar.langToggleAriaLabel'];
+  const untranslated = [...enKeys].filter(
+    (k) => !I18N_DIRECTION_EXEMPT_KEYS.includes(k) && JAPANESE_RE.test(DICT.en[k]),
+  );
   check(
     '3. enの全ての値に日本語文字が含まれない(訳し忘れ検出)',
     untranslated.length === 0,

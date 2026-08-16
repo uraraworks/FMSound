@@ -351,7 +351,13 @@ async function main() {
         const scanJa = `
           (() => {
             const hits = [];
-            const isExempt = (s) => s.trim() === '日本語';
+            // 2026-08-16: 言語切替トグルが2ボタン→1ボタンへ変更され、ボタンには
+            // 「切り替え先の言語」をその言語自身の表記で出す設計になった(利用者判断)。
+            // 英語版DOMでもこのボタンの可視文字は'日本語'、aria-labelは
+            // '日本語に切り替える'になるのが正しい(=UI未翻訳ではなく仕様どおり)ため、
+            // この2文字列だけ検出対象から除外する(#langToggleBtn限定にはしない。
+            // 文字列自体がこのボタン以外に出る想定は無いため単純な完全一致で足りる)。
+            const isExempt = (s) => s.trim() === '日本語' || s.trim() === '日本語に切り替える';
             // display:noneな祖先を持つ要素はgetClientRects()が空になる(position:fixedな
             // ポップオーバーは空にならないので拾える)。実際に画面へ描かれるものだけを見る。
             const isRendered = (el) => el.getClientRects().length > 0;

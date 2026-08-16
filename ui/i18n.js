@@ -34,6 +34,13 @@ const ja = {
 
   'toolbar.driverLabel': '音源ドライバ:',
   'toolbar.langLabel': '言語:',
+  // 2026-08-16(利用者判断): aria-labelは「現在のUI言語」ではなく「押したら切り替わる
+  // 先の言語」で書く(ボタンの可視文字=langToggleLabel()と言語を揃えるため)。
+  // そのためja辞書の値が英語、en辞書の値が日本語という一見逆の対応になる
+  // (tools/verify_i18n.mjs項目3の「enの値に日本語が無いこと」は値そのものの言語では
+  // なく「翻訳し忘れて日本語のまま残っていないか」を見る検査なので、enのこの値が
+  // 意図的に日本語であることは想定内。同スクリプト側にコメントで注記する)。
+  'toolbar.langToggleAriaLabel': 'Switch to English',
   'toolbar.playPauseInitial': 'コンパイル&再生 (⌘/Ctrl+Enter)',
   'toolbar.stop': '停止 (Esc)',
   'toolbar.open': '曲を開く',
@@ -194,6 +201,9 @@ const en = {
 
   'toolbar.driverLabel': 'Sound driver:',
   'toolbar.langLabel': 'Language:',
+  // 意図的に日本語(訳し忘れではない、ja側のコメント参照。
+  // tools/verify_i18n.mjs 項目3のI18N_DIRECTION_EXEMPT_KEYS対象)。
+  'toolbar.langToggleAriaLabel': '日本語に切り替える',
   'toolbar.playPauseInitial': 'Compile & Play (⌘/Ctrl+Enter)',
   'toolbar.stop': 'Stop (Esc)',
   'toolbar.open': 'Open song',
@@ -338,6 +348,31 @@ const en = {
 };
 
 export const DICT = { ja, en };
+
+// 言語切替ボタンの表示文字(endonym、言語名は選択中のUI言語に関わらずその言語自身の
+// 表記で出す)。2026-08-16(利用者判断): 2ボタン(JA/EN)から1つのトグルボタンへ変更し、
+// ボタンには「押したら切り替わる先の言語」を出す(現在の状態でなく操作の結果を示す)。
+// 言語名は翻訳の対象ではなく常に固定表記なのでDICTには入れない(旧html側の
+// i18n-exemptコメントと同じ理由)。
+const LANG_ENDONYMS = { ja: '日本語', en: 'English' };
+
+/**
+ * 現在の言語から切り替え先の言語コードを返す純粋関数。LANGSが2つしかないことに
+ * 依存する単純な反転(3言語以上に増える場合は要見直し)。
+ */
+export function otherLang(lang) {
+  return lang === 'ja' ? 'en' : 'ja';
+}
+
+/**
+ * 言語切替ボタンに表示する文字列を返す純粋関数(テスト対象、
+ * tools/verify_lang_toggle_label.mjs参照)。「現在の言語」ではなく「押したら
+ * 切り替わる先の言語」をendonymで返す。ja→'English'、en→'日本語'になり、
+ * 現在の言語と同じ文字列は返さない(これが今回の変更の要点)。
+ */
+export function langToggleLabel(lang) {
+  return LANG_ENDONYMS[otherLang(lang)];
+}
 
 // 記憶した選択の保存先。html/*.jsの他のlocalStorageキー(fmsound-pmd-ui-mode等)と
 // 同じ命名作法('fmsound-'接頭辞)に合わせる。

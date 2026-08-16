@@ -10,7 +10,7 @@
 // 本文そのもの(長文)は辞書に入れず、html/help.html側に2言語ぶん並べて持たせる
 // (利用者指示: 段落ごとに辞書キーを切ると辞書が肥大するため)。
 
-import { initLang, t, applyStaticI18n, storeLang } from '../ui/i18n.js';
+import { initLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from '../ui/i18n.js';
 
 const lang = initLang();
 document.getElementById('htmlRoot').lang = lang;
@@ -29,20 +29,16 @@ function applyContentLang(activeLang) {
 }
 applyContentLang(lang);
 
-// --- 言語切替トグル(html/app.jsのlangBtnJa/langBtnEnと同じ作法) ---
-const langBtnJa = document.getElementById('langBtnJa');
-const langBtnEn = document.getElementById('langBtnEn');
-function updateLangButtons() {
-  langBtnJa.setAttribute('aria-pressed', lang === 'ja' ? 'true' : 'false');
-  langBtnJa.classList.toggle('active', lang === 'ja');
-  langBtnEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
-  langBtnEn.classList.toggle('active', lang === 'en');
+// --- 言語切替トグル(html/app.jsのlangToggleBtnと同じ作法) ---
+const langToggleBtn = document.getElementById('langToggleBtn');
+function updateLangToggleBtn() {
+  langToggleBtn.textContent = langToggleLabel(lang);
+  langToggleBtn.setAttribute('aria-label', t('toolbar.langToggleAriaLabel'));
 }
-updateLangButtons();
+updateLangToggleBtn();
 function switchLang(next) {
   if (next === lang) return;
   storeLang(next);
   location.reload();
 }
-langBtnJa.addEventListener('click', () => switchLang('ja'));
-langBtnEn.addEventListener('click', () => switchLang('en'));
+langToggleBtn.addEventListener('click', () => switchLang(otherLang(lang)));

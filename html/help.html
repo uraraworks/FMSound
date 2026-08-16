@@ -12,12 +12,12 @@
     <h1>FMSound</h1>
   </div>
   <p class="app-tagline" data-i18n="help.pageTitle"></p>
-  <div class="lang-switch" role="group" data-i18n-title="toolbar.langLabel">
+  <!-- html/index.htmlのトグルと同じ作法(2026-08-16、JA/ENの2ボタンから1つの
+       トグルボタンへ変更。ボタン表記/aria-labelは実行時にhelp.jsが埋める、
+       html/index.html側のコメント参照)。 -->
+  <div class="lang-switch">
     <span class="driver-switch-label" data-i18n="toolbar.langLabel"></span>
-    <!-- html/index.htmlのトグルと同じ作法(2026-08-16、JA/EN短縮表記+aria-labelに
-         言語名(endonym)をフルで残す)。tools/verify_i18n.mjs 項目6のi18n-exempt対象。 -->
-    <button type="button" id="langBtnJa" class="lang-toggle-btn" aria-pressed="false" aria-label="日本語">JA</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
-    <button type="button" id="langBtnEn" class="lang-toggle-btn" aria-pressed="false" aria-label="English">EN</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+    <button type="button" id="langToggleBtn" class="lang-toggle-btn"></button>
   </div>
 </header>
 

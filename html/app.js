@@ -21,7 +21,7 @@ import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER, FMSOUND_BUILD_ID } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
 import { urlBaseName } from './net-load.js';
-import { initLang, getLang, t, applyStaticI18n, storeLang } from './ui/i18n.js';
+import { initLang, getLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from './ui/i18n.js';
 
 // --- 言語決定・固定ラベルの流し込み(他の処理より先に行う。他の初期化コードが
 // 作るボタン等のtitleにt()を使うため)。決定順は(1)記憶した選択(2)?lang=ja/en
@@ -87,27 +87,26 @@ driverSelect.addEventListener('change', () => {
   location.href = url.toString();
 });
 
-// --- 言語切替トグル(JA/ENの2ボタン、2026-08-16にselectから変更)。
+// --- 言語切替トグル(1ボタン、2026-08-16にJA/ENの2ボタンから変更)。
 // driverSelectとは違い、URLに?lang=を足さない(足す方向の同期はしない設計、
 // ui/i18n.js冒頭のコメント参照)。記憶(localStorage)だけ更新してreloadし、
 // 次回のinitLang()がその記憶を読む。?driver=はURL自体を書き換えないため
-// 自然に保持される。 ---
-const langBtnJa = document.getElementById('langBtnJa');
-const langBtnEn = document.getElementById('langBtnEn');
-function updateLangButtons() {
-  langBtnJa.setAttribute('aria-pressed', lang === 'ja' ? 'true' : 'false');
-  langBtnJa.classList.toggle('active', lang === 'ja');
-  langBtnEn.setAttribute('aria-pressed', lang === 'en' ? 'true' : 'false');
-  langBtnEn.classList.toggle('active', lang === 'en');
+// 自然に保持される。
+// ボタンには「現在の言語」でなく「押したら切り替わる先の言語」を出す(利用者判断:
+// 現在の状態でなく操作の結果を示すほうがボタンとして自然)。そのためaria-pressedは
+// 使わない(状態を表すトグルではないため)。 ---
+const langToggleBtn = document.getElementById('langToggleBtn');
+function updateLangToggleBtn() {
+  langToggleBtn.textContent = langToggleLabel(lang);
+  langToggleBtn.setAttribute('aria-label', t('toolbar.langToggleAriaLabel'));
 }
-updateLangButtons();
+updateLangToggleBtn();
 function switchLang(next) {
   if (next === lang) return;
   storeLang(next);
   location.reload();
 }
-langBtnJa.addEventListener('click', () => switchLang('ja'));
-langBtnEn.addEventListener('click', () => switchLang('en'));
+langToggleBtn.addEventListener('click', () => switchLang(otherLang(lang)));
 
 // --- デバッグ表示(?debug=1が付いているときだけ表示) ---
 const debugEnabled = params.get('debug') === '1';
