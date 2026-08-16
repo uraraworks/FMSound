@@ -226,11 +226,16 @@ function mmlHeaderField(bytes, field) {
  *   再生自体は継続する)。
  * @param {{ driver: 'mucom'|'pmd', url: string,
  *   entries: import('./archive-util.js').ArchiveEntry[], archiveLabel: string,
- *   candidates: import('./song-select.js').SongCandidate[] }} input
+ *   candidates: import('./song-select.js').SongCandidate[],
+ *   defaultVoiceNames?: {slot: number, nameHex: string}[] }} input defaultVoiceNamesは
+ *   埋め込み既定バンクの名前表(ui/mucom-voice-table.js MUCOM_DEFAULT_VOICE_NAMES)。
+ *   driver==='mucom'かつ対になるシステムディスクが実在する場合のみ使う
+ *   (net/voice-bank.js findPairedVoiceBank()がバンク本体の開始オフセットを実測で
+ *   特定するのに必須。呼び出し側=html/net-load.jsがimportして渡す)。
  * @returns {Promise<{ total: number, added: number, unchanged: number }>}
  */
 export async function importArchiveSongs(db, input) {
-  const { driver, url, entries, archiveLabel, candidates } = input;
+  const { driver, url, entries, archiveLabel, candidates, defaultVoiceNames } = input;
   const total = candidates.length;
   if (!db) return { total, added: 0, unchanged: 0 };
   const inputs = candidates.map((c) => {
@@ -243,7 +248,7 @@ export async function importArchiveSongs(db, input) {
     // #voice(外部音色バンク)はMUCOM88固有の仕組み(PMDには存在しない)。driverが
     // 'pmd'の場合は対になるシステムディスクを探しにいかない(PMD側には一切影響
     // させない、という要求を型で保証する)。
-    const pair = driver === 'mucom' ? findPairedVoiceBank(entries, c.entry.name) : null;
+    const pair = driver === 'mucom' ? findPairedVoiceBank(entries, c.entry.name, defaultVoiceNames) : null;
     return {
       driver,
       fileName: c.displayName,

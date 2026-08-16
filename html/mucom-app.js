@@ -37,6 +37,7 @@ import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 import { encodeCp932 } from './ui/cp932-encode.js';
 import { resolveMucomVoiceNameRefs } from './ui/mucom-voice-resolve.js';
 import { findPairedVoiceBank } from './net/voice-bank.js';
+import { MUCOM_DEFAULT_VOICE_NAMES } from './ui/mucom-voice-table.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 //
@@ -1215,6 +1216,7 @@ export async function init(ctx) {
       // 見えたままになる)で利用者に伝える。
       const importResult = await importArchiveSongsToLibrary({
         driver: 'mucom', url, entries: resolved.entries, archiveLabel: resolved.archiveLabel, candidates: mucomCandidates,
+        defaultVoiceNames: MUCOM_DEFAULT_VOICE_NAMES,
       });
       if (importResult.added > 0) {
         setNetStatus(`${importResult.total}曲をライブラリに追加しました`, false);
@@ -1243,7 +1245,7 @@ export async function init(ctx) {
       // コンパイル時に使う(net/voice-bank.js参照)。見つからない場合(ALGARNA/
       // SLAP_FIGHT_MDのように対になるシステムディスクが無い、または単体ファイル/
       // zip直下の.muc等d88経由でない曲)はnullのまま=従来どおり既定バンクで鳴る。
-      const voicePair = findPairedVoiceBank(resolved.entries, chosen.entry.name);
+      const voicePair = findPairedVoiceBank(resolved.entries, chosen.entry.name, MUCOM_DEFAULT_VOICE_NAMES);
       applyMmlBytes(chosen.entry.data, {
         name: chosen.displayName,
         voiceBank: voicePair ? voicePair.bytes : null,

@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // ui/mucom-voice-resolve.js の「外部音色バンク対応」(resolveMucomVoiceNameRefs()の
-// 第2引数、buildTableFromRawBank()、フォールバック連鎖)そのものを、合成データで検証する。
+// 第2引数、buildTableFromRawBank())そのものを、合成データで検証する。
 //
-// 実データ(サンプルMML集の対になるシステムディスク8枚)での実測(2026-08-16)では、
-// ディスクの`voice.dat`の名前フィールドが埋め込み既定バンクの名前と1件も一致しなかった
-// (重複0件)。そのため実データだけでは「同じ名前が既定バンクと外部バンクで違うスロット
-// 番号に解決される」例を再現できない。この検証はその代わりに、合成した外部バンクで
-// 「①外部バンク自身の表を優先する」「②見つからなければ既定バンクへフォールバックする」
-// という機構そのものが正しく動くことを確認する(実データが機構を使い切らないのは
-// データ側の事情であって、機構が壊れていないことは別に確認できる)。
+// 【不具合修正・2026-08-16、コーディネーター指摘】かつてここには「①外部バンク自身の
+// 表→②見つからなければ既定バンクへフォールバック」という連鎖があったが、それは
+// net/voice-bank.js側の不具合(voice.dat本体の開始位置を先頭0byte目と決め打っていた
+// ため、実際は4byteのヘッダ分ずれて全スロットが4byteずれて読まれていた)による
+// 誤った実測(「バンクは名前を1件も持たない」)に基づくものだった。オフセット検出を
+// net/voice-bank.js側で直した後、実データ(サンプルMML集46曲、対になるシステム
+// ディスク8枚)で再測定したところ、バンク自身の表だけで@"名前"参照98件全てが解決でき、
+// フォールバックが発動する例は0件だったため、フォールバックは削除した。
+// この検証はフォールバックを「外部バンクにしか無い名前」を解決できることと、
+// 「バンクに無い名前は既定バンクへ逃げずに未解決のまま残る」ことの両方を確認する。
 
 import { resolveVoiceNameToSlot, resolveMucomVoiceNameRefs } from '../ui/mucom-voice-resolve.js';
 import { encodeCp932 } from '../ui/cp932-encode.js';
@@ -39,12 +42,10 @@ function makeBank(entries) {
 const DEFAULT_FLUTE_SLOT = resolveVoiceNameToSlot('flute');
 check('前提: "flute"は既定バンクで解決できる', DEFAULT_FLUTE_SLOT !== null, DEFAULT_FLUTE_SLOT);
 
-// --- (1) 外部バンクが同じ名前を別スロットに持つ場合、外部バンクの表が優先される ---
+// --- (1) 外部バンクが同じ名前を別スロットに持つ場合、外部バンクの表が使われる(既定とは異なるスロットになる) ---
 {
   const otherSlot = DEFAULT_FLUTE_SLOT === 10 ? 20 : 10; // 既定スロットとは異なる番号を選ぶ
   const bank = makeBank([[otherSlot, 'flute']]);
-  // resolveVoiceNameToSlot(name, table)は「表そのもの」を受け取る低レベルAPIなので、
-  // ここでは製品と同じ経路(resolveMucomVoiceNameRefs)で検証する。
   const r = resolveMucomVoiceNameRefs('A @"flute"c\n', bank);
   check('(1) 外部バンクに同名があれば、既定バンクとは違うスロット番号に置換される',
     r.text === `A @${otherSlot}c\n` && otherSlot !== DEFAULT_FLUTE_SLOT,
@@ -53,13 +54,14 @@ check('前提: "flute"は既定バンクで解決できる', DEFAULT_FLUTE_SLOT 
   check('(1) 未解決名が無い', r.unresolvedNames.length === 0);
 }
 
-// --- (2) 外部バンクに名前が無ければ既定バンクへフォールバックする(実データで実際に起きているケース) ---
+// --- (2) 外部バンクに名前が無ければ、既定バンクへは逃げず未解決のまま残る(フォールバック廃止の確認) ---
 {
-  const bank = makeBank([[5, 'unrelated_name_not_flute'.slice(0, 6)]]); // "flute"を含まないバンク
+  const bank = makeBank([[5, 'unrela']]); // "flute"を含まないバンク(既定バンクにだけ存在する名前)
   const r = resolveMucomVoiceNameRefs('A @"flute"c\n', bank);
-  check('(2) 外部バンクに名前が無ければ既定バンクの表へフォールバックする(未解決にならない)',
-    r.text === `A @${DEFAULT_FLUTE_SLOT}c\n`, r.text.trim());
-  check('(2) フォールバックしても未解決扱いにはならない', r.unresolvedNames.length === 0);
+  check('(2) 外部バンクに名前が無ければ既定バンクへフォールバックしない(未解決のまま残る)',
+    r.text === 'A @"flute"c\n' && r.unresolvedNames.length === 1 && r.unresolvedNames[0] === 'flute',
+    JSON.stringify(r));
+  check('(2) 置換件数は0', r.replacedCount === 0);
 }
 
 // --- (3) 外部バンクにしか存在しない名前も解決できる(既定バンクに無い名前) ---
@@ -77,15 +79,13 @@ check('前提: "flute"は既定バンクで解決できる', DEFAULT_FLUTE_SLOT 
     r.text === `A @${DEFAULT_FLUTE_SLOT}c\n`);
 }
 
-// --- (5) 実データで実際に起きたことの再現: 外部バンクの名前フィールドが全スロットとも
-//         既定バンクと重複しない(実測: 対になるシステムディスク8枚全てで重複0件)場合、
-//         全ての@"名前"参照が既定バンクの表へフォールバックし、46/46コンパイル成功を
-//         支えている(tools/verify_mucom_voice_name.mjsのF検証、docs参照)。 ---
+// --- (5) 外部バンクが名前を全く持たない(全スロット空)場合、全て未解決のまま残る
+//         (実データでは起きない想定だが、壊れた/空のバンクへの安全側の挙動として確認する) ---
 {
-  const bank = new Uint8Array(VOICE_BANK_SIZE); // 全スロット空(名前無し) = 実データに近い最悪ケース
+  const bank = new Uint8Array(VOICE_BANK_SIZE); // 全スロット空(名前無し)
   const r = resolveMucomVoiceNameRefs('A @"flute"c @"ﾀﾑﾀﾑ"c\n', bank);
-  check('(5) 外部バンクが名前を全く持たなくても、既定バンクの表で両方解決できる',
-    r.unresolvedNames.length === 0 && r.replacedCount === 2, JSON.stringify(r));
+  check('(5) 外部バンクが名前を全く持たない場合、既定バンクへ逃げず両方とも未解決のまま残る',
+    r.replacedCount === 0 && r.unresolvedNames.length === 2, JSON.stringify(r));
 }
 
 console.log(`\n${passCount} PASS, ${failCount} FAIL`);
