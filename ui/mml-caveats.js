@@ -33,10 +33,21 @@
 // なる(=そもそも読み込めない状態でここへ来ない)。よってこの検出はMUCOM88の
 // MMLテキストにだけ意味がある。
 
+import { t } from './i18n.js';
+
 // ヘッダタグ行(例 "#voice voice.dat" "#pcm mucompcm.bin")。upstream/MucomWeb/mucom88/
 // package/readme.txt の記載順("#mucom88/#voice/#pcm/#composer/...")どおり、
 // '#'の直後にタグ名、空白を挟んでファイル名が続く形式。
 const HEADER_REF_RE = /^\s*#\s*(voice|pcm)\b\s*(.*)$/i;
+
+// Kパート(ADPCM)の標準音色バンク名。48edad2でこのファイルをMEMFSへ同梱するように
+// なったため、`#pcm mucompcm.bin` は(#voiceと違って)実際に解決できる。
+// 出典: upstream/MucomWeb/mucom88/src/module/mucom_module.cpp の
+// `#define MUCOM_DEFAULT_PCMFILE "mucompcm.bin"`(wasm側 CompileMML() が曲コンパイル
+// 成功のたびにこの固定パスをLoadPCM()で読みに行く。html/mucom-app.js loadPcmBank()参照。
+// なお同名マクロはupstream/mucom88/src/cmucom.hにも存在するが、実際にビルドへ乗るのは
+// MucomWeb側のこのファイルなので、こちらを出典として引く)。
+const STANDARD_PCM_BANK_NAME = 'mucompcm.bin';
 
 // 行頭のパート文字(html/mml-tokens.js MUCOM_PART_LETTER_RE と同じ判定: 先頭の空白を
 // 飛ばした直後の1文字がA~K。Gがリズムパート、docs/mucom-pchdata-mapping.md §1)。
@@ -54,8 +65,12 @@ export function detectMmlCaveats(mmlText) {
   for (const line of lines) {
     const headerMatch = line.match(HEADER_REF_RE);
     if (headerMatch) {
+      const tag = headerMatch[1].toLowerCase();
       const file = headerMatch[2].trim();
-      if (file.length > 0) missingRefs.push({ tag: headerMatch[1].toLowerCase(), file });
+      // #pcmは標準バンク名(mucompcm.bin、大文字小文字は無視)を指していれば同梱済みで
+      // 解決できるため「読み込めない」扱いにしない。#voiceは今回対象外(利用者指示)。
+      const resolved = tag === 'pcm' && file.toLowerCase() === STANDARD_PCM_BANK_NAME.toLowerCase();
+      if (file.length > 0 && !resolved) missingRefs.push({ tag, file });
       continue;
     }
     if (RHYTHM_LINE_RE.test(line)) usesRhythm = true;
@@ -78,7 +93,7 @@ export function formatMmlCaveatMessage(caveats) {
   const parts = [];
   if (caveats.missingRefs.length > 0) {
     const files = [...new Set(caveats.missingRefs.map((r) => r.file))].join(', ');
-    parts.push(`この曲は ${files} を参照していますが読み込めません。音色とドラムが本来と異なります。`);
+    parts.push(t('mml.caveatMissingRefs', { files }));
   }
   return parts.length > 0 ? parts.join(' ') : null;
 }

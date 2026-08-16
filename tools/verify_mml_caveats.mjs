@@ -13,13 +13,17 @@
 // 検査内容:
 //   A. リズムのみを使うMMLでは formatMmlCaveatMessage() が null を返す
 //      (=画面に文言が出ない)こと。
-//   B. #voice/#pcmを使うMMLでは文言が出ること(こちらを消していない証明)。
+//   B. #voiceを使うMMLでは文言が出ること(こちらを消していない証明。回帰確認)。
 //   C. [陽性対照] 「削除前の実装」相当(missingRefs/usesRhythmの両方を文言化する
 //      旧ロジック)を用意し、Aと同じ入力を渡すと文言が出ていたことを示す
 //      (「消したら出なくなった」だけでなく「消す前は出ていた」ことの確認)。
 //   D. 両方(#voice/#pcmとリズム)を同時に使うMMLでは、#voice/#pcmの文言だけが
 //      出て、リズムの一文は含まれないこと(部分的な取りこぼしがないことの確認)。
 //   E. どちらも使わないMMLではnullを返す(回帰確認)。
+//   F. [48edad2の仕上げ、2026-08-16] #pcm の標準バンク名判定:
+//      (a) `#pcm mucompcm.bin` は同梱済みバンクなので警告に出ないこと。
+//      (b) `#pcm` に標準バンク以外のファイル名を指定した場合は従来どおり警告に出ること。
+//      (c) `#voice voice.dat` の挙動(今回対象外)が変わっていないこと(回帰の検出)。
 //
 // 実行: node tools/verify_mml_caveats.mjs
 
@@ -51,7 +55,10 @@ function legacyFormatMmlCaveatMessage(caveats) {
 
 const RHYTHM_ONLY_MML = 'G t120 l4 @1c@2c@4c\n';
 const VOICE_ONLY_MML = '#voice voice.dat\nA @1 t120 l4 cdefg\n';
-const PCM_ONLY_MML = '#pcm mucompcm.bin\nA @1 t120 l4 cdefg\n';
+// 標準バンク名(48edad2でMEMFSへ同梱済み)を指す#pcmは解決できる(F-a)。
+const PCM_STANDARD_BANK_MML = '#pcm mucompcm.bin\nA @1 t120 l4 cdefg\n';
+// 標準バンク以外を指す#pcmは、依然として同梱されていないので解決できない(F-b)。
+const PCM_OTHER_BANK_MML = '#pcm my_custom_bank.bin\nA @1 t120 l4 cdefg\n';
 const BOTH_MML = '#voice voice.dat\nG t120 l4 @1c@2c\nA @1 t120 l4 cdefg\n';
 const NEITHER_MML = 'A @78 T120 o5 l4 v10 cdefgab>c<\n';
 
@@ -80,11 +87,25 @@ function main() {
     typeof voiceOnlyMessage === 'string' && voiceOnlyMessage.includes('voice.dat'),
     `message=${JSON.stringify(voiceOnlyMessage)}`);
 
-  const pcmOnly = detectMmlCaveats(PCM_ONLY_MML);
-  const pcmOnlyMessage = formatMmlCaveatMessage(pcmOnly);
-  check('B. #pcmを使うMMLでは文言が出る',
-    typeof pcmOnlyMessage === 'string' && pcmOnlyMessage.includes('mucompcm.bin'),
-    `message=${JSON.stringify(pcmOnlyMessage)}`);
+  // --- F. #pcmの標準バンク名判定(48edad2の仕上げ) ---
+  const pcmStandard = detectMmlCaveats(PCM_STANDARD_BANK_MML);
+  const pcmStandardMessage = formatMmlCaveatMessage(pcmStandard);
+  check('F-a. #pcm mucompcm.bin(標準バンク)は警告に出ない',
+    pcmStandard.missingRefs.length === 0 && pcmStandardMessage === null,
+    `missingRefs=${JSON.stringify(pcmStandard.missingRefs)} message=${JSON.stringify(pcmStandardMessage)}`);
+
+  const pcmOther = detectMmlCaveats(PCM_OTHER_BANK_MML);
+  const pcmOtherMessage = formatMmlCaveatMessage(pcmOther);
+  check('F-b. #pcm my_custom_bank.bin(標準バンク以外)は従来どおり警告に出る',
+    typeof pcmOtherMessage === 'string' && pcmOtherMessage.includes('my_custom_bank.bin'),
+    `message=${JSON.stringify(pcmOtherMessage)}`);
+
+  const voiceRegression = detectMmlCaveats(VOICE_ONLY_MML);
+  const voiceRegressionMessage = formatMmlCaveatMessage(voiceRegression);
+  check('F-c. #voice voice.dat の挙動は変わっていない(回帰確認)',
+    voiceRegression.missingRefs.length === 1 &&
+      typeof voiceRegressionMessage === 'string' && voiceRegressionMessage.includes('voice.dat'),
+    `missingRefs=${JSON.stringify(voiceRegression.missingRefs)} message=${JSON.stringify(voiceRegressionMessage)}`);
 
   // --- D. 両方使うMML: #voiceの文言だけが出て、リズムの一文は含まれない ---
   const both = detectMmlCaveats(BOTH_MML);

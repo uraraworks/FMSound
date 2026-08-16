@@ -40,10 +40,12 @@ real driver's output.
 
 The player currently has a few honest limitations worth stating up front.
 
-- **It can't load external files referenced by `#voice` / `#pcm`.** As a
-  result, voices fall back to defaults and ADPCM is silent. If a loaded MML
-  references these, the UI shows a notice (that the voices and drums differ
-  from the original).
+- **It can't load external files referenced by `#voice`, or by `#pcm` other
+  than the bundled default bank.** `#pcm mucompcm.bin` (the standard ADPCM
+  bank) is bundled and plays normally; any other `#voice`/`#pcm` filename
+  falls back to default voices and silent ADPCM. If a loaded MML references
+  a file that can't be resolved this way, the UI shows a notice (that the
+  voices and drums differ from the original).
 - **The rhythm part plays through substitute samples that differ from a real
   YM2608.** The bundled sound core doesn't carry the real chip's ROM-derived
   PCM, so it plays free substitute drum samples instead
