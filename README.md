@@ -57,6 +57,23 @@ real driver's output.
    without either, it falls back to the browser's language.
 8. The header's help icon opens `html/help.html`, a step-by-step usage guide
    with screenshots (also available in Japanese/English).
+9. The toolbar's "Copy link" button copies a shareable URL for the MML you're
+   currently editing (nothing is uploaded — the song data is packed into the
+   URL's fragment (`#s1=...`), which browsers never send to a server, so it
+   works on static hosting like GitHub Pages with no server-side storage).
+   Next to the button, a counter (e.g. `2344 / 4000`) with a gauge always
+   shows the current link's length; it's tallied when you compile & play (not
+   on every keystroke), reads "not counted yet" while you have unsaved edits,
+   and is recalculated the moment you press the button. If the link would
+   exceed **4,000 characters**, the button is disabled and shows exactly how
+   many characters you're over — the limit exists because sites like X don't
+   treat a longer URL as a real link (see `net/share-link.js` for how this
+   number was measured). If the clipboard copy fails, a read-only text field
+   with the link appears so you can copy it manually. For MUCOM88, if the
+   song uses a disk-specific external voice bank (`#voice` resolved from a
+   paired system disk rather than written in the MML itself), sharing shows
+   a one-time warning: whoever opens the link won't have that disk, so the
+   instrument sounds will change to the defaults.
 
 ## What it can't do (important)
 
@@ -106,6 +123,12 @@ The player currently has a few honest limitations worth stating up front.
   targets for the same reason. See `fmdsp/channel-mask.js`
   `unusedColumnsFromChannels()` for the source-level detail.
 - **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
+- **Sharing a MUCOM88 song that depends on a disk-specific external voice bank
+  changes its sound for the recipient.** The share link (`?driver=` +
+  `#s1=...`) only carries the MML text, not the paired system disk's
+  `voice.dat`; whoever opens it will hear the song with default voices
+  instead. The UI warns about this at share time when it applies (see
+  Usage above).
 
 ## ⚠ MML differences between drivers (`t`/`T`/`C` are swapped)
 

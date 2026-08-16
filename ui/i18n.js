@@ -44,6 +44,7 @@ const ja = {
   'toolbar.playPauseInitial': 'コンパイル&再生 (⌘/Ctrl+Enter)',
   'toolbar.stop': '停止 (Esc)',
   'toolbar.open': '曲を開く',
+  'toolbar.share': 'リンクをコピー',
   'toolbar.download': 'ダウンロード',
   'toolbar.settings': '設定',
   'toolbar.fullscreen': 'フルスクリーン',
@@ -198,6 +199,27 @@ const ja = {
   'net.error.lzh.unsupportedMethod': 'LZH: 未対応の圧縮メソッドです: {methodId} ({name})',
   'net.error.lzh.crcMismatch': 'LZH: CRC16が一致しません ({name}): 期待値={expected}, 実際={actual}',
 
+  // --- 共有リンク(URLフラグメント`#s1=...`、net/share-link.js)のUI文言。
+  // ツールバーの「リンクをコピー」ボタン・常時表示の文字数カウンタ+ゲージ・
+  // コピー失敗時のフォールバック欄・音色バンク依存の警告(MUCOM88のみ)で使う。
+  'share.counterLabel': '共有リンクの文字数',
+  // 「未集計」表示(mmlDirtyが真の間、コンパイル前に古い数字を出さないための表示)。
+  'share.counterPending': '未集計',
+  'share.counterAriaLabel': '共有リンクの文字数: {length} / {limit}',
+  'share.counterPendingAriaLabel': '共有リンクの文字数: 未集計(コンパイル&再生すると集計されます)',
+  // 上限超過時、ボタンの無効化理由とあわせて超過字数を数字で示す(「長すぎます」だけでは
+  // どれだけ削ればよいか分からないため、利用者指示)。
+  'share.overLimit': '{length}字／上限{limit}字。{overBy}字ぶん超えています',
+  'share.copied': 'コピーしました',
+  // クリップボードAPIが使えない/拒否された場合だけ表示するフォールバック(下の
+  // 読み取り専用テキスト欄を指す文言。普段は出さない)。
+  'share.copyFailed': 'コピーできませんでした。下の欄を選択してコピーしてください',
+  'share.fallbackInputAriaLabel': '共有リンク(コピーできなかったため表示しています)',
+  // MUCOM88のみ: ディスク固有の音色バンクを使っている曲を共有すると、受け取った側には
+  // 対になるディスクが無いため音色が既定のものに変わる(利用者指示、常時は出さず
+  // 共有時にこの場合だけ出す)。
+  'share.voiceBankWarning': 'この曲はディスク固有の音色バンクを使っています。共有リンクを開いた相手の環境には対になるディスクが無いため、音色が既定のものに変わります。',
+
   // --- 共有リンク(net/share-link.js)のエラー。net/error.*と同じ作法(err.code+params、
   // ui/net-error.js describeNetError()経由)。フラグメントは第三者が作ったリンクから
   // 来うるため、無言で失敗させず必ずここへ落とす。
@@ -219,6 +241,7 @@ const en = {
   'toolbar.playPauseInitial': 'Compile & Play (⌘/Ctrl+Enter)',
   'toolbar.stop': 'Stop (Esc)',
   'toolbar.open': 'Open song',
+  'toolbar.share': 'Copy link',
   'toolbar.download': 'Download',
   'toolbar.settings': 'Settings',
   'toolbar.fullscreen': 'Fullscreen',
@@ -359,6 +382,16 @@ const en = {
   'net.error.lzh.dataExceedsFile': 'LZH: the compressed data exceeds the end of the file ({name})',
   'net.error.lzh.unsupportedMethod': 'LZH: unsupported compression method: {methodId} ({name})',
   'net.error.lzh.crcMismatch': 'LZH: CRC16 mismatch ({name}): expected={expected}, actual={actual}',
+
+  'share.counterLabel': 'Share link length',
+  'share.counterPending': 'not counted yet',
+  'share.counterAriaLabel': 'Share link length: {length} / {limit}',
+  'share.counterPendingAriaLabel': 'Share link length: not counted yet (counted after compile & play)',
+  'share.overLimit': '{length} chars / {limit} limit. {overBy} chars over',
+  'share.copied': 'Copied',
+  'share.copyFailed': "Couldn't copy automatically. Select the field below to copy it",
+  'share.fallbackInputAriaLabel': 'Share link (shown because it could not be copied automatically)',
+  'share.voiceBankWarning': "This song uses a disk-specific voice bank. Whoever opens the shared link won't have the matching disk, so the instrument sounds will change to the defaults.",
 
   'net.error.share.malformed': 'This share link is malformed (no version segment found)',
   'net.error.share.unknownVersion': 'This share link uses an unsupported format (version: {version}). It may have been created by a newer version of FMSound',

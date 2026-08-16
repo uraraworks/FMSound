@@ -483,6 +483,104 @@ header.app-header .app-tagline {
   cursor: not-allowed;
 }
 
+/* 課題(共有リンク): 常時表示の「共有可能カウンタ」(数字+ゲージ)。ツールバー内、
+   共有ボタンの隣に置く(.toolbarはflex-wrapなので幅の広いこの要素があっても
+   折り返す)。ゲージの見た目はfmdsp/rightpane.js drawLoopBar()の
+   「暗い背景トラック+明るい塗り」という表現をそのままCSSへ持ち込んだもの
+   (新しい意匠は作らない、という利用者指示)。 */
+.share-counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 5px;
+  background: var(--footer-btn-bg);
+  color: var(--footer-text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.share-counter-text {
+  font-variant-numeric: tabular-nums;
+  color: var(--footer-text);
+  min-width: 68px;
+  text-align: right;
+}
+
+.share-counter-gauge {
+  display: inline-block;
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  /* トラック(背景)= fmdsp/rightpane.js drawLoopBar()のCOLOR_3相当(暗い塗り)。 */
+  background: var(--footer-disabled-bg);
+  overflow: hidden;
+}
+
+.share-counter-gauge-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  /* 塗り = drawLoopBar()のCOLOR_2相当(明るい塗り)。上限超過時だけ--dangerに変える。 */
+  background: var(--accent);
+}
+
+.share-counter-gauge-fill--over {
+  background: var(--danger);
+}
+
+/* 共有結果(コピー成功/失敗+音色バンク警告)。普段は非表示、共有ボタンを押した
+   ときだけ出す(ツールバーの直後、console-footer内に置く想定)。 */
+.share-result {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--footer-text);
+  text-align: center;
+}
+
+.share-result.hidden {
+  display: none;
+}
+
+.share-result-message {
+  margin: 0;
+}
+
+/* 課題C: 常時出す注意書きにはしない(利用者指示、読まれなくなるため)。共有時、
+   ディスク固有の音色バンクを実際に使っている場合だけ出す。--dangerは使わず
+   (エラーではないため)、ui/styles.cssの他の注意書き(.mml-caveat-note)と
+   同系統の琥珀色にする(暗いconsole-footer上でも視認できる明るさにする)。 */
+.share-result-warning {
+  margin: 0;
+  color: #ffcf7a;
+}
+
+.share-result-warning.hidden {
+  display: none;
+}
+
+.share-fallback-input {
+  width: min(100%, 480px);
+  padding: 6px 8px;
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.share-fallback-input.hidden {
+  display: none;
+}
+
 /* 曲を開くメニュー(.settings-popoverの構造を共有し、中身だけ違う)。
    「ファイルから開く」「URLから開く」の2択、後者を選ぶとURL入力欄に差し替わる。 */
 .open-menu-btn {

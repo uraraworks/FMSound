@@ -49,6 +49,7 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { createOpenMenu } from './ui/open-menu.js';
+import { createShareControls } from './ui/share-controls.js';
 import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
@@ -123,6 +124,9 @@ export async function init(ctx) {
       mmlTextarea.value = text;
       mmlEditorApi.render();
       mmlDirty = false;
+      // 共有可能カウンタ: 内容が変わったので集計をやり直す(この直後のcompileAndPlay()
+      // 成功時にmarkCompiled()で実際の数字に置き換わる。失敗時は「未集計」のまま残す)。
+      shareControls.markDirty();
       compileAndPlay();
       return;
     }
@@ -141,6 +145,10 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     mmlDirty = false;
+    // 共有可能カウンタ: プレイヤーモードではcompileAndPlay()を経由しないため、
+    // 集計は「未集計」のままにする(利用者がエディタへ切り替えて再生するまで
+    // 実際に集計された値であることを保証できない)。
+    shareControls.markDirty();
     await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M');
   });
 
@@ -215,6 +223,19 @@ export async function init(ctx) {
     libraryPanel.render();
   });
   const libraryPopover = setupPopover(btnLibrary, libraryPanel.popoverEl);
+
+  // --- 課題(共有リンク): 「リンクをコピー」ボタン+常時表示の共有可能カウンタ(ui/share-controls.js参照)。
+  // getMmlTextはmmlTextareaを参照する遅延クロージャ(下でconst宣言される。実際に
+  // 呼ばれるのはUIイベント発生時=宣言が確実に済んだ後なのでTDZの問題は起きない)。
+  // PMDには音色バンクの概念が無いため、isVoiceBankAppliedは既定(常にfalse)のまま渡さない。
+  const shareControls = createShareControls({
+    driver: 'pmd',
+    driverKey: 'pmd',
+    getMmlText: () => mmlTextarea.value,
+  });
+  toolbar.insertBefore(shareControls.counterEl, btnDownload);
+  toolbar.insertBefore(shareControls.buttonEl, btnDownload);
+  toolbar.insertAdjacentElement('afterend', shareControls.resultWrapEl);
 
   let uiMode = 'player';
 
@@ -316,6 +337,9 @@ export async function init(ctx) {
     if (mmlDirty) return;
     mmlDirty = true;
     updateTransportButtonUI();
+    // 共有可能カウンタ: mmlDirtyが真になった瞬間に「未集計」表示へ戻す
+    // (利用者指示: 打鍵のたびに再集計はしないが、古い数字も残さない)。
+    shareControls.markDirty();
   }
   mmlTextarea.addEventListener('input', markMmlDirty);
 
@@ -934,6 +958,9 @@ export async function init(ctx) {
     lastCompiledBytes = file;
     mmlDirty = false;
     hasCompiled = true;
+    // 共有可能カウンタ: 「コンパイル(再生)時に集計する」(利用者指示)。打鍵のたびではなく、
+    // 実際にコンパイルが成功したこの1箇所でだけ集計する。
+    shareControls.markCompiled(source);
     commentOffset = 0;
     // 課題B(2026-08-15): エディタで直接再生した場合はファイル名という概念が無い。
     // 以前はMML本文の#titleヘッダを拾って代わりに表示していたが、FILEBARは
@@ -1399,6 +1426,8 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     mmlDirty = false;
+    // 共有可能カウンタ: まだコンパイルしていない内容なので「未集計」のまま。
+    shareControls.markDirty();
     pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M' };
     currentSongName = 'sample_fur_elise.M';
     updateTransportButtonUI();
@@ -1436,6 +1465,8 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     mmlDirty = false;
+    // 共有可能カウンタ: まだコンパイルしていない内容なので「未集計」のまま。
+    shareControls.markDirty();
     pendingUrlSong = null;
     clearCompileStatus();
     currentSongName = SHARE_LINK_FILEBAR_NAME;

@@ -82,6 +82,8 @@ const L1_COMPLETE_FILES = [
   'html/net-load.js',
   'ui/mml-status.js',
   'ui/mml-caveats.js',
+  // 共有UI(2026-08-17新設)。利用者に見える文字列はすべて辞書経由にした。
+  'ui/share-controls.js',
 ];
 
 function stripJsComments(text) {

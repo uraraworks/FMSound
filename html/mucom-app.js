@@ -32,6 +32,7 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { createOpenMenu } from './ui/open-menu.js';
+import { createShareControls } from './ui/share-controls.js';
 import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
@@ -265,6 +266,22 @@ export async function init(ctx) {
   });
   const libraryPopover = setupPopover(btnLibrary, libraryPanel.popoverEl);
 
+  // --- 課題(共有リンク): 「リンクをコピー」ボタン+常時表示の共有可能カウンタ(ui/share-controls.js参照)。
+  // getMmlTextはmmlTextareaを参照する遅延クロージャ(下でconst宣言される。実際に
+  // 呼ばれるのはUIイベント発生時=宣言が確実に済んだ後なのでTDZの問題は起きない)。
+  // isVoiceBankAppliedはlastVoiceBankApplied(下、compileAndPlay()内で更新)を返す
+  // (MUCOM88のみ: ディスク固有の音色バンクを使っている曲を共有すると、受け取った側は
+  // 対になるディスクを持たないため音色が既定に変わる。利用者指示の警告対象)。
+  const shareControls = createShareControls({
+    driver: 'mucom',
+    driverKey: 'mucom',
+    getMmlText: () => mmlTextarea.value,
+    isVoiceBankApplied: () => lastVoiceBankApplied,
+  });
+  toolbar.insertBefore(shareControls.counterEl, btnDownload);
+  toolbar.insertBefore(shareControls.buttonEl, btnDownload);
+  toolbar.insertAdjacentElement('afterend', shareControls.resultWrapEl);
+
   function applyUiMode(mode) {
     editorPane.classList.toggle('hidden', mode !== 'editor');
     btnEditorMode.classList.toggle('active', mode === 'editor');
@@ -341,10 +358,19 @@ export async function init(ctx) {
   // 課題A/追加報告と同じ「コンパイル成否をhasPlaybackで代用する」パターンなので、
   // 再発防止のためPMD側と揃えて専用フラグに切り替える)。
   let hasCompiled = false;
+  // 共有可能カウンタの音色バンク警告(ui/share-controls.js isVoiceBankApplied)用。
+  // compileAndPlay()内のvoiceBankApplied判定(直近のコンパイルで実際に外部音色
+  // バンクを注入したかどうか)をここへミラーする。共有ボタンはコンパイル結果とは
+  // 独立したタイミングで押されうるため、ローカル変数のままにせず外側スコープへ
+  // 持ち上げる(=このシンプルな代入1本を「相乗り」させる。新しい判定ロジックは作らない)。
+  let lastVoiceBankApplied = false;
   function markMmlDirty() {
     if (mmlDirty) return;
     mmlDirty = true;
     updateTransportButtonUI();
+    // 共有可能カウンタ: mmlDirtyが真になった瞬間に「未集計」表示へ戻す
+    // (利用者指示: 打鍵のたびに再集計はしないが、古い数字も残さない)。
+    shareControls.markDirty();
   }
   mmlTextarea.addEventListener('input', markMmlDirty);
 
@@ -1144,6 +1170,11 @@ export async function init(ctx) {
     if (compiledOk) {
       mmlDirty = false;
       hasCompiled = true;
+      // 共有可能カウンタ: 「コンパイル(再生)時に集計する」(利用者指示)。打鍵のたびではなく、
+      // 実際にコンパイルが成功したこの1箇所でだけ集計する。音色バンク警告フラグも
+      // この成功時にだけ更新する(失敗した試みで古い曲の警告状態を書き換えない)。
+      lastVoiceBankApplied = voiceBankApplied;
+      shareControls.markCompiled(mml);
       try {
         lastCompiledBytes = Module.FS.readFile(MUB_PATH);
       } catch {
@@ -1210,6 +1241,10 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     updateEncodingBadge();
+    // 共有可能カウンタ: 読み込んだMMLはまだコンパイルしていないので「未集計」に戻す。
+    // applyMmlBytes()は課題D(下のコメント)のとおり読み込み経路の唯一の窓口なので、
+    // ここ1箇所で足りる。
+    shareControls.markDirty();
     // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
     // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
     updateMmlCaveat(text);

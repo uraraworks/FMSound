@@ -94,6 +94,9 @@ export const ICONS = {
       'stroke-linecap="round" fill="none"/>' +
       '<circle cx="12" cy="16.6" r="0.9" fill="currentColor" stroke="none"/>',
   },
+  // 課題(共有リンク): 定番の鎖(チェーンリンク)アイコン＝リンクをコピー。
+  // Feather Iconsの"link"と同じ2本のリング形状(意匠を新しく発明しない、定番の記号を使う)。
+  share: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71 M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
   // 曲ライブラリ: 音符＋リスト(取り込み済みの曲一覧を開く)。
   library: {
     path: 'M9 18V5l11-2v13 M4 21h6 M15 19h6',
