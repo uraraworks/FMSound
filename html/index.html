@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" id="htmlRoot">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -33,10 +33,19 @@
        書き換えてreloadする(=wasmは常に片方だけロードされる、切替時に両方
        抱えることはない)。app.js側で配線する。 -->
   <label class="driver-switch">
-    <span class="driver-switch-label">音源ドライバ:</span>
+    <span class="driver-switch-label" data-i18n="toolbar.driverLabel">音源ドライバ:</span>
     <select id="driverSelect">
       <option value="pmd">PMD (PC-9801)</option>
       <option value="mucom">MUCOM88 (PC-8801)</option>
+    </select>
+  </label>
+  <!-- 言語切替。既存のdriverSelectとまったく同じ作法(location.searchを書き換えて
+       reload)。?driver=は消さない(app.js側で配線、両パラメータが共存する)。 -->
+  <label class="driver-switch">
+    <span class="driver-switch-label" data-i18n="toolbar.langLabel">言語:</span>
+    <select id="langSelect">
+      <option value="ja">日本語</option>
+      <option value="en">English</option>
     </select>
   </label>
 </header>
@@ -61,9 +70,9 @@
   <input type="file" id="fileInput" class="file-input-hidden">
 
   <div class="settings-popover hidden" id="settingsPopover">
-    <p class="settings-popover-title">設定</p>
+    <p class="settings-popover-title" data-i18n="settings.title">設定</p>
     <div class="settings-row">
-      <label for="srateSelect">サンプルレート</label>
+      <label for="srateSelect" data-i18n="settings.sampleRate">サンプルレート</label>
       <select id="srateSelect">
         <option value="55467" selected>55kHz</option>
         <option value="48000">48kHz</option>
@@ -74,11 +83,11 @@
       </select>
     </div>
     <div class="settings-row">
-      <label for="calibrationMs">同期較正(ms)</label>
+      <label for="calibrationMs" data-i18n="settings.calibrationMs">同期較正(ms)</label>
       <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0">
     </div>
     <label class="settings-checkbox-row">
-      <input id="useSynchronizedStatus" type="checkbox" checked> 音声に同期して描画する
+      <input id="useSynchronizedStatus" type="checkbox" checked> <span data-i18n="settings.syncDraw">音声に同期して描画する</span>
     </label>
   </div>
 

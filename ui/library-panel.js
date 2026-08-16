@@ -9,6 +9,7 @@
 // 案内(song-picker等)と同じ考え方)。
 
 import { listSongs, deleteSong, groupSongsIntoAlbums } from '../net/library.js';
+import { t } from './i18n.js';
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -32,8 +33,8 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
     const db = await getDb();
     if (!db) {
       popover.innerHTML = `
-        <p class="settings-popover-title">曲ライブラリ</p>
-        <p class="library-empty">この端末ではライブラリを利用できません(プライベートブラウズ中、または非対応環境の可能性があります)。</p>
+        <p class="settings-popover-title">${t('library.title')}</p>
+        <p class="library-empty">${t('library.unavailable')}</p>
       `;
       return;
     }
@@ -41,8 +42,8 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
     const songs = all.filter((s) => s.driver === driver);
     if (songs.length === 0) {
       popover.innerHTML = `
-        <p class="settings-popover-title">曲ライブラリ</p>
-        <p class="library-empty">まだ曲がありません。URL指定やドラッグ&ドロップで曲を読み込むと、次回からここに残るようになります。</p>
+        <p class="settings-popover-title">${t('library.title')}</p>
+        <p class="library-empty">${t('library.empty')}</p>
       `;
       return;
     }
@@ -59,9 +60,9 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
   function renderAlbumList(albums) {
     const totalCount = albums.reduce((n, a) => n + a.songs.length, 0);
     popover.innerHTML = `
-      <p class="settings-popover-title">曲ライブラリ(${totalCount}曲)</p>
+      <p class="settings-popover-title">${t('library.titleWithCount', { count: totalCount })}</p>
       <ul class="library-album-list"></ul>
-      <button type="button" class="library-clear-all">すべて削除</button>
+      <button type="button" class="library-clear-all">${t('library.clearAll')}</button>
     `;
     const list = popover.querySelector('.library-album-list');
     for (const album of albums) {
@@ -72,7 +73,7 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
       btn.className = 'library-album-btn';
       btn.innerHTML =
         `<span class="library-album-label">${escapeHtml(album.label)}</span>` +
-        `<span class="library-album-count">${album.songs.length}曲</span>`;
+        `<span class="library-album-count">${t('library.albumCount', { count: album.songs.length })}</span>`;
       btn.addEventListener('click', () => {
         openAlbumId = album.id;
         render();
@@ -83,7 +84,7 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
     popover.querySelector('.library-clear-all').addEventListener('click', async () => {
       // 課題: 他ドライバの曲を巻き込まないよう、実際にはこのドライバの曲だけを消す
       // (clearAllSongs()はDB全体を消してしまうため、ここでは1件ずつdeleteSong()する)。
-      if (!window.confirm(`このプレイヤーのライブラリ(${totalCount}曲)をすべて削除します。よろしいですか?`)) return;
+      if (!window.confirm(t('library.clearAllConfirm', { count: totalCount }))) return;
       const db = await getDb();
       for (const album of albums) {
         for (const song of album.songs) {
@@ -97,8 +98,8 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
 
   function renderTrackList(album) {
     popover.innerHTML = `
-      <button type="button" class="library-back">← アルバム一覧へ</button>
-      <p class="settings-popover-title">${escapeHtml(album.label)}(${album.songs.length}曲)</p>
+      <button type="button" class="library-back">${t('library.backToAlbums')}</button>
+      <p class="settings-popover-title">${t('library.albumHeader', { label: escapeHtml(album.label), count: album.songs.length })}</p>
       <ul class="library-track-list"></ul>
     `;
     popover.querySelector('.library-back').addEventListener('click', () => {
@@ -128,8 +129,8 @@ export function createLibraryPanel({ driver, getDb, onSelect }) {
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'library-track-delete';
-      delBtn.textContent = '削除';
-      delBtn.title = `${displayTitle} を削除`;
+      delBtn.textContent = t('library.deleteTrack');
+      delBtn.title = t('library.deleteTrackTitle', { title: displayTitle });
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const db = await getDb();

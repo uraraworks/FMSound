@@ -131,6 +131,12 @@ header.app-header .app-tagline {
   color: var(--header-tagline-text);
 }
 
+/* 言語切替select(driver-switchの隣)。同じ見た目で、間隔だけ空ける。
+   画面が狭いと折り返す(driver-switch自体がinline-flexなので自然に折り返せる)。 */
+.driver-switch + .driver-switch {
+  margin-left: 10px;
+}
+
 .driver-switch select {
   font-size: 11px;
   padding: 2px 4px;

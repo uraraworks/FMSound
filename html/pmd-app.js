@@ -43,6 +43,7 @@ import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { createOpenMenu } from './ui/open-menu.js';
 import { setupPopover } from './ui/shell.js';
+import { t } from './ui/i18n.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
@@ -165,16 +166,16 @@ export async function init(ctx) {
   const UI_MODE_KEY = 'fmsound-pmd-ui-mode';
   const mmlEditorPane = document.getElementById('mmlEditorPane');
 
-  const btnEditorMode = iconButton(ICONS.edit, 'エディタモードへ切替');
+  const btnEditorMode = iconButton(ICONS.edit, t('toolbar.editorMode'));
   toolbar.insertBefore(btnEditorMode, btnFullscreen);
 
   // 課題B: 「Clear MML」(英語のまま・エディタ欄の下に浮いたボタン)を廃止し、
   // ツールバーの「曲を開く」「ダウンロード」と同じ並びのアイコンボタンへ移す。
-  const btnNewMml = iconButton(ICONS.newFile, '新規作成');
+  const btnNewMml = iconButton(ICONS.newFile, t('toolbar.newFile'));
   toolbar.insertBefore(btnNewMml, btnDownload);
 
   // 曲ライブラリ(取り込み済みの曲一覧。IndexedDB、net/library.js)。
-  const btnLibrary = iconButton(ICONS.library, '曲ライブラリ');
+  const btnLibrary = iconButton(ICONS.library, t('toolbar.library'));
   toolbar.insertBefore(btnLibrary, btnDownload);
   const libraryPanel = createLibraryPanel({
     driver: 'pmd',
@@ -209,7 +210,7 @@ export async function init(ctx) {
     uiMode = mode;
     mmlEditorPane.classList.toggle('hidden', mode !== 'editor');
     btnEditorMode.classList.toggle('active', mode === 'editor');
-    btnEditorMode.title = mode === 'editor' ? 'プレイヤーモードへ切替' : 'エディタモードへ切替';
+    btnEditorMode.title = mode === 'editor' ? t('toolbar.playerMode') : t('toolbar.editorMode');
     btnEditorMode.setAttribute('aria-label', btnEditorMode.title);
     rescale();
     updateTransportButtonUI();

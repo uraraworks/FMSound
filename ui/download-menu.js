@@ -5,6 +5,7 @@
 
 import { encodeCp932, isAsciiOnly } from './cp932-encode.js';
 import { bytesToAsmDb } from './asm-db.js';
+import { t } from './i18n.js';
 
 function downloadBytes(bytes, filename, mime) {
   const blob = new Blob([bytes], { type: mime });
@@ -76,25 +77,25 @@ export function createDownloadMenu(opts) {
     const compiled = getCompiledBytes();
 
     popover.innerHTML = `
-      <p class="settings-popover-title">ダウンロード</p>
+      <p class="settings-popover-title">${t('download.title')}</p>
       <div class="download-section">
-        <p class="download-section-title">MMLソース(編集中の内容)</p>
+        <p class="download-section-title">${t('download.mmlSection')}</p>
         ${ascii ? '' : `
         <div>
-          <label class="download-radio"><input type="radio" name="mmlEncoding-${driverKey}" value="cp932" checked> CP932(既定)</label>
-          <label class="download-radio"><input type="radio" name="mmlEncoding-${driverKey}" value="utf8"> UTF-8</label>
+          <label class="download-radio"><input type="radio" name="mmlEncoding-${driverKey}" value="cp932" checked> ${t('download.encodingDefault')}</label>
+          <label class="download-radio"><input type="radio" name="mmlEncoding-${driverKey}" value="utf8"> ${t('download.encodingUtf8')}</label>
         </div>
         `}
-        <button type="button" class="download-btn" data-action="mml">ダウンロード</button>
+        <button type="button" class="download-btn" data-action="mml">${t('download.downloadBtn')}</button>
       </div>
       <div class="download-section">
-        <p class="download-section-title">コンパイル済み(${compiledLabel})</p>
-        <button type="button" class="download-btn" data-action="compiled" ${compiled ? '' : 'disabled'}>ダウンロード</button>
-        ${compiled ? '' : '<p class="download-hint">先にコンパイル&再生(または曲を開く)してください</p>'}
+        <p class="download-section-title">${t('download.compiledSection', { label: compiledLabel })}</p>
+        <button type="button" class="download-btn" data-action="compiled" ${compiled ? '' : 'disabled'}>${t('download.downloadBtn')}</button>
+        ${compiled ? '' : `<p class="download-hint">${t('download.compileHint')}</p>`}
       </div>
       <div class="download-section">
-        <p class="download-section-title">asmの db 配列(PC-98/PC-88プログラムへ埋め込み用)</p>
-        <button type="button" class="download-btn" data-action="asm" ${compiled ? '' : 'disabled'}>ダウンロード</button>
+        <p class="download-section-title">${t('download.asmSection')}</p>
+        <button type="button" class="download-btn" data-action="asm" ${compiled ? '' : 'disabled'}>${t('download.downloadBtn')}</button>
       </div>
     `;
 

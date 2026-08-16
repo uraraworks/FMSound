@@ -21,6 +21,14 @@ import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER, FMSOUND_BUILD_ID } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
 import { urlBaseName } from './net-load.js';
+import { initLang, getLang, t, applyStaticI18n } from './ui/i18n.js';
+
+// --- 言語決定・固定ラベルの流し込み(他の処理より先に行う。他の初期化コードが
+// 作るボタン等のtitleにt()を使うため)。決定順は(1)?lang=ja/en(2)navigator.language。
+const lang = initLang();
+document.getElementById('htmlRoot').lang = lang;
+document.title = t('page.title');
+applyStaticI18n();
 
 // --- 課題B(最優先・データ消失防止): ページのどこにファイルを落としても、
 // ブラウザの既定動作(そのファイルを開いてページ遷移する。編集中のMMLが画面から
@@ -72,6 +80,18 @@ driverSelect.addEventListener('change', () => {
   if (next === driver) return;
   const url = new URL(location.href);
   url.searchParams.set('driver', next);
+  location.href = url.toString();
+});
+
+// --- 言語切替select。driverSelectとまったく同じ作法(location.searchを書き換えて
+// reload)。?driver=は消さない(URLSearchParams.setは他のキーに触れない)。 ---
+const langSelect = document.getElementById('langSelect');
+langSelect.value = lang;
+langSelect.addEventListener('change', () => {
+  const next = langSelect.value;
+  if (next === lang) return;
+  const url = new URL(location.href);
+  url.searchParams.set('lang', next);
   location.href = url.toString();
 });
 
@@ -150,19 +170,19 @@ const toolbar = document.getElementById('toolbar');
 // 課題C: ボタンのtitleにショートカットを明記する(気づけるようにする目的。
 // 実際のキー配線はengine-app側(html/pmd-app.js・html/mucom-app.js)が
 // ui/shortcuts.js setupTransportShortcuts()経由で行う)。
-const btnPlayPause = iconButton(ICONS.play, 'コンパイル&再生 (⌘/Ctrl+Enter)');
-const btnStop = iconButton(ICONS.stop, '停止 (Esc)');
-const btnOpenFile = iconButton(ICONS.open, '曲を開く');
-const btnDownload = iconButton(ICONS.download, 'ダウンロード');
-const btnSettings = iconButton(ICONS.settings, '設定');
-const btnFullscreen = iconButton(ICONS.fullscreen, 'フルスクリーン');
+const btnPlayPause = iconButton(ICONS.play, t('toolbar.playPauseInitial'));
+const btnStop = iconButton(ICONS.stop, t('toolbar.stop'));
+const btnOpenFile = iconButton(ICONS.open, t('toolbar.open'));
+const btnDownload = iconButton(ICONS.download, t('toolbar.download'));
+const btnSettings = iconButton(ICONS.settings, t('toolbar.settings'));
+const btnFullscreen = iconButton(ICONS.fullscreen, t('toolbar.fullscreen'));
 // エンジン固有ボタン(MUCOM88のエディタモード切替等)はこのボタンの手前に挿し込む。
 toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnDownload, btnSettings, btnFullscreen);
 btnPlayPause.disabled = true;
 btnStop.disabled = true;
 
 const consoleCardForFullscreen = consoleCard;
-setupFullscreen(consoleCardForFullscreen, btnFullscreen, { enter: 'フルスクリーン', exit: 'フルスクリーン解除' }, rescale);
+setupFullscreen(consoleCardForFullscreen, btnFullscreen, { enter: t('toolbar.fullscreen'), exit: t('toolbar.fullscreenExit') }, rescale);
 setupPopover(btnSettings, document.getElementById('settingsPopover'));
 
 rescale();

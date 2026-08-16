@@ -20,6 +20,8 @@
  * @param {() => void} opts.onFileOpen - 「ファイルから開く」選択時に呼ぶ(fileInput.click()等)
  * @param {(url: string) => void} opts.onUrlSubmit - URL入力欄で「実行」を押したときに呼ぶ
  */
+import { t } from './i18n.js';
+
 export function createOpenMenu({ onFileOpen, onUrlSubmit }) {
   const popover = document.createElement('div');
   popover.className = 'settings-popover open-popover hidden';
@@ -33,9 +35,9 @@ export function createOpenMenu({ onFileOpen, onUrlSubmit }) {
 
   function renderMenu() {
     popover.innerHTML = `
-      <p class="settings-popover-title">曲を開く</p>
-      <button type="button" class="download-btn open-menu-btn" data-action="file">ファイルから開く</button>
-      <button type="button" class="download-btn open-menu-btn" data-action="url">URLから開く</button>
+      <p class="settings-popover-title">${t('openMenu.title')}</p>
+      <button type="button" class="download-btn open-menu-btn" data-action="file">${t('openMenu.fromFile')}</button>
+      <button type="button" class="download-btn open-menu-btn" data-action="url">${t('openMenu.fromUrl')}</button>
     `;
     popover.querySelector('[data-action="file"]').addEventListener('click', () => {
       requestClose();
@@ -48,11 +50,11 @@ export function createOpenMenu({ onFileOpen, onUrlSubmit }) {
 
   function renderUrlForm() {
     popover.innerHTML = `
-      <p class="settings-popover-title">URLから開く</p>
+      <p class="settings-popover-title">${t('openMenu.fromUrl')}</p>
       <input type="url" class="open-url-input" id="openUrlInput" placeholder="https://..." autocomplete="off">
       <div class="open-url-actions">
-        <button type="button" class="download-btn" data-action="submit">実行</button>
-        <button type="button" class="download-btn" data-action="cancel">取消</button>
+        <button type="button" class="download-btn" data-action="submit">${t('openMenu.submit')}</button>
+        <button type="button" class="download-btn" data-action="cancel">${t('openMenu.cancel')}</button>
       </div>
     `;
     const input = popover.querySelector('#openUrlInput');
