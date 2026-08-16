@@ -1119,9 +1119,22 @@ export async function init(ctx) {
     clearCompileStatus();
     adapter.reset();
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
-    // 次の曲へ持ち越さない)。
+    // 次の曲へ持ち越さない)。JS側の状態(mutedChannels)は先に空にしてよいが、
+    // 実際にwasm側へマスクを適用するapplyChannelMask()の呼び出しはここでは行わない。
+    //
+    // 【不具合修正・2026-08-17】実機報告「再生→停止→新規作成→再生でwasmが
+    // memory access out of boundsで落ちる」への対応。以前はここ(Module.compileMML()の
+    // 直前)でapplyChannelMask()を呼んでいたが、これは「前回コンパイルしたインスタンス」
+    // に対してマスクを適用する形になる。MucomWeb.cpp CompileMML()はg_mucomを
+    // `g_mucom = nullptr;`(旧インスタンス破棄)→`std::make_unique<CMucom>()`(新規作成)
+    // で丸ごと作り直す設計のため、マスクは「今から作る新しいインスタンス」に対して
+    // 掛けるのが意味的にも正しい。C++側のSetChannelMask()(mucomweb/src/MucomWeb.cpp)は
+    // g_mucom/vm/opnaのnullチェックを持つが、それだけでは「非nullだが解放済み/
+    // まだ完成していないポインタ」までは検出できない(実測では未再現、
+    // tools/verify_mucom_channel_mask_order.mjs参照)ため、そもそも「前回の
+    // インスタンスに触れる」呼び出し順序自体を無くす。C++側にもg_mucomReady旗を
+    // 追加し、二重の保険にした(同ファイル参照)。
     mutedChannels.clear();
-    applyChannelMask();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;
@@ -1170,6 +1183,11 @@ export async function init(ctx) {
     if (compiledOk) {
       mmlDirty = false;
       hasCompiled = true;
+      // 不具合修正(上のコメント参照): マスクの適用はコンパイル成功後、
+      // 新しいg_mucomインスタンスが実在することが確定してから行う。
+      // mutedChannels自体は今しがた空にした直後なので、実質「マスク解除」を
+      // 新インスタンスへ明示的に掛け直すだけの呼び出しになる(無害・冪等)。
+      applyChannelMask();
       // 共有可能カウンタ: 「コンパイル(再生)時に集計する」(利用者指示)。打鍵のたびではなく、
       // 実際にコンパイルが成功したこの1箇所でだけ集計する。音色バンク警告フラグも
       // この成功時にだけ更新する(失敗した試みで古い曲の警告状態を書き換えない)。

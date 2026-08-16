@@ -126,6 +126,16 @@ static_assert(sizeof(StatusSnapshot) ==
 
 std::unique_ptr<StreamingPlayer> g_player;
 std::unique_ptr<CMucom> g_mucom;
+// 不具合修正(2026-08-17、実機報告「再生→停止→新規作成→再生でmemory access out
+// of boundsが発生」への対応)。g_mucomのnullチェックだけでは「非nullだが解放済み/
+// まだ完成していない」インスタンスを弾けない(JS側の呼び出し順序ミスで実際に
+// 踏んだ。html/mucom-app.js compileAndPlay()参照、JS側は修正済み)。
+// CompileMML()がg_mucomを作り直す一連の処理(nullptrへ戻す→make_unique→Init→
+// LoadPCM→LoadMusic→Play)と歩調を合わせて明示的に立て/下げる旗をここに置き、
+// SetChannelMask()等「JS側から任意タイミングで呼ばれうる」公開関数はこの旗も
+// 見て早期returnする(ポインタのnullチェックへの上乗せ。JS側の呼び出し順序を
+// 直した後も、C++側だけで壊れかけの状態へ触れないための保険として残す)。
+static bool g_mucomReady = false;
 // 曲の総tick数(MUCOM_STATUS_MAXCOUNT)。実測で判明した制約:再生に使う g_mucom は
 // LoadMusic()+Play() だけを呼び、Compile()を呼ばないため、g_mucom->GetStatus
 // (MUCOM_STATUS_MAXCOUNT) は常に0を返す(maxcountはCMucom::Compile()内でのみ
@@ -477,10 +487,17 @@ std::string CompileMML(const std::string& mml, int sampleRate)
 		}
 		g_player->Stop();
 		InvalidateSnapshotRing();
+		// 不具合修正: 旧インスタンスを破棄する瞬間に旗を下ろす(g_mucomがnullptrへ
+		// 戻った後、新しいインスタンスが完成するまでの間は「触ってよい状態ではない」)。
+		g_mucomReady = false;
 		g_mucom = nullptr;
 		g_mucom = std::make_unique<CMucom>();
 		g_mucom->Init(nullptr, MUCOM_CMPOPT_STEP, sampleRate);
 		g_mucom->Reset(0);
+		// 不具合修正: Init()+Reset()まで済めばvm/opnaは構築済みで安全に触れる
+		// (LoadPCM/LoadMusic/Playの成否とは独立。それらが失敗しても「触れない
+		// 壊れかけの状態」ではないため、ここで旗を立てる)。
+		g_mucomReady = true;
 		// Kパート(ADPCM)用の標準PCMバンクを読み込む。ADPCM RAM(fmgen opna.cpp:1253、
 		// 256KB)はCMucom/OPNAインスタンスごとに持つため、g_mucomを作り直すたびに
 		// 読み直しが要る(使い回しはできない)。
@@ -616,6 +633,11 @@ emscripten::val GetChannelData()
 // (取り違えるとADPCMを消したつもりでリズムが消える、の逆もまた然り)。
 void SetChannelMask(unsigned mask)
 {
+	// 不具合修正(2026-08-17): g_mucomのnullチェックだけでは「非nullだが解放済み/
+	// まだ完成していない」インスタンスを弾けない(グローバル変数g_mucomReadyの
+	// 定義コメント参照)。JS側の呼び出し順序も直したが、C++側だけでも安全になるよう
+	// この旗を最初に見る。
+	if (!g_mucomReady) return;
 	if (g_mucom == nullptr) return;
 	mucomvm *vm = g_mucom->GetVM();
 	if (vm == nullptr) return;
