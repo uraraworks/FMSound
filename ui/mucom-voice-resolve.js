@@ -87,9 +87,17 @@ export function resolveVoiceNameToSlot(name) {
   if (!bytes || unmappable.length > 0) return null;
   if (bytes.length > NAME_FIELD_LENGTH) return null; // 6バイトの名前フィールドに収まらない
   const table = buildTable();
-  const key = toKey(bytes); // encodeCp932は元の文字列をそのまま符号化するので、bytes自体には
-  // パディングが付かない。名前フィールド側は正規化(末尾パディング除去)済みのキーなので、
-  // ここも同じ規則(パディング無しの生バイト列)で比較する。
+  // 名前フィールド側のキーは正規化(末尾パディング除去)済みなので、MML側にも同じ規則を
+  // 適用してから比較する。
+  //
+  // 【不具合修正・2026-08-16】以前はMML側に trimTrailingPad() を掛けておらず、
+  // 表側だけが正規化された非対称な比較になっていた。そのため MML が
+  // `@"ｿｳﾙﾍﾞ "` のように末尾へ空白を付けて書いていると解決できなかった
+  // (実測: `ｿｳﾙﾍﾞ`→201 に対し `ｿｳﾙﾍﾞ `→null。半角カナ固有ではなく `flute ` でも同じ)。
+  // 名前フィールドは6バイトの空白詰め固定長で末尾の空白に意味が無いため、
+  // 両側を同じ規則で正規化するのが正しい。実データでは stk023(BARE_KNUCKLE)が
+  // これに該当し、唯一解決できない曲として残っていた。
+  const key = toKey(trimTrailingPad(bytes));
   return table.has(key) ? table.get(key) : null;
 }
 

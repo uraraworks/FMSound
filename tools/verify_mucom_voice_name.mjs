@@ -108,6 +108,24 @@ async function main() {
   check('表引き: "ﾎﾞﾝｺﾞ" は既定音色バンクのslot163に解決される(実測値)', resolveVoiceNameToSlot('ﾎﾞﾝｺﾞ') === 163);
   check('表引き: 重複名"efctes"は最初に見つかった方(slot0)に解決される', resolveVoiceNameToSlot('efctes') === 0);
 
+  // --- 末尾パディングの正規化(2026-08-16の不具合修正の回帰防止) ---
+  // 名前フィールドは6バイトの空白詰め固定長で末尾の空白に意味が無い。以前は表側だけを
+  // 正規化しMML側を正規化しない非対称な比較になっていたため、MMLが `@"ｿｳﾙﾍﾞ "` のように
+  // 末尾へ空白を付けて書いていると解決できなかった(実データの stk023 が該当)。
+  // 半角カナ固有の問題ではないので、ASCII名でも同じことを確認する。
+  check('末尾空白: "ｿｳﾙﾍﾞ " は "ｿｳﾙﾍﾞ" と同じslot201に解決される',
+    resolveVoiceNameToSlot('ｿｳﾙﾍﾞ ') === 201, `実測=${resolveVoiceNameToSlot('ｿｳﾙﾍﾞ ')}`);
+  check('末尾空白: "ﾀﾑﾀﾑ " も同じslot164に解決される(半角カナ固有ではない確認1)',
+    resolveVoiceNameToSlot('ﾀﾑﾀﾑ ') === 164, `実測=${resolveVoiceNameToSlot('ﾀﾑﾀﾑ ')}`);
+  check('末尾空白: ASCII名 "flute " も "flute" と同じslotに解決される(半角カナ固有ではない確認2)',
+    resolveVoiceNameToSlot('flute ') === resolveVoiceNameToSlot('flute') &&
+    resolveVoiceNameToSlot('flute') !== null,
+    `"flute "=${resolveVoiceNameToSlot('flute ')} "flute"=${resolveVoiceNameToSlot('flute')}`);
+  // 陰性側: 正規化を入れたせいで「何でも当たる」ようになっていないこと。
+  check('末尾空白: 空文字は解決されない(nullのまま)', resolveVoiceNameToSlot('') === null);
+  check('末尾空白: 存在しない名前は末尾空白の有無にかかわらず解決されない',
+    resolveVoiceNameToSlot('存在しない名前') === null && resolveVoiceNameToSlot('zzzzz ') === null);
+
   // --- C. 解決後は通る ---
   const { text: kanaMmlAfter, replacedCount, unresolvedNames: kanaUnresolved } = resolveMucomVoiceNameRefs(kanaMmlBefore);
   check('C: 半角カナ名の置換結果が "@201" を含む(スロット番号への置換)', kanaMmlAfter.includes('@201'), kanaMmlAfter);
