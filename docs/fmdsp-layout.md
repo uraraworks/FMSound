@@ -84,10 +84,10 @@ x,yは左上原点。出典はすべて`fmdsp-pacc.c`。fmdsp_sprites.hの座標
 | TIMER B CYCLE | TIME_X, TIMERB_Y | 3桁 | `work->timerb` | `1552-1561` |
 | LOOP COUNT | TIME_X, LOOPCNT_Y | 4桁 | `work->loop_cnt` | `1563-1572` |
 | ループ進捗バー | (352,70) | 144(内72*2),4 | `timerb_cnt_loop/loop_timerb_cnt`比率、`work->playing`時のみマーカー表示 | `1595-1609` |
-| VOLUME DOWN ラベル | TIME_TEXT_X, VOLDOWN_Y | - | ラベルのみ | `1272-1277`; 値の描画コードは**fmdsp.c同様に見当たらない(未解決のまま)** |
-| PGM NUMBER ラベル | TIME_TEXT_X, PGMNUM_Y | - | ラベルのみ、値描画は同様に**未確認** | `1280-1285` |
-| CPU POWER COUNT | CPU_NUM_X, CPU_NUM_Y | 3桁 | `fp->cpuusage`(30フレーム毎に`fmdsp_cpu_usage()`で更新) | `1573-1583`, 更新元`2131-2133` |
-| FRAMES PER SECOND | FPS_NUM_X, CPU_NUM_Y | 3桁 | `fp->fps`(30フレーム毎`fmdsp_fps_30()`) | `1584-1594`, `2131-2133` |
+| VOLUME DOWN ラベル | TIME_TEXT_X, VOLDOWN_Y | - | ラベルのみ | `1272-1277`; 値の描画コードは**fmdsp.c同様に見当たらない(2026-08-16に原因確定、`docs/right-pane-data.md` §8参照。本Web版はラベルを暗色描画にして「値が無い」と示す)** |
+| PGM NUMBER ラベル | TIME_TEXT_X, PGMNUM_Y | - | ラベルのみ、値描画は同様に**確認済み: 存在しない**(`docs/right-pane-data.md` §8) | `1280-1285` |
+| CPU POWER COUNT | CPU_NUM_X, CPU_NUM_Y | 3桁 | `fp->cpuusage`(30フレーム毎に`fmdsp_cpu_usage()`で更新)。本Web版は**恒久的に取得不能**(ブラウザにプロセスCPU使用率APIが無い、`docs/right-pane-data.md` §8)。暗色描画で表示 | `1573-1583`, 更新元`2131-2133` |
+| FRAMES PER SECOND | FPS_NUM_X, CPU_NUM_Y | 3桁 | `fp->fps`(30フレーム毎`fmdsp_fps_30()`)。本Web版は**2026-08-16実装済み**(描画ループの実測フレームレート、`docs/right-pane-data.md` §8) | `1584-1594`, `2131-2133` |
 | CIRCLE(円形アニメ) | CIRCLE_X, CIRCLE_Y | CIRCLE_W,CIRCLE_H | `timerb_cnt/8%8`で8方向切替、一時停止中は`framecnt%32>=16`で消灯コマ(clock=8) | `1611-1623` |
 | SPECTRUM(FFT) | SPECTRUM_X, SPECTRUM_Y基準 | 70本×4px, 高さ最大64 | `fft_calc()`結果、ピーク保持(fftcnt)+減衰(fftdropdiv, divtabは後述) | `1625-1659` |
 | SPECTRUMラベル群・軸目盛 | SPECTRUM_X相対 | - | "SPECTRUM ANALYzER"/"FREQ"/250,500,1k,2k,4k、チェッカー柄区切り線 | `1368-1434`(`init_default`内、固定描画) |
@@ -256,7 +256,10 @@ fmdsp.cは単一VRAM配列への都度上書きだったが、pacc版は**GPUバ
 ### 未解決のまま残った項目
 
 - VOLUME DOWN / PGM NUMBER の**値**を描画するコードは`fmdsp-pacc.c`内にも見当たらない
-  (ラベルのみ`init_default`で描画、`1272-1285`)。fmdsp.c同様に未確認のまま。
+  (ラベルのみ`init_default`で描画、`1272-1285`)。fmdsp.c同様に値の描画コード自体が
+  存在しない(2026-08-16、`docs/right-pane-data.md` §8で原因を確定: 元データ候補は
+  PMDドライバ内部構造体限定で共通インタフェース`fmdriver_work`に無く、MUCOM88側には
+  概念自体が無い。よって「未確認」ではなく「取得不能と確認済み」)。
 - `fmdsp_pacc_comment_reset()`の呼び出し元（曲ロード時にどこから呼ばれるか）は
   `fmdsp-pacc.c`内には存在せず、GTKフロントエンド側(`gtk/main.c`等、未読)と推測されるが未確認。
 - `fp->font16`(コメント欄PMDモードで使う16pxフォント)が`fmdsp_pacc_set_font16()`で
@@ -325,9 +328,11 @@ pacc固有の追加テクスチャ生成(スプライトデータそのもので
    2,2,2,2,2,2,2,2}`(`fmdsp-pacc.c:1645-1648`および`1748-1751`、FFT用・LEVEL用で
    同一テーブルを別々に保持)。fmdsp.c側の値と一致することを確認済み。単純な線形減衰に
    置き換えず、このテーブルをそのまま移植すべき点はfmdsp.c基準から変わらない。
-7. **VOLUME DOWN/PGM NUMBERの値表示は依然として実装箇所不明**: fmdsp.c/pacc.c
-   両方でラベルのみ確認でき、値の描画コードは発見できなかった。Web版で必要なら
-   別途仕様確認(実機/実プレイヤーでの挙動観察)が要る。
+7. **VOLUME DOWN/PGM NUMBERの値表示は実装箇所が無いことを確認済み(2026-08-16)**:
+   fmdsp.c/pacc.c両方でラベルのみ確認でき、値の描画コードは存在しない。
+   元データ候補(PMDドライバ内部の`pmd->fm_voldown`等)も共通インタフェース
+   `fmdriver_work`には無く、MUCOM88側には概念自体が無いため、取得不能と結論した
+   (`docs/right-pane-data.md` §8)。Web版はこの2項目を暗色描画にして「値が無い」と示す。
 
 ## 10. フォント取り違え点検(2026-08-14)
 

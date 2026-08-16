@@ -70,6 +70,12 @@ const COLOR_3 = 3;
 const COLOR_5 = 5;
 const COLOR_7 = 7;
 
+// 2026-08-16: 「出せない項目は0を表示せず、停止中PLAYと同じ暗い側の色にする」
+// 方針(利用者指示)のための共通名。新しい色は作らず、COLOR_3(fmdsp-pacc.c
+// PLAY/STOP/PAUSEアイコンの非アクティブ色、trackrow.js COLOR_MUTEDと同じ値)を
+// そのまま流用する。
+const COLOR_UNAVAILABLE = COLOR_3;
+
 // --- 位置定数 (fmdsp_sprites.h の enum より、file:line は行コメントに個別記載) ---
 const LOGO_Y = 1; // :97
 const LOGO_FM_X = 312; // :102
@@ -253,9 +259,22 @@ export function drawCurl(vram) {
 
 // PASSED TIME/CLOCK COUNT/TIMER B CYCLE/LOOP COUNT/VOLUME DOWN/PGM NUMBER の
 // ラベル群+区切り線+三角インジケータ。fmdsp-pacc.c:1197-1285。
-// VOLUME DOWN / PGM NUMBER の値描画コードはfmdsp-pacc.c内に見当たらず
-// (docs/fmdsp-layout.md §6「未解決のまま残った項目」参照)、**未確認のため
-// ラベルのみ描画し値は出さない**。
+//
+// VOLUME DOWN / PGM NUMBER: 2026-08-16に出典を掘り直した結果を反映(旧コメントの
+// 「未確認のため」は誤り。docs/right-pane-data.md §8参照)。
+// upstream/98fmplayer/fmdsp/fmdsp-pacc.c・fmdsp.c(GDI版)のどちらにも、この2項目の
+// **値**を描くコードは存在しない(ラベルのみ)。元データ候補の
+// pmd->fm_voldown/ssg_voldown/adpcm_voldown/opnarhythm_voldown/ppz8_voldown
+// (upstream/98fmplayer/fmdriver/fmdriver_pmd.h:352-450)はPMDドライバ内部構造体
+// 限定のフィールドで、fmdsp/wasm側が読める共通インタフェース
+// (struct fmdriver_work/fmdriver_track_status、upstream/98fmplayer/fmdriver/fmdriver.h)
+// には無く、本Web版のwasm export(PmdCore.c/MucomWeb.cpp)にも対応するexportが無い
+// (grep -rn "voldown|pgmnum" pmdweb/src/PmdCore.c mucomweb/src/MucomWeb.cpp で0件)。
+// 「PGM NUMBER」に至っては上流自身が値の出し方を一度も実装していない(ラベルだけ
+// 置いて中身が無い表示スロット)。取れないデータを捏造しないという方針どおり
+// 値は出さず、かつCPU POWER COUNTと同様「この項目は無い」と読めるよう暗色
+// (COLOR_UNAVAILABLE)でラベル・下線・三角を描く(通常のCOLOR_2/COLOR_1より暗く、
+// PASSED TIME等の値が出る項目とひと目で区別できるようにする)。
 export function drawTimeLabels(vram) {
   vram.fillRect(312, 14, 82, 1, COLOR_2); // fmdsp-pacc.c:1197-1199
   vram.fillRect(395, 14, 239, 1, COLOR_7); // fmdsp-pacc.c:1200-1202
@@ -263,10 +282,11 @@ export function drawTimeLabels(vram) {
   vram.fillRect(TIME_BAR_X, CLOCK_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_2);
   vram.fillRect(TIME_BAR_X, TIMERB_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_2);
   vram.fillRect(TIME_BAR_X, LOOPCNT_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_2);
-  vram.fillRect(TIME_BAR_X, VOLDOWN_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_2);
-  vram.fillRect(TIME_BAR_X, PGMNUM_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_2);
+  vram.fillRect(TIME_BAR_X, VOLDOWN_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_UNAVAILABLE);
+  vram.fillRect(TIME_BAR_X, PGMNUM_Y - 2, TIME_BAR_W, TIME_BAR_H, COLOR_UNAVAILABLE);
   for (let i = 0; i < 6; ++i) {
-    vram.fillRect(TIME_TRI_X, TIME_Y + 8 + 19 * i, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
+    const color = i >= 4 ? COLOR_UNAVAILABLE : COLOR_1; // i=4:VOLUME DOWN, i=5:PGM NUMBER
+    vram.fillRect(TIME_TRI_X, TIME_Y + 8 + 19 * i, FILEBAR_TRI_W, FILEBAR_TRI_H, color);
   }
 
   drawText(vram, SMALL_FONT, 'PASSED', TIME_TEXT_X, TIME_Y - 2, COLOR_2);
@@ -279,19 +299,27 @@ export function drawTimeLabels(vram) {
   drawText(vram, SMALL_FONT, 'CYCLE', TIME_TEXT_X + 5, TIMERB_Y + 5, COLOR_2);
   drawText(vram, SMALL_FONT, 'LOOP', TIME_TEXT_X, LOOPCNT_Y - 2, COLOR_2);
   drawText(vram, SMALL_FONT, 'COUNT', TIME_TEXT_X + 5, LOOPCNT_Y + 5, COLOR_2);
-  drawText(vram, SMALL_FONT, 'VOLUME', TIME_TEXT_X, VOLDOWN_Y - 2, COLOR_2);
-  drawText(vram, SMALL_FONT, 'DOWN', TIME_TEXT_X + 10, VOLDOWN_Y + 5, COLOR_2);
-  drawText(vram, SMALL_FONT, 'PGM', TIME_TEXT_X, PGMNUM_Y - 2, COLOR_2);
-  drawText(vram, SMALL_FONT, 'NUMBER', TIME_TEXT_X, PGMNUM_Y + 5, COLOR_2);
+  drawText(vram, SMALL_FONT, 'VOLUME', TIME_TEXT_X, VOLDOWN_Y - 2, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'DOWN', TIME_TEXT_X + 10, VOLDOWN_Y + 5, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'PGM', TIME_TEXT_X, PGMNUM_Y - 2, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'NUMBER', TIME_TEXT_X, PGMNUM_Y + 5, COLOR_UNAVAILABLE);
 }
 
 // CPU POWER COUNT / FRAMES PER SECOND のラベル群。fmdsp-pacc.c:1295-1322。
+//
+// CPU POWER COUNT: 2026-08-16、値を実装しない理由を明確化(旧コメントの
+// 「対応するwasm exportが無い」は理由が不正確だった。docs/right-pane-data.md §8
+// 参照)。上流はtimes(2)でプロセスのCPU時間を取得しているが、ブラウザには
+// プロセスCPU使用率を取得するAPIが無い(Performance APIにも同等のものは無い)。
+// wasm exportの有無の問題ではなく、ブラウザという実行環境の制約でそもそも
+// 測定不能。CPU側だけラベル/下線/三角を暗色(COLOR_UNAVAILABLE)にし、FRAMES PER
+// SECOND(実装済み、drawCpuFps参照)とひと目で区別できるようにする。
 export function drawCpuFpsLabels(vram) {
-  vram.fillRect(CPU_BAR_X, CPU_Y, TIME_BAR_W, TIME_BAR_H, COLOR_2);
-  drawText(vram, SMALL_FONT, 'CPU', CPU_X, CPU_Y, COLOR_2);
-  drawText(vram, SMALL_FONT, 'POWER', CPU_X + 17, CPU_Y, COLOR_2);
-  drawText(vram, SMALL_FONT, 'COUNT', CPU_X + 17, CPU_Y + 7, COLOR_2);
-  vram.fillRect(CPU_TRI_X, CPU_TRI_Y, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_1);
+  vram.fillRect(CPU_BAR_X, CPU_Y, TIME_BAR_W, TIME_BAR_H, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'CPU', CPU_X, CPU_Y, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'POWER', CPU_X + 17, CPU_Y, COLOR_UNAVAILABLE);
+  drawText(vram, SMALL_FONT, 'COUNT', CPU_X + 17, CPU_Y + 7, COLOR_UNAVAILABLE);
+  vram.fillRect(CPU_TRI_X, CPU_TRI_Y, FILEBAR_TRI_W, FILEBAR_TRI_H, COLOR_UNAVAILABLE);
 
   vram.fillRect(FPS_BAR_X, CPU_Y, TIME_BAR_W, TIME_BAR_H, COLOR_2);
   drawText(vram, SMALL_FONT, 'FRAMES', FPS_X, CPU_Y, COLOR_2);
@@ -448,19 +476,62 @@ export function drawLoopCount(vram, loopCnt) {
 }
 
 // CPU POWER COUNT / FRAMES PER SECOND。fmdsp-pacc.c:1573-1594。各3桁。
+//
+// CPU POWER COUNT: drawCpuFpsLabels()のコメントのとおりブラウザにはプロセスCPU
+// 使用率を取得する手段が無く、恒久的に「出せない項目」。cpuusage引数の値
+// (常に0を渡される想定)をそのまま描くと「0%」という尤もらしい実測値に見えて
+// しまうため、桁の形は出しつつ blitColor で強制的に COLOR_UNAVAILABLE(暗色、
+// trackrow.js の COLOR_MUTED と同じ流儀)に塗り直し、baked-inの明色(S_NUMスプライト
+// 自体に埋め込まれた色2/3)を上書きする。
+//
+// FRAMES PER SECOND: 2026-08-16実装。上流fmdsp_fps_30()(30フレーム毎の実測FPS)は
+// wasmや音源と無関係にホスト側の描画ループを数えているだけなので、本Web版でも
+// 同じ意味の値(rAFループの実測フレームレート)を渡せる。呼び出し側は
+// createFpsCounter()/tickFpsCounter()(下記)で作った値をfps引数に渡す想定。
+// 0-999にクランプ(3桁表示のため)し、NaN/Infinity等の異常値が来てもクラッシュ
+// せず0にフォールバックする(過去に「自動ブラウザでrAFが0回/正常回数」の両方が
+// 実測されている環境向けの防御、feedback_headless_raf_never_runs.md参照)。
 export function drawCpuFps(vram, cpuusage, fps) {
-  let c = cpuusage;
+  void cpuusage; // 恒久的に未使用(上記コメント参照)。呼び出し側との互換のため引数は残す。
   for (let i = 0; i < 3; ++i) {
-    const num = c % 10;
-    c = Math.floor(c / 10);
-    drawNumFrame(vram, CPU_NUM_X + NUM_W * (2 - i), CPU_NUM_Y, num);
+    vram.blitColor(S_NUM[0], NUM_W, CPU_NUM_X + NUM_W * (2 - i), CPU_NUM_Y, NUM_W, NUM_H, COLOR_UNAVAILABLE);
   }
-  let f = fps;
+  const safeFps = Number.isFinite(fps) ? Math.max(0, Math.min(999, Math.round(fps))) : 0;
+  let f = safeFps;
   for (let i = 0; i < 3; ++i) {
     const num = f % 10;
     f = Math.floor(f / 10);
     drawNumFrame(vram, FPS_NUM_X + NUM_W * (2 - i), CPU_NUM_Y, num);
   }
+}
+
+// 描画ループ(rAF)の実測フレームレートを数えるカウンタ。DOM/canvasに依存しない
+// 純粋な状態オブジェクト+関数(tools/verify_fps_counter.mjsでNode単体テスト可能)。
+// 1秒ぶんのフレーム数をカウントし、1秒経過するたびに fps 値を更新する
+// (瞬間的なフレーム間隔のブレに左右されにくくするため、1フレームごとの
+// 1000/dt計算はしない)。
+export function createFpsCounter() {
+  return { windowStart: null, frameCount: 0, value: 0 };
+}
+
+// counter: createFpsCounter()で作ったオブジェクト(破壊的に更新する)。
+// nowMs: 呼び出し時刻(performance.now()相当、単調増加のミリ秒)。
+// 戻り値: 直近で確定したfps値(1秒未満しか経過していない間は前回値を返す。
+// 初回呼び出し直後は0)。
+export function tickFpsCounter(counter, nowMs) {
+  if (!Number.isFinite(nowMs)) return counter.value; // 異常値: 状態を進めずクラッシュもしない
+  if (counter.windowStart === null) {
+    counter.windowStart = nowMs;
+    counter.frameCount = 0;
+  }
+  counter.frameCount += 1;
+  const elapsed = nowMs - counter.windowStart;
+  if (elapsed >= 1000) {
+    counter.value = Math.round((counter.frameCount * 1000) / elapsed);
+    counter.windowStart = nowMs;
+    counter.frameCount = 0;
+  }
+  return counter.value;
 }
 
 // ループ進捗バー。fmdsp-pacc.c:1595-1610。

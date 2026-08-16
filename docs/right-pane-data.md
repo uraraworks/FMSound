@@ -309,7 +309,8 @@ PMD側では長らく、これらのカウンタに対応するwasm exportが存
 | LOOP COUNT | `work->loop_cnt` | **取得できる**(新規追加) |
 | ループ進捗バー | `work->timerb_cnt_loop` / `work->loop_timerb_cnt` | **取得できる**(新規追加) |
 | 回転円(drawCircle) | `work->timerb_cnt`(CLOCK COUNTと同じ値を`/8%8`) | **取得できる**(CLOCK COUNTと共用) |
-| CPU POWER COUNT / FRAMES PER SECOND | 対応するwasm export無し | **取得できない。0のまま**(でっち上げていない。旧実装と同じ方針を継続) |
+| CPU POWER COUNT | プロセスCPU使用率(ブラウザにAPI無し) | **取得できない**(下記§8参照。CPU側は暗色描画に固定) |
+| FRAMES PER SECOND | ホスト側描画ループの実測(wasm export不要) | **2026-08-16実装**。下記§8参照 |
 
 MUCOM側(`mucomweb/src/MucomWeb.cpp`)は`passTick`(`vm->time_master`)から
 経過時間を逆算する必要があったが、PMD側は`frame`フィールド自体が既に
@@ -385,3 +386,45 @@ AudioWorkletの出力レイテンシ相当)はMUCOM側の実測(§ドキュメ�
 `fmdsp/`・`mucomweb/`は一切変更していない。ブラウザで`?driver=mucom`を開き、
 PASSED TIME/CLOCK COUNT/回転円が引き続き正常に動作すること、
 `tools/verify_right_pane_data_mucom.mjs`がALL PASSすることを確認した。
+
+## 8. CPU POWER COUNT/FRAMES PER SECOND/VOLUME DOWN/PGM NUMBER(2026-08-16)
+
+上の表(§7)の「CPU POWER COUNT / FRAMES PER SECOND | 対応するwasm export無し |
+取得できない。0のまま」という記述は誤りだった。実装前に4項目それぞれの取得可否を
+調べ直した結果は次のとおり:
+
+| 項目 | 取得可否 | 理由 |
+|---|---|---|
+| FRAMES PER SECOND | **取得できる(実装済み)** | 上流`fmdsp_fps_30()`(`upstream/98fmplayer/fmdsp/fmdsp_platform_unix.c:29`)はwasmや音源と無関係に、ホスト側の描画呼び出し頻度を30フレームぶん数えているだけの値。本Web版でも同じ意味の値(描画ループ=`updateChannelStatus()`のrAF実測頻度)を`fmdsp/rightpane.js`の`createFpsCounter()`/`tickFpsCounter()`で数えられる。wasm exportは一切不要 |
+| CPU POWER COUNT | **恒久的に取得できない** | 上流は`times(2)`(POSIX)でプロセスのCPU時間を取得している。**wasm exportの有無の問題ではなく**、ブラウザにはプロセス/タブ単位のCPU使用率を取得するAPIが存在しない(Performance APIにも同等のものは無い)。旧コメントの「対応するwasm exportが無い」は原因の説明として不正確だった |
+| VOLUME DOWN | **取得できない** | 上流(`fmdsp-pacc.c`・GDI版`fmdsp.c`のどちらも)、この項目の**値**を描くコードが存在しない(ラベルのみ)。元データ候補の`pmd->fm_voldown`/`ssg_voldown`/`adpcm_voldown`/`opnarhythm_voldown`/`ppz8_voldown`(`upstream/98fmplayer/fmdriver/fmdriver_pmd.h:352-450`)はPMDドライバ**内部**構造体限定のフィールドで、fmdsp/wasm側が読める共通インタフェース(`struct fmdriver_work`、`upstream/98fmplayer/fmdriver/fmdriver.h:77-141`、grep -n "voldown" で該当なしを確認済み)には含まれない。本Web版のwasm export(`pmdweb/src/PmdCore.c`/`mucomweb/src/MucomWeb.cpp`)にも対応するexportは無い(grep -rn "voldown" で0件)。MUCOM88側(`upstream/MucomWeb/mucom88/src/`)にはそもそも同名の概念自体が存在しない(grep -rn "voldown" で0件) |
+| PGM NUMBER(依頼メモでは「BGM NUMBER」表記) | **取得できない** | VOLUME DOWNと同じく、上流のどちらの描画実装にも値を出すコードが無い。加えて`struct fmdriver_work`/PMDドライバ内部構造体のどちらにもそれらしいフィールドが見当たらず(fmdriver_pmd.hを全文確認)、何を指す項目なのか上流自身が実装した形跡が無い(ラベルだけ置かれた未使用スロットの可能性が高い) |
+
+### 実装
+
+- `fmdsp/rightpane.js`: `createFpsCounter()`/`tickFpsCounter()`(DOM非依存の純粋関数、
+  `tools/verify_fps_counter.mjs`でNode単体テスト可能)を追加。`drawCpuFps()`は
+  FPS引数をそのまま数字スプライトへ(通常のblitCopy、上流と同じ意匠)、CPU側は
+  常に`COLOR_UNAVAILABLE`(=`COLOR_3`)で強制的に塗り直す(値自体は0のまま渡している
+  が、表示は「桁の形はあるが暗色」で「この項目は無い」と読めるようにする。
+  0という値そのものを見せない)
+- `drawCpuFpsLabels()`のCPU側ラベル/下線/三角、`drawTimeLabels()`のVOLUME DOWN/
+  PGM NUMBERのラベル/下線/三角も同じ`COLOR_UNAVAILABLE`にした(値の項目
+  (PASSED TIME等)は`COLOR_2`のまま据え置き、ラベルの色だけでも「値が出ない
+  項目」だとひと目で区別できるようにする)
+- `html/pmd-app.js`・`html/mucom-app.js`: `updateChannelStatus()`(rAF駆動の
+  描画ループ本体)の先頭で`tickFpsCounter()`を呼び、その戻り値を
+  `rightpane.drawDynamic()`の`fps`引数へ渡す
+
+### 検証
+
+`tools/verify_fps_counter.mjs`: 60Hz/30Hz相当の合成タイムスタンプ列でfps値が
+妥当な範囲になること、1秒未満の経過では値が更新されないこと、elapsed=0の
+連発・NaN/Infinity・時刻の巻き戻りを注入してもクラッシュせず有限値を保つこと
+を確認(過去に「自動ブラウザのrAFは0回のことも59.97Hzのこともある」実測が
+あるため、ブラウザのrAFを信頼せずロジック自体をNode上で検証する方針)。
+
+`tools/verify_right_pane_unavailable_colors.mjs`: CPU数字桁が暗色のみ
+(色2を含まない)で構成される一方、FPS数字桁は通常描画のまま(素のスプライトの
+色2を含む)ことを対照させて確認。VOLUME DOWN/PGM NUMBERラベルが暗色のみである
+一方、PASSED TIME(値がある項目)は暗色化されていないことも確認。
