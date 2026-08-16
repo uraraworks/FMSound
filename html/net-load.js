@@ -11,6 +11,7 @@ import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
 import { openLibraryDb, saveSong, importArchiveSongs } from './net/library.js';
 import { describeSongCandidate } from './net/album-info.js';
+import { t } from './ui/i18n.js';
 
 // FILEBAR(FMDSP MUSIC FILEバー)専用の固定ラベル。「読み込み元がファイルでない」
 // 経路(下書き復元)向け(課題B追補、2026-08-15、利用者報告)。曲を読み込む経路が
@@ -219,7 +220,7 @@ export async function persistSongToLibrary(input) {
       bytes: input.bytes,
     });
   } catch (err) {
-    console.warn('[net-load] 曲のライブラリ保存に失敗しました(再生は継続します)', err);
+    console.warn('[net-load] failed to save the song to the library (playback continues)', err);
   }
 }
 
@@ -247,7 +248,7 @@ export async function importArchiveSongsToLibrary(input) {
     const db = input.db !== undefined ? input.db : await getLibraryDb();
     return await importArchiveSongs(db, input);
   } catch (err) {
-    console.warn('[net-load] 書庫からのライブラリ一括取り込みに失敗しました(再生は継続します)', err);
+    console.warn('[net-load] failed to bulk-import the archive into the library (playback continues)', err);
     return { total: input.candidates.length, added: 0, unchanged: 0 };
   }
 }
@@ -357,11 +358,11 @@ export function pickSongCandidate(candidates, opts = {}) {
     modal.className = 'song-picker-modal';
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
-    modal.setAttribute('aria-label', '曲を選択');
+    modal.setAttribute('aria-label', t('picker.ariaLabel'));
 
     const title = document.createElement('p');
     title.className = 'song-picker-title';
-    title.textContent = opts.title ?? `書庫の中から曲を選んでください(${candidates.length}件見つかりました)`;
+    title.textContent = opts.title ?? t('picker.title', { count: candidates.length });
     modal.appendChild(title);
 
     const list = document.createElement('ul');
@@ -383,12 +384,12 @@ export function pickSongCandidate(candidates, opts = {}) {
       if (candidate.related.length > 0) {
         const relatedEl = document.createElement('div');
         relatedEl.className = 'song-picker-related';
-        relatedEl.append('関連ファイル: ');
+        relatedEl.append(t('picker.relatedFilesLabel'));
         for (const rel of candidate.related) {
           const a = document.createElement('a');
           a.href = 'javascript:void(0);';
           a.textContent = baseNameOf(rel.name);
-          a.title = 'クリックでダウンロード(#voice/#pcm等の付随ファイル。読み込みは別途手動で行ってください)';
+          a.title = t('picker.relatedFileDownloadTitle');
           a.addEventListener('click', (e) => {
             e.stopPropagation();
             downloadArchiveEntry(rel);
@@ -405,7 +406,7 @@ export function pickSongCandidate(candidates, opts = {}) {
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'song-picker-cancel';
-    cancelBtn.textContent = 'キャンセル';
+    cancelBtn.textContent = t('picker.cancel');
     cancelBtn.addEventListener('click', () => {
       cleanup();
       resolve(null);

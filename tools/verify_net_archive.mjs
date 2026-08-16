@@ -173,7 +173,9 @@ const lzhExtracted = await verifyArchiveBytes('LZH', lzhBytes, 'test.lzh');
     try {
       await extractArchive('corrupted.lzh', corrupted);
     } catch (err) {
-      threw = /CRC16/.test(String(err && err.message));
+      // net/層はコードだけを持つ設計(net/archive-util.js netError()参照)なので、
+      // メッセージ文字列ではなくerr.codeで判定する。
+      threw = err && err.code === 'lzh.crcMismatch';
     }
     check('故障注入: 1バイト破壊するとCRC16不一致で例外が飛ぶ(検査が機能している証拠)', threw);
   }

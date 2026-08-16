@@ -65,6 +65,15 @@ const L1_COMPLETE_FILES = [
   'ui/open-menu.js',
   'ui/download-menu.js',
   'ui/library-panel.js',
+  // L2(2026-08-16、今回のラウンド)で移行し終えたファイル。
+  // html/mucom-app.js・html/pmd-app.js はここへは入れない: 動的UI文言(再生ボタン・
+  // コンパイル結果・サンプル/確認ダイアログ・下書き復元通知・ネットワーク読み込み状態・
+  // デバッグ見出し)は全てi18n経由にしたが、PMD_NEW_MML_TEMPLATE/MUCOM_NEW_MML_TEMPLATE
+  // (新規作成ボタンで挿入するMML本文そのもの、曲データの一部でUI文言ではない)に
+  // 日本語コメントが残るため、意図的に0件を要求しない(報告参照)。
+  'html/net-load.js',
+  'ui/mml-status.js',
+  'ui/mml-caveats.js',
 ];
 
 function stripJsComments(text) {

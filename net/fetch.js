@@ -11,6 +11,7 @@
 // 壊れないよう、必ずビルド/検証の最初のステップとして
 // `python3 tools/gen_net_config.py` を走らせること(tools/build_dist.sh参照)。
 import { NET_PROXY_BASE } from './config.js';
+import { netError } from './archive-util.js';
 export { NET_PROXY_BASE };
 
 // OneDriveの共有リンクは実測で中継しても取得できないことが判明しているため、中継を試さず
@@ -54,25 +55,29 @@ export function looksLikeHtml(bytes, contentType) {
   return HTML_TEXT_PATTERNS.some((pattern) => head.startsWith(pattern));
 }
 
-/** 中継サーバのエラーJSON(`{"error":"host_not_allowed"}` 等)をHTTPステータスとあわせて利用者向け理由文言に変換する。 @param {number} status @param {string | undefined} code */
-function describeProxyError(status, code) {
+/**
+ * 中継サーバのエラーJSON(`{"error":"host_not_allowed"}` 等)を net.error.* の
+ * コード名へ変換する(理由文言そのものはUI層がui/i18n.jsの辞書から引く)。
+ * @param {string | undefined} code
+ */
+function proxyErrorCode(code) {
   switch (code) {
     case 'bad_url':
-      return '不正なURLです';
+      return 'fetch.proxyBadUrl';
     case 'origin_not_allowed':
-      return 'この配信元からの取得は許可されていません';
+      return 'fetch.proxyOriginNotAllowed';
     case 'host_not_allowed':
-      return 'このホストからの取得は許可されていません';
+      return 'fetch.proxyHostNotAllowed';
     case 'too_large':
-      return 'ファイルサイズが大きすぎます';
+      return 'fetch.proxyTooLarge';
     case 'rate_limited':
-      return 'リクエストが多すぎます。しばらく待って再試行してください';
+      return 'fetch.proxyRateLimited';
     case 'upstream_failed':
-      return '配信元からの取得に失敗しました';
+      return 'fetch.proxyUpstreamFailed';
     case 'redirect_not_allowed':
-      return 'リダイレクト先への取得は許可されていません';
+      return 'fetch.proxyRedirectNotAllowed';
     default:
-      return `中継サーバーがエラーを返しました(status=${status})`;
+      return 'fetch.proxyUnknown';
   }
 }
 
@@ -125,11 +130,11 @@ async function fetchViaProxy(url, progress, fallbackError, onHeaders) {
     } catch {
       // 中継側がJSONを返さなかった場合はステータスのみで案内する。
     }
-    throw new Error(`中継サーバー経由での取得に失敗しました(${url}): ${describeProxyError(proxyResponse.status, code)}`);
+    throw netError(proxyErrorCode(code), { url, status: proxyResponse.status });
   }
   const bytes = await readResponseWithProgress(proxyResponse, progress);
   if (looksLikeHtml(bytes, proxyResponse.headers.get('content-type'))) {
-    throw new Error(`取得結果がHTMLページでした(${url})。共有リンクの権限設定を確認してください`);
+    throw netError('fetch.gotHtml', { url });
   }
   onHeaders(proxyResponse.headers);
   return bytes;
@@ -165,7 +170,7 @@ export async function fetchSongBytes(url, onProgress, onHeaders) {
   const reportHeaders = onHeaders ?? (() => {});
   const hostname = urlHostname(url);
   if (hostMatches(hostname, ONEDRIVE_HOSTS)) {
-    throw new Error(`OneDriveの共有リンクは直接取得できません(${url})。ダウンロードして手動で読み込んでください`);
+    throw netError('fetch.oneDriveUnsupported', { url });
   }
 
   const skipDirect = Boolean(NET_PROXY_BASE) && hostMatches(hostname, PROXY_CAPABLE_HOSTS);
@@ -176,7 +181,7 @@ export async function fetchSongBytes(url, onProgress, onHeaders) {
     try {
       const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`取得に失敗しました(${url}): HTTP ${response.status}`);
+        throw netError('fetch.httpError', { url, status: response.status });
       }
       const bytes = await readResponseWithProgress(response, progress);
       if (!looksLikeHtml(bytes, response.headers.get('content-type'))) {
@@ -185,22 +190,22 @@ export async function fetchSongBytes(url, onProgress, onHeaders) {
       }
       directWasHtml = true;
     } catch (err) {
-      directError = err instanceof Error && err.message ? err : new Error(`ネットワークエラーで取得できませんでした(${url})`);
+      directError = err instanceof Error && err.code ? err : netError('fetch.networkError', { url });
     }
   }
 
   if (!NET_PROXY_BASE) {
-    if (directWasHtml) throw new Error(`取得結果がHTMLページでした(${url})。共有リンクの権限設定を確認してください`);
+    if (directWasHtml) throw netError('fetch.gotHtml', { url });
     if (directError) {
       if (hostMatches(hostname, PROXY_CAPABLE_HOSTS)) {
-        throw new Error(`このホストは直接取得できません(${url})。中継サーバーの設定が必要です`);
+        throw netError('fetch.hostUnsupported', { url });
       }
       throw directError;
     }
     // skipDirect かつ中継未設定はここには来ない(PROXY_CAPABLE_HOSTS判定にNET_PROXY_BASEを含むため)。
-    throw new Error(`このホストは直接取得できません(${url})。中継サーバーの設定が必要です`);
+    throw netError('fetch.hostUnsupported', { url });
   }
 
-  const fallbackError = directError ?? new Error(`ネットワークエラーで取得できませんでした(${url})`);
+  const fallbackError = directError ?? netError('fetch.networkError', { url });
   return await fetchViaProxy(url, progress, fallbackError, reportHeaders);
 }

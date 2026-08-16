@@ -27,6 +27,7 @@ import { createDownloadMenu } from './ui/download-menu.js';
 import { createOpenMenu } from './ui/open-menu.js';
 import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
+import { describeNetError } from './ui/net-error.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
@@ -121,7 +122,7 @@ async function loadPcmBank(Module) {
     const buffer = await response.arrayBuffer();
     Module.FS.writeFile('/mucompcm.bin', new Uint8Array(buffer));
   } catch (e) {
-    console.warn('[mucom-app] 標準PCMバンク(mucompcm.bin)の読み込みに失敗しました。Kパート(ADPCM)は無音のままになります。', e);
+    console.warn('[mucom-app] failed to load the standard PCM bank (mucompcm.bin). The K part (ADPCM) will remain silent.', e);
   }
 }
 
@@ -139,7 +140,7 @@ async function loadRhythmSamples(Module) {
       const buffer = await response.arrayBuffer();
       Module.FS.writeFile(`/rhythm/${fileName}`, new Uint8Array(buffer));
     } catch (e) {
-      console.warn(`[mucom-app] リズムサンプル ${fileName} の読み込みに失敗しました。リズムパートは無音のままになります。`, e);
+      console.warn(`[mucom-app] failed to load the rhythm sample ${fileName}. The rhythm part will remain silent.`, e);
     }
   }));
 }
@@ -181,7 +182,7 @@ export async function init(ctx) {
     </div>
     <div id="result"></div>
     <details class="debug-table debug-only" id="debugTable">
-      <summary>デバッグ用テーブル(生のPCHDATA、切り分け用に残す)</summary>
+      <summary>${t('debug.pchTableHeading')}</summary>
       <table id="channelStatus">
         <thead>
           <tr><th>ch</th><th>vnum</th><th>volume</th><th>quantize</th><th>length</th><th>fnum</th><th>flag</th></tr>
@@ -200,7 +201,7 @@ export async function init(ctx) {
   // 利用者向けサンプルではないため?debug=1のときだけ表示する(class="debug-only")。
   sampleLinksEl.innerHTML = `
     Sample MML:
-    <a href="javascript:void(0);" id="dlSampleFurEliseMucom">sample_fur_elise_mucom.muc(エリーゼのために・冒頭)</a>
+    <a href="javascript:void(0);" id="dlSampleFurEliseMucom">sample_fur_elise_mucom.muc(${t('sample.furEliseLabel')})</a>
     <a href="javascript:void(0);" id="dlSamplJa" class="debug-only">samplja.muc</a>
   `;
 
@@ -310,8 +311,8 @@ export async function init(ctx) {
     mmlEditorApi.render();
     const savedLabel = formatSavedAt(draft.savedAt);
     mmlRestoreNoteEl.textContent = savedLabel
-      ? `前回の続きを復元しました(${savedLabel}保存)`
-      : '前回の続きを復元しました';
+      ? t('restore.noteWithTime', { time: savedLabel })
+      : t('restore.note');
     mmlRestoreNoteEl.classList.remove('hidden');
     mmlTextarea.addEventListener('input', () => mmlRestoreNoteEl.classList.add('hidden'), { once: true });
   }
@@ -361,7 +362,7 @@ export async function init(ctx) {
     const line = extractErrorLine(text);
     if (line != null) {
       resultEl.classList.add('result-has-error-line');
-      resultEl.title = `クリックでMML ${line}行目へ移動`;
+      resultEl.title = t('mml.jumpToLine', { line });
       resultEl.onclick = () => mmlEditorApi.jumpToLine(line);
     } else {
       resultEl.classList.remove('result-has-error-line');
@@ -391,7 +392,7 @@ export async function init(ctx) {
 
   // 課題A: 編集欄が空のまま再生されたとき、古いエラー表示を残さず案内を出す。
   function showEmptyMmlNotice() {
-    const message = 'MMLが空です。何か入力してから再生してください。';
+    const message = t('mml.emptyNotice');
     resultEl.textContent = message;
     resultEl.classList.remove('mml-compile-error', 'result-has-error-line');
     resultEl.removeAttribute('title');
@@ -487,10 +488,10 @@ export async function init(ctx) {
 
     const iconKey = !mmlDirty && playing ? 'pause' : 'play';
     // ドットの意味を利用者に伝える(PMD側と同じ対応。見た目は変えずtitle/aria-labelだけ)。
-    const baseLabel = mmlDirty
-      ? '未コンパイルの変更があります(クリックでコンパイル&再生)'
-      : (playing ? '一時停止' : (paused ? '再開' : 'コンパイル&再生'));
-    const label = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
+    const label = mmlDirty
+      ? t('transport.dirtyHintParen', { hint: SHORTCUT_PLAY_HINT })
+      : (playing ? t('transport.pause', { hint: SHORTCUT_PLAY_HINT })
+        : (paused ? t('transport.resume', { hint: SHORTCUT_PLAY_HINT }) : t('transport.compileAndPlay', { hint: SHORTCUT_PLAY_HINT })));
     if (iconKey !== lastPlayIconKey) {
       const icon = iconKey === 'pause' ? ICONS.pause : ICONS.play;
       btnPlayPause.replaceChildren(svgIcon(icon.path ?? icon, icon.extra ?? ''));
@@ -674,7 +675,7 @@ export async function init(ctx) {
     }
     encodingBadgeEl.classList.remove('hidden');
     const label = lastLoadedEncoding === 'utf-8' ? 'UTF-8' : 'CP932(Shift_JIS)';
-    encodingBadgeEl.textContent = `文字コード判定: ${label}(自動判定。クリックで切り替え)`;
+    encodingBadgeEl.textContent = t('mucom.encodingBadge', { label });
   }
 
   encodingBadgeEl.addEventListener('click', () => {
@@ -989,10 +990,10 @@ export async function init(ctx) {
     const msgBytes = Module.HEAPU8.subarray(msgPtr, msgPtr + msgLen);
     let compileMessage = cp932MessageDecoder.decode(msgBytes);
     if (unresolvedNames.length > 0) {
-      compileMessage += `\n[注意] 一部の音色名を解決できませんでした: ${unresolvedNames.join(', ')}`;
+      compileMessage += t('mucom.unresolvedVoiceNames', { names: unresolvedNames.join(', ') });
     }
     if (voiceBankApplied) {
-      compileMessage += `\n[情報] このディスクの音色バンク(${currentVoiceBankSource ?? '外部バンク'})を使用しています`;
+      compileMessage += t('mucom.voiceBankInUse', { source: currentVoiceBankSource ?? t('mucom.externalBankFallback') });
     }
     renderCompileResult(compileMessage);
     const audioStateAfter = globalThis.mucomAudioState;
@@ -1019,9 +1020,7 @@ export async function init(ctx) {
   btnNewMml.addEventListener('click', function() {
     const ta = document.getElementById('mml');
     if (ta.value.length > 0) {
-      const ok = window.confirm(
-        '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
-      );
+      const ok = window.confirm(t('confirm.newFile'));
       if (!ok) return;
     }
     ta.focus();
@@ -1094,9 +1093,7 @@ export async function init(ctx) {
     // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
     // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
     if (mmlTextarea.value.trim().length > 0) {
-      const ok = window.confirm(
-        '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
-      );
+      const ok = window.confirm(t('confirm.sampleReplace'));
       if (!ok) return Promise.resolve();
     }
     return fetch(url)
@@ -1171,9 +1168,7 @@ export async function init(ctx) {
   // 使う。複数件落とされた場合は黙って捨てず、netStatusで案内する)。
   ctx.handleDroppedFiles = (files) => {
     if (files.length > 1) {
-      setNetStatus(
-        `複数のファイル(${files.length}件)がドロップされましたが、1件目「${files[0].name}」のみ読み込みます`,
-        false);
+      setNetStatus(t('net.dropMultiple', { count: files.length, name: files[0].name }), false);
     }
     openMmlFile(files[0]);
   };
@@ -1208,14 +1203,14 @@ export async function init(ctx) {
   // 読み込み後にmmlDirty/hasCompiledの状態から自然に「未コンパイル」扱いになり、
   // 利用者が再生ボタンを押すとneedsCompileNow()経由でコンパイル&再生される。
   async function loadSongFromUrl(url) {
-    setNetStatus(`読み込み中: ${url}`, false);
+    setNetStatus(t('net.loading', { url }), false);
     let resolved;
     try {
       resolved = await resolveSongFromUrl(url, (loaded, total) => {
-        setNetStatus(total ? `読み込み中: ${loaded}/${total} bytes` : `読み込み中: ${loaded} bytes`, false);
+        setNetStatus(total ? t('net.loadingProgress', { loaded, total }) : t('net.loadingProgressNoTotal', { loaded }), false);
       });
     } catch (err) {
-      setNetStatus(err && err.message ? err.message : `取得に失敗しました(${url})`, true);
+      setNetStatus(describeNetError(err), true);
       return;
     }
 
@@ -1225,8 +1220,8 @@ export async function init(ctx) {
         const otherCount = resolved.candidates.length;
         setNetStatus(
           otherCount > 0
-            ? `この書庫にMUCOM88(.muc)の曲は見つかりませんでした(他ドライバの曲が${otherCount}件見つかりました。?driver=pmd で開き直してください)`
-            : 'この書庫の中に再生可能な曲が見つかりませんでした',
+            ? t('net.noMucomCandidatesOther', { otherCount })
+            : t('net.noPlayableSongs'),
           true,
         );
         return;
@@ -1243,9 +1238,9 @@ export async function init(ctx) {
         defaultVoiceNames: MUCOM_DEFAULT_VOICE_NAMES,
       });
       if (importResult.added > 0) {
-        setNetStatus(`${importResult.total}曲をライブラリに追加しました`, false);
+        setNetStatus(t('net.addedToLibrary', { count: importResult.total }), false);
       } else if (importResult.total > 0) {
-        setNetStatus(`${importResult.total}曲は既にライブラリにあります`, false);
+        setNetStatus(t('net.alreadyInLibrary', { count: importResult.total }), false);
       }
 
       let chosen = mucomCandidates[0];
@@ -1260,7 +1255,7 @@ export async function init(ctx) {
         // ままになる。
         chosen = await pickSongCandidate(mucomCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
         if (!chosen) {
-          setNetStatus('曲の選択をキャンセルしました', false);
+          setNetStatus(t('net.selectionCancelled'), false);
           return;
         }
       }
@@ -1277,8 +1272,8 @@ export async function init(ctx) {
       });
       setNetStatus(
         voicePair
-          ? `読み込みました: ${chosen.displayName}(音色バンク: ${voicePair.sysDiskName}、再生ボタンを押してください)`
-          : `読み込みました: ${chosen.displayName}(再生ボタンを押してください)`,
+          ? t('net.loadedReadyWithVoiceBank', { name: chosen.displayName, source: voicePair.sysDiskName })
+          : t('net.loadedReady', { name: chosen.displayName }),
         false,
       );
       reflectLoadedUrlInAddressBar(url);
@@ -1289,7 +1284,7 @@ export async function init(ctx) {
     // ツールバーの「読み込みました」表示は従来どおり曲名(タイトル)を優先する
     // resolved.nameのまま(役割が違ってよい、利用者判断)。
     applyMmlBytes(resolved.bytes, { name: resolved.fileName });
-    setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
+    setNetStatus(t('net.loadedReady', { name: resolved.name }), false);
     reflectLoadedUrlInAddressBar(url);
     // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
     // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。

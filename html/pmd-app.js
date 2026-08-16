@@ -44,6 +44,7 @@ import { createDownloadMenu } from './ui/download-menu.js';
 import { createOpenMenu } from './ui/open-menu.js';
 import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
+import { describeNetError } from './ui/net-error.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
@@ -93,17 +94,15 @@ export async function init(ctx) {
   // tools/gen_sample_fur_elise.mjsが同じソースから.Mと.mmlの両方を生成しているので
   // 内容は常に一致する)をエディタへ読み込んでからコンパイル&再生する。
   sampleLinksEl.innerHTML =
-    '<a href="javascript:void(0);" id="dlSampleFurElise">sample_fur_elise.M(エリーゼのために・冒頭)</a>' +
-    '　「曲を開く」から手元の.M/.mファイルを選ぶこともできます。';
+    `<a href="javascript:void(0);" id="dlSampleFurElise">sample_fur_elise.M(${t('sample.furEliseLabel')})</a>` +
+    `　${t('sample.openHintPmd')}`;
   document.getElementById('dlSampleFurElise').addEventListener('click', async () => {
     // 課題A: 復元した下書き/編集中の内容をサンプルで黙って上書きしない。
     // 何か入っている状態でのクリックだけ確認する(空なら聞くまでもない)。
     // プレイヤーモードでも同じ確認をする(下のとおりプレイヤーモードでも編集欄を
     // 静かに更新するため、モードで確認の有無を変えない)。
     if (mmlTextarea.value.trim().length > 0) {
-      const ok = window.confirm(
-        '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?'
-      );
+      const ok = window.confirm(t('confirm.sampleReplace'));
       if (!ok) return;
     }
     if (uiMode === 'editor') {
@@ -150,7 +149,7 @@ export async function init(ctx) {
       <div id="result"></div>
     </div>
     <details class="debug-table debug-only" id="debugTable">
-      <summary>デバッグ用テーブル(生のトラック状態、切り分け用に残す)</summary>
+      <summary>${t('debug.trackTableHeading')}</summary>
       <table id="channelStatus">
         <thead>
           <tr><th>track</th><th>play</th><th>tone</th><th>vol</th><th>ticks</th><th>left</th><th>key</th><th>actual</th><th>gate</th><th>status</th></tr>
@@ -274,8 +273,8 @@ export async function init(ctx) {
     mmlEditorApi.render();
     const savedLabel = formatSavedAt(draft.savedAt);
     mmlRestoreNoteEl.textContent = savedLabel
-      ? `前回の続きを復元しました(${savedLabel}保存)`
-      : '前回の続きを復元しました';
+      ? t('restore.noteWithTime', { time: savedLabel })
+      : t('restore.note');
     mmlRestoreNoteEl.classList.remove('hidden');
     mmlTextarea.addEventListener('input', () => mmlRestoreNoteEl.classList.add('hidden'), { once: true });
   }
@@ -343,7 +342,7 @@ export async function init(ctx) {
       div.classList.add('mml-compile-error-text');
       if (e.line != null) {
         div.classList.add('mml-error-line');
-        div.title = `クリックでMML ${e.line}行目へ移動`;
+        div.title = t('mml.jumpToLine', { line: e.line });
         div.addEventListener('click', () => mmlEditorApi.jumpToLine(e.line));
       }
       resultEl.appendChild(div);
@@ -363,8 +362,9 @@ export async function init(ctx) {
   // 課題A: 編集欄が空のまま再生されたとき、古いエラー表示を残さず案内を出す。
   function showEmptyMmlNotice() {
     resultEl.replaceChildren();
-    resultEl.textContent = 'MMLが空です。何か入力してから再生してください。';
-    setMmlStatus(mmlStatusEl, { ok: false, message: 'MMLが空です。何か入力してから再生してください。' });
+    const message = t('mml.emptyNotice');
+    resultEl.textContent = message;
+    setMmlStatus(mmlStatusEl, { ok: false, message });
   }
 
   // 課題B: 「Clear MML」を「新規作成」に置き換える。空にするのではなく、押した直後に
@@ -373,9 +373,7 @@ export async function init(ctx) {
   btnNewMml.addEventListener('click', function() {
     const ta = mmlTextarea;
     if (ta.value.length > 0) {
-      const ok = window.confirm(
-        '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?'
-      );
+      const ok = window.confirm(t('confirm.newFile'));
       if (!ok) return;
     }
     ta.focus();
@@ -717,8 +715,8 @@ export async function init(ctx) {
       // ドットの意味を利用者に伝える(利用者報告「青い●は何?」への対応。
       // 見た目(サイズ・色)は変えず、title/aria-labelだけで説明する)。
       title = mmlDirty
-        ? `未コンパイルの変更があります(クリックでコンパイル&再生 / ${SHORTCUT_PLAY_HINT})`
-        : `コンパイル&再生 (${SHORTCUT_PLAY_HINT})`;
+        ? t('transport.dirtyHintSlash', { hint: SHORTCUT_PLAY_HINT })
+        : t('transport.compileAndPlay', { hint: SHORTCUT_PLAY_HINT });
       active = false;
       dirty = mmlDirty && hasMmlContent;
     } else if (pendingUrlSong && uiMode !== 'editor') {
@@ -728,15 +726,16 @@ export async function init(ctx) {
       playDisabled = !moduleReady;
       stopDisabled = !moduleReady || !hasPlayback;
       iconKey = 'play';
-      title = `曲を再生 (${SHORTCUT_PLAY_HINT})`;
+      title = t('transport.playPending', { hint: SHORTCUT_PLAY_HINT });
       active = false;
       dirty = false;
     } else {
       playDisabled = !moduleReady || !hasPlayback;
       stopDisabled = !moduleReady || !hasPlayback;
       iconKey = playing ? 'pause' : 'play';
-      const baseLabel = playing ? '一時停止' : (paused ? '再開' : '再生(曲を開いてください)');
-      title = `${baseLabel} (${SHORTCUT_PLAY_HINT})`;
+      title = playing
+        ? t('transport.pause', { hint: SHORTCUT_PLAY_HINT })
+        : (paused ? t('transport.resume', { hint: SHORTCUT_PLAY_HINT }) : t('transport.playIdle', { hint: SHORTCUT_PLAY_HINT }));
       active = paused;
       dirty = false;
     }
@@ -788,7 +787,7 @@ export async function init(ctx) {
     Module.FS.writeFile('/edited.M', file);
     const error = Module.playMusic('/edited.M');
     if (error) {
-      renderCompileErrors([{ line: null, message: `再生エラー: ${error}` }]);
+      renderCompileErrors([{ line: null, message: t('mml.playbackError', { error }) }]);
       updateTransportButtonUI();
       return;
     }
@@ -1026,9 +1025,7 @@ export async function init(ctx) {
   // 使う。複数件落とされた場合は黙って捨てず、netStatusで案内する)。
   ctx.handleDroppedFiles = async (files) => {
     if (files.length > 1) {
-      setNetStatus(
-        `複数のファイル(${files.length}件)がドロップされましたが、1件目「${files[0].name}」のみ読み込みます`,
-        false);
+      setNetStatus(t('net.dropMultiple', { count: files.length, name: files[0].name }), false);
     }
     const file = files[0];
     if (!file) return;
@@ -1069,14 +1066,14 @@ export async function init(ctx) {
   // 「リングは進むが無音」という紛らわしい状態を避ける)ので、ここでは
   // pendingUrlSong に保持するだけに留め、再生は既存のbtnPlayPauseクリックへ委ねる。
   async function loadSongFromUrl(url) {
-    setNetStatus(`読み込み中: ${url}`, false);
+    setNetStatus(t('net.loading', { url }), false);
     let resolved;
     try {
       resolved = await resolveSongFromUrl(url, (loaded, total) => {
-        setNetStatus(total ? `読み込み中: ${loaded}/${total} bytes` : `読み込み中: ${loaded} bytes`, false);
+        setNetStatus(total ? t('net.loadingProgress', { loaded, total }) : t('net.loadingProgressNoTotal', { loaded }), false);
       });
     } catch (err) {
-      setNetStatus(err && err.message ? err.message : `取得に失敗しました(${url})`, true);
+      setNetStatus(describeNetError(err), true);
       return;
     }
 
@@ -1086,8 +1083,8 @@ export async function init(ctx) {
         const otherCount = resolved.candidates.length;
         setNetStatus(
           otherCount > 0
-            ? `この書庫にPMD(.M/.m)の曲は見つかりませんでした(他ドライバの曲が${otherCount}件見つかりました。?driver=mucom で開き直してください)`
-            : 'この書庫の中に再生可能な曲が見つかりませんでした',
+            ? t('net.noPmdCandidatesOther', { otherCount })
+            : t('net.noPlayableSongs'),
           true,
         );
         return;
@@ -1103,9 +1100,9 @@ export async function init(ctx) {
         driver: 'pmd', url, entries: resolved.entries, archiveLabel: resolved.archiveLabel, candidates: pmdCandidates,
       });
       if (importResult.added > 0) {
-        setNetStatus(`${importResult.total}曲をライブラリに追加しました`, false);
+        setNetStatus(t('net.addedToLibrary', { count: importResult.total }), false);
       } else if (importResult.total > 0) {
-        setNetStatus(`${importResult.total}曲は既にライブラリにあります`, false);
+        setNetStatus(t('net.alreadyInLibrary', { count: importResult.total }), false);
       }
 
       let chosen = pmdCandidates[0];
@@ -1121,7 +1118,7 @@ export async function init(ctx) {
         // ファイル名のままで正常)。
         chosen = await pickSongCandidate(pmdCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
         if (!chosen) {
-          setNetStatus('曲の選択をキャンセルしました', false);
+          setNetStatus(t('net.selectionCancelled'), false);
           return;
         }
       }
@@ -1132,7 +1129,7 @@ export async function init(ctx) {
       if (uiMode === 'editor') setUiMode('player');
       pendingUrlSong = { bytes: chosen.entry.data, name: chosen.displayName };
       currentSongName = chosen.displayName;
-      setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
+      setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
       updateTransportButtonUI();
       reflectLoadedUrlInAddressBar(url);
       return;
@@ -1145,7 +1142,7 @@ export async function init(ctx) {
     // 従来どおり曲名(タイトル)を優先するresolved.nameのまま(役割が違ってよい)。
     pendingUrlSong = { bytes: resolved.bytes, name: resolved.name, fileName: resolved.fileName };
     currentSongName = resolved.fileName;
-    setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
+    setNetStatus(t('net.loadedReady', { name: resolved.name }), false);
     updateTransportButtonUI();
     reflectLoadedUrlInAddressBar(url);
     // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム

@@ -2,7 +2,7 @@
 // PC98/WebNP2/src/api/archive.ts の移植(型注釈を除いただけで、ロジックは無改変)。
 // 実際の解析・展開処理は lzh.js / zip.js に分割し、ここでは拡張子判定と振り分けのみ行う。
 
-import { isMetadataEntry } from './archive-util.js';
+import { isMetadataEntry, netError } from './archive-util.js';
 import { extractD88, looksLikeD88 } from './d88.js';
 import { extractLzh } from './lzh.js';
 import { extractZip } from './zip.js';
@@ -50,7 +50,7 @@ export async function extractArchive(fileName, bytes, depth = 1) {
   } else if (/\.d88$/i.test(fileName)) {
     entries = extractD88(bytes);
   } else {
-    throw new Error(`未対応のアーカイブ形式です: ${fileName}`);
+    throw netError('archive.unsupportedFormat', { fileName });
   }
   entries = entries.filter((entry) => !isMetadataEntry(entry.name));
 

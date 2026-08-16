@@ -2,6 +2,8 @@
 // コンパイル結果の詳細ログ(従来どおり下に残す#result等)とは別の要素で、
 // 「成功/失敗の一言+クリックでエラー行へジャンプ」だけを担う。
 
+import { t } from './i18n.js';
+
 /** エディタの直上に挿す status 用の要素を作る(呼び出し側がDOMへ挿入する)。 */
 export function createMmlStatusEl(id) {
   const el = document.createElement('div');
@@ -21,7 +23,7 @@ export function setMmlStatus(el, { ok, line = null, message = '', onJump }) {
   el.classList.remove('mml-status-error', 'mml-status-clickable');
 
   if (ok) {
-    el.textContent = 'コンパイル成功';
+    el.textContent = t('mml.compileSuccess');
     return;
   }
 
@@ -29,7 +31,7 @@ export function setMmlStatus(el, { ok, line = null, message = '', onJump }) {
   el.textContent = line != null ? `line ${line}: ${message}` : message;
   if (line != null && typeof onJump === 'function') {
     el.classList.add('mml-status-clickable');
-    el.title = `クリックでMML ${line}行目へ移動`;
+    el.title = t('mml.jumpToLine', { line });
     el.onclick = () => onJump(line);
   }
 }

@@ -2,6 +2,25 @@
 // PC98/WebNP2/src/api/archive-util.ts の移植(型注釈を除いただけで、ロジックは無改変)。
 
 /**
+ * net/層(wasm・UIのどちらにも依存しない素のモジュール群)から投げるエラーに、機械可読な
+ * コードを持たせる。net/層は日本語/英語の文言を持たない(利用者向け表示はUI層が
+ * ui/i18n.jsの辞書を `net.error.<code>` キーで引いて組み立てる。paramsはそのまま
+ * プレースホルダの差し込み値として渡す)。message はコンソールに出た場合に読める
+ * よう、コードとparamsを機械的に並べただけの英語相当の文字列にする(表示専用ではない)。
+ * @param {string} code
+ * @param {Record<string, string|number>} [params]
+ */
+export function netError(code, params) {
+  const detail = params
+    ? Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ')
+    : '';
+  const err = new Error(detail ? `${code} (${detail})` : code);
+  err.code = code;
+  if (params) err.params = params;
+  return err;
+}
+
+/**
  * アーカイブから展開した1エントリ分の情報。
  * @typedef {{ name: string, data: Uint8Array, mtime?: Date }} ArchiveEntry
  */

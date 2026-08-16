@@ -4,7 +4,7 @@
 // 各エントリの Local File Header からデータ位置を求めて展開する。
 // 圧縮方式は stored(0) と deflate(8) のみ対応。deflate は DecompressionStream('deflate-raw') を使用する。
 
-import { crc32, decodeDosDateTime, decodeSjisName, readU16, readU32 } from './archive-util.js';
+import { crc32, decodeDosDateTime, decodeSjisName, netError, readU16, readU32 } from './archive-util.js';
 
 const EOCD_SIG = 0x06054b50;
 const CDFH_SIG = 0x02014b50;
@@ -22,7 +22,7 @@ function findEocd(bytes) {
       if (i + EOCD_MIN_SIZE + commentLen === bytes.length) return i;
     }
   }
-  throw new Error('ZIP: End Of Central Directory が見つかりません(不正なZIPファイルです)');
+  throw netError('zip.eocdNotFound');
 }
 
 /** deflate-raw 圧縮データを DecompressionStream で伸張する。 @param {Uint8Array} compressed */
@@ -67,7 +67,7 @@ export async function extractZip(bytes) {
   let pos = cdOffset;
   for (let i = 0; i < cdEntryCount; i++) {
     if (readU32(bytes, pos) !== CDFH_SIG) {
-      throw new Error('ZIP: Central Directory のシグネチャが不正です');
+      throw netError('zip.centralDirSignatureInvalid');
     }
     const gpFlag = readU16(bytes, pos + 8);
     const method = readU16(bytes, pos + 10);
@@ -93,7 +93,7 @@ export async function extractZip(bytes) {
     }
 
     if (readU32(bytes, localOffset) !== LFH_SIG) {
-      throw new Error(`ZIP: Local File Header のシグネチャが不正です (${name})`);
+      throw netError('zip.localHeaderSignatureInvalid', { name });
     }
     const lfhFnLen = readU16(bytes, localOffset + 26);
     const lfhExtraLen = readU16(bytes, localOffset + 28);
@@ -103,20 +103,22 @@ export async function extractZip(bytes) {
     let data;
     if (method === 0) {
       if (compSize !== uncompSize) {
-        throw new Error(`ZIP: 無圧縮(stored)エントリのサイズが一致しません (${name})`);
+        throw netError('zip.storedSizeMismatch', { name });
       }
       data = compressed.slice();
     } else if (method === 8) {
       data = await inflateRaw(compressed);
     } else {
-      throw new Error(`ZIP: 未対応の圧縮方式です(method=${method}) (${name})`);
+      throw netError('zip.unsupportedMethod', { method, name });
     }
 
     const actualCrc = crc32(data);
     if (actualCrc !== crcExpected) {
-      throw new Error(
-        `ZIP: CRC32が一致しません (${name}): 期待値=0x${crcExpected.toString(16)}, 実際=0x${actualCrc.toString(16)}`,
-      );
+      throw netError('zip.crcMismatch', {
+        name,
+        expected: `0x${crcExpected.toString(16)}`,
+        actual: `0x${actualCrc.toString(16)}`,
+      });
     }
 
     entries.push({ name, data, mtime: decodeDosDateTime(modDate, modTime) });

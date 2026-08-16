@@ -283,6 +283,7 @@ check(`合計曲数が46と一致 (LIST側)`, totalListSongs === 46, `実測=${t
   check('陽性対照(e-2): FATを0埋めしてもR14/15/16の複製一致チェックは通る(全部同じ0埋めのため)', fatReadOk);
 
   let chainThrew = false;
+  let chainErrorCode = '';
   let chainErrorMessage = '';
   try {
     const dirEntries = readD88Directory(corruptedFat, goodTrackOffsets);
@@ -291,11 +292,14 @@ check(`合計曲数が46と一致 (LIST側)`, totalListSongs === 46, `実測=${t
     followFatChain(fat, bare12.startCluster);
   } catch (err) {
     chainThrew = true;
+    chainErrorCode = err && err.code;
     chainErrorMessage = String(err && err.message);
   }
+  // net/層はコードだけを持つ設計(net/archive-util.js netError()参照)なので、
+  // メッセージ文字列ではなくerr.codeで判定する。
   check(
     '陽性対照(e-2): FATを0埋めした状態でクラスタチェーンを辿るとループ検出で例外が飛ぶ(検査が機能している証拠)',
-    chainThrew && /ループ/.test(chainErrorMessage),
+    chainThrew && chainErrorCode === 'd88.fatChainLoop',
     chainErrorMessage,
   );
 

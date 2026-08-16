@@ -8,7 +8,7 @@
 // 3種はいずれも「LZSS + 2本の静的(ブロック単位で再構築される)ハフマン木」という同一アルゴリズムで、
 // 窓サイズ(dicbit)とポジション符号のビット数(pbit)のみが異なる。
 
-import { crc16, decodeDosDateTime, decodeSjisName, readU16, readU32 } from './archive-util.js';
+import { crc16, decodeDosDateTime, decodeSjisName, netError, readU16, readU32 } from './archive-util.js';
 
 // --- ビット入力(MSBファースト) -------------------------------------------------------
 
@@ -65,7 +65,7 @@ function buildCanonicalTree(lengths) {
   let maxBits = 0;
   for (const l of lengths) if (l > maxBits) maxBits = l;
   if (maxBits === 0) {
-    throw new Error('LZH: ハフマン木を構築できません(有効な符号長がありません)');
+    throw netError('lzh.huffmanBuildFailed');
   }
   const blCount = new Array(maxBits + 1).fill(0);
   for (const l of lengths) if (l > 0) blCount[l]++;
@@ -103,7 +103,7 @@ function decodeSymbol(reader, tree) {
   while (!isLeaf(node)) {
     const bit = reader.getBits(1);
     const next = bit ? node.right : node.left;
-    if (!next) throw new Error('LZH: 不正なハフマン符号を検出しました(ビットストリームが壊れています)');
+    if (!next) throw netError('lzh.invalidHuffmanCode');
     node = next;
   }
   return node.sym;
@@ -230,7 +230,7 @@ function decodeLzss(compressed, originalSize, dicBit, pBit) {
       const len = c - 256 + THRESHOLD;
       const distance = decodePosition(state) + 1;
       if (distance > outPos) {
-        throw new Error('LZH: 展開データが破損しています(参照距離が範囲外です)');
+        throw netError('lzh.corruptedDistance');
       }
       const copyLen = Math.min(len, originalSize - outPos);
       let srcPos = outPos - distance;
@@ -294,7 +294,7 @@ export function extractLzh(bytes) {
     if (headerSize === 0) break; // 終端マーカー(慣習)
 
     if (pos + 21 > bytes.length) {
-      throw new Error('LZH: ヘッダが途中で切れています');
+      throw netError('lzh.headerTruncated');
     }
 
     const methodId = String.fromCharCode(...bytes.subarray(pos + 2, pos + 7));
@@ -341,12 +341,12 @@ export function extractLzh(bytes) {
       name = ext.name;
       dataStart = ext.nextPos;
     } else {
-      throw new Error(`LZH: 未対応のヘッダレベルです(level=${level})`);
+      throw netError('lzh.unsupportedHeaderLevel', { level });
     }
 
     const dataEnd = dataStart + compressedSize;
     if (dataEnd > bytes.length) {
-      throw new Error(`LZH: 圧縮データがファイル末尾を超えています (${name})`);
+      throw netError('lzh.dataExceedsFile', { name });
     }
     const compressed = bytes.subarray(dataStart, dataEnd);
 
@@ -362,14 +362,16 @@ export function extractLzh(bytes) {
       const params = LZSS_PARAMS[methodId];
       data = decodeLzss(compressed, originalSize, params.dicBit, params.pBit);
     } else {
-      throw new Error(`LZH: 未対応の圧縮メソッドです: ${methodId} (${name})`);
+      throw netError('lzh.unsupportedMethod', { methodId, name });
     }
 
     const actualCrc = crc16(data);
     if (actualCrc !== crcField) {
-      throw new Error(
-        `LZH: CRC16が一致しません (${name}): 期待値=0x${crcField.toString(16)}, 実際=0x${actualCrc.toString(16)}`,
-      );
+      throw netError('lzh.crcMismatch', {
+        name,
+        expected: `0x${crcField.toString(16)}`,
+        actual: `0x${actualCrc.toString(16)}`,
+      });
     }
 
     entries.push({ name, data, mtime });

@@ -9,7 +9,7 @@
 //
 // net/archive.js (ZIP/LZH) への配線・UI統合は本モジュールのスコープ外(別タスク)。
 
-import { readU16, readU32 } from './archive-util.js';
+import { netError, readU16, readU32 } from './archive-util.js';
 import { decodeMmlBytesAs } from './charset.js';
 
 const SECTOR_SIZE = 256;
@@ -50,7 +50,7 @@ export function readTrackOffsets(bytes) {
 export function readTrackSectors(bytes, trackOffset) {
   if (!trackOffset) return [];
   if (trackOffset + DIRECTORY_ENTRY_SIZE > bytes.length) {
-    throw new Error(`d88: トラックオフセットがファイル範囲外です(offset=0x${trackOffset.toString(16)})`);
+    throw netError('d88.trackOffsetOutOfRange', { offset: `0x${trackOffset.toString(16)}` });
   }
   const sectorCount = readU16(bytes, trackOffset + 4);
   const sectors = [];
@@ -135,14 +135,14 @@ export function readD88Fat(bytes, trackOffsets) {
   const bySector = new Map(sectors.map((s) => [s.r, s.data]));
   const fat = bySector.get(FAT_SECTOR_R);
   if (!fat || fat.length < 256) {
-    throw new Error(`d88: FATセクタ(R=${FAT_SECTOR_R})が見つからないか256バイト未満です`);
+    throw netError('d88.fatSectorNotFound', { r: FAT_SECTOR_R });
   }
   for (const dupR of [15, 16]) {
     const dup = bySector.get(dupR);
     if (dup && dup.length >= 256) {
       for (let i = 0; i < 256; i++) {
         if (dup[i] !== fat[i]) {
-          throw new Error(`d88: FATの複製(R=${dupR})がR=${FAT_SECTOR_R}と一致しません(offset=${i})`);
+          throw netError('d88.fatDuplicateMismatch', { dupR, r: FAT_SECTOR_R, offset: i });
         }
       }
     }
@@ -162,11 +162,11 @@ export function followFatChain(fat, startCluster) {
   let cur = startCluster;
   for (let step = 0; step < fat.length + 1; step++) {
     if (visited.has(cur)) {
-      throw new Error(`d88: FATチェーンにループを検出しました(cluster=${cur})`);
+      throw netError('d88.fatChainLoop', { cluster: cur });
     }
     visited.add(cur);
     if (cur < 0 || cur >= fat.length) {
-      throw new Error(`d88: FATチェーンのクラスタ番号が範囲外です(cluster=${cur})`);
+      throw netError('d88.fatClusterOutOfRange', { cluster: cur });
     }
     clusters.push(cur);
     const v = fat[cur];
@@ -174,11 +174,11 @@ export function followFatChain(fat, startCluster) {
       return { clusters, lastValidSectors: v & 0x0f };
     }
     if (v === 0xff) {
-      throw new Error(`d88: FATチェーンが未使用マーカーに到達しました(cluster=${cur})`);
+      throw netError('d88.fatChainUnusedMarker', { cluster: cur });
     }
     cur = v;
   }
-  throw new Error('d88: FATチェーンが長すぎます(ループ検出の上限を超えました)');
+  throw netError('d88.fatChainTooLong');
 }
 
 /**
@@ -190,7 +190,7 @@ function readClusterBytes(bytes, trackOffsets, cluster, byteLimit = CLUSTER_BYTE
   const trackIndex = Math.floor(cluster / 2);
   const half = cluster % 2;
   if (trackIndex >= trackOffsets.length) {
-    throw new Error(`d88: クラスタ番号からトラックindexが範囲外になりました(cluster=${cluster})`);
+    throw netError('d88.clusterTrackIndexOutOfRange', { cluster });
   }
   const trackBytes = readTrackBytes(bytes, trackOffsets[trackIndex]);
   const start = half * CLUSTER_BYTES;
@@ -228,7 +228,7 @@ export function readD88FileBytes(bytes, fileName) {
   const trackOffsets = readTrackOffsets(bytes);
   const entries = readD88Directory(bytes, trackOffsets);
   const entry = entries.find((e) => e.fileName.toLowerCase() === fileName.toLowerCase());
-  if (!entry) throw new Error(`d88: ファイルが見つかりません: ${fileName}`);
+  if (!entry) throw netError('d88.fileNotFound', { fileName });
   const fat = readD88Fat(bytes, trackOffsets);
   return readD88FileBytesByCluster(bytes, trackOffsets, fat, entry.startCluster);
 }

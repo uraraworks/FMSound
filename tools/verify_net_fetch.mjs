@@ -58,15 +58,17 @@ console.log('--- Google Drive/Dropbox/OneDrive: ロジック確認のみ(実リ�
 {
   // 中継未設定(既定)でOneDriveの共有リンクを渡すと、直接取得を試さず専用の案内で即例外になる
   // ことを確認する(実際にOneDriveへ到達できるかどうかは別問題であり、ここでは分岐ロジックのみ)。
+  // net/層はエラーの文言を持たず機械可読なコード(err.code)だけを持つ設計
+  // (net/archive-util.js netError()参照。表示文言はui/i18n.jsが引く)。
   let threw = false;
-  let message = '';
+  let code = '';
   try {
     await fetchSongBytes('https://1drv.ms/u/s!Abc123FakeIdNotReal');
   } catch (err) {
     threw = true;
-    message = String(err && err.message);
+    code = err && err.code;
   }
-  check('OneDriveホストは直接fetchを試さず即座に専用エラーになる', threw && /OneDrive/.test(message));
+  check('OneDriveホストは直接fetchを試さず即座に専用エラーになる', threw && code === 'fetch.oneDriveUnsupported');
 }
 
 {
@@ -82,11 +84,14 @@ console.log('--- Google Drive/Dropbox/OneDrive: ロジック確認のみ(実リ�
     console.log('  -> 注意: これは実リンクでの検証ではない(存在しないIDのため、実際の共有ファイル取得は未確認)');
   } catch (err) {
     const msg = String(err && err.message);
-    if (/ENOTFOUND|ECONNREFUSED|fetch failed/i.test(msg)) {
+    const code = err && err.code;
+    if (!code && /ENOTFOUND|ECONNREFUSED|fetch failed/i.test(msg)) {
       skip('Google Drive(存在しないID)への到達確認', `ネットワークが使えない可能性: ${msg}`);
     } else {
-      // HTML判定に引っかかって「直接取得できません」等のエラーになるのが期待される正常系。
-      check('Google Drive(存在しないID): HTML誤取得を検出してエラーになる', /HTML|直接取得できません/.test(msg));
+      // HTML判定に引っかかって「直接取得できません」等のエラーになるのが期待される正常系
+      // (net/層はコードだけを持つ設計なので、err.codeで判定する)。
+      check('Google Drive(存在しないID): HTML誤取得を検出してエラーになる',
+        code === 'fetch.gotHtml' || code === 'fetch.hostUnsupported');
     }
   }
   console.log('  -> 【重要】実物のGoogle Drive/Dropbox共有リンクでの検証は未実施。存在しないIDでの' +
