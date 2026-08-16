@@ -35,8 +35,12 @@ import { readFileSync } from 'node:fs';
 import createMucomWeb from '../mucomweb/build-web/mucom88.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BUILD_DIR = path.join(__dirname, '../mucomweb/build-web');
-const SAMPLE = path.join(BUILD_DIR, 'sampl1.muc');
+// 以前はmucomweb/build-web/sampl1.mucを読んでいたが、これは追跡されていない
+// ビルド副産物(upstream/MucomWeb/mucom88のビルド時に落ちるだけ)で、クリーンな
+// 再ビルドをすると消えて本スクリプトがENOENTで落ちていた。追跡されているファイル
+// だけで完結させるため、検証専用のMMLをtools/配下に自作して追跡する
+// (tools/verify_right_pane_mucom_sample.muc、2026-08-16)。
+const SAMPLE = path.join(__dirname, 'verify_right_pane_mucom_sample.muc');
 
 let failCount = 0;
 function check(name, cond, detail) {

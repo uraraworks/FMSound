@@ -1,0 +1,25 @@
+; tools/verify_right_pane_data_mucom.mjs 専用の検証用MML(検証専用に自作、権利上の問題なし)。
+;
+; 目的: FMDSP右半分(FFT/レベルメーター)のC->JSデータ供給を検証するスクリプトの
+; 冒頭チェック(コンパイル成功・実音声(absSum)非0・FFT非0ビン存在)向けの再生素材。
+; 従来はmucomweb/build-webのビルド副産物sampl1.muc(追跡されておらず、クリーン
+; ビルドすると消える)に依存していた。追跡外の生成物への依存を無くすため、
+; 本ファイルをtools/配下に新規作成し追跡する(2026-08-16)。
+;
+; MUCOMのパート並び: A-C=FM1-3 / D-F=SSG1-3 / G=リズム / H-J=FM4-6 / K=ADPCM
+; (docs/right-pane-data.md参照)。このファイルではFM1-3とSSG1-3を同時に鳴らし、
+; 複数系統の音源が同時に動く状態でFFT/absSumが非0になることを確認する。
+; (パート単位のチャンネル対応表の検証は本スクリプト内で個別MMLを都度生成して
+; 行っており、このファイルには依存しない)。
+;
+; @78は内蔵音色バンク(voice.dat不要で鳴ることをtools/verify_mucom_new_template.mjsで
+; 確認済み)。@4はSSG用音色(fmgenのSSG発音に必須、本スクリプトの単独パート検証と同じ)。
+#title verify_right_pane_data_mucom用サンプル
+#comment 検証専用の自作MML。権利上の問題は無い。
+
+A @78 T120 v10 L o4 l8 cdefgabc>cdefgab<
+B @78 T120 v10 L o4 l8 egb>c<gbcegb>c<
+C @78 T120 v10 L o3 l4 cegcegce
+D @4 T120 v10 L o5 l8 cdefgabc>cdefgab<
+E @4 T120 v10 L o5 l8 egb>c<gbcegb>c<
+F @4 T120 v10 L o4 l4 cegcegce
