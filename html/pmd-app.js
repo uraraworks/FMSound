@@ -28,7 +28,7 @@
 import createPmdWeb from './pmdweb.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
-import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } from './fmdsp/trackrow.js';
+import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA, TRACK_PANEL_W } from './fmdsp/trackrow.js';
 import {
   buildPmdChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
   channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
@@ -540,8 +540,12 @@ export async function init(ctx) {
   // トラック行/レベルメーター列の当たり判定config。クリックとホバー枠の両方が
   // 必ずこの同じオブジェクトを使うことで、「クリックできる範囲」と「枠が出る範囲」
   // がズレないようにする(利用者指示: 押せそうに見えて何も起きないのが一番悪い)。
+  // panelWidth: 2026-08-17修正。以前はPC98_W/2(=320)という便宜的な値だったが、
+  // これはトラック行の実際の描画幅ではなく、右ペイン(x=312〜)に8pxはみ出していた
+  // (利用者報告)。fmdsp/trackrow.js TRACK_PANEL_W(実測+上流定数からの計算値の
+  // 一致を確認済み、同ファイルのコメント参照)を使う。
   const TRACK_ROW_HIT_CONFIG = {
-    trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
+    trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: TRACK_PANEL_W,
   };
   const LEVEL_COLUMN_HIT_CONFIG = {
     columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,

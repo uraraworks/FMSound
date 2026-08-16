@@ -45,6 +45,33 @@ const KEY_X = 7;
 const KEY_Y = 14; // fmdsp_sprites.h:25
 const KEY_LEFT_X = 0;
 const KEY_OCTAVES = 8;
+
+// トラック行が実際に描画されるx方向の右端(この値未満がトラック行の描画範囲、
+// =排他的な上限)。2026-08-17、利用者報告への対応で追加。
+//
+// 経緯: fmdsp/track-click.js trackRowIndexAt()のホバー枠/クリック当たり判定は
+// これまで便宜的にPC98_W/2(=320)を「トラック行の幅」として使っていたが、
+// これは「canvas幅を単純に半分にしただけ」の値で、トラック行の実際の描画幅とは
+// 無関係だった。利用者から「ホバー枠が鍵盤から離れて右ペインのFMDSPロゴまで
+// はみ出している」と報告があり、実測(ブラウザで実際にレンダリングしたcanvasの
+// 非黒画素を列ごとに走査)したところ、トラック行の描画は x=297 で終わり、
+// x=298〜311(14px)は完全な空白、右ペインの描画はx=312(fmdsp/rightpane.js
+// LOGO_FM_X等)から始まっていることが分かった。320はこの空白帯の途中(右ペインに
+// 8pxはみ出た位置)であり、右ペイン左端をクリックするとトラック行のミュート
+// 判定に化ける実害があった(見た目のズレより深刻)。
+//
+// この297という右端は、鍵盤帯(KEY_LEFT+8オクターブ+KEY_RIGHT、行内でもっとも
+// 右まで伸びる要素)の右端と一致する。上流(upstream/98fmplayer/fmdsp/fmdsp_sprites.h)
+// にはFMDSP_LEFT_MODE_OPNA(10行モード)のパネル幅そのものを表す定数は存在しない
+// (grep -rn "PANEL_W\|LEFT_W" upstream/98fmplayer/fmdsp/ で0件、docs/fmdsp-layout.md
+// にも記載なし)。上流のTRACK_INFO_10モード(rmode=TRACK_INFO時の音源詳細パネル、
+// このWeb版は未実装)ではx=320が右パネルの開始位置として使われているが、これは
+// このWeb版が固定しているFMDSP_RIGHT_MODE_DEFAULT(スペクトラム/レベルメーター
+// パネル)とは別モードの話で、混同できない。そのため下式(KEY_*定数からの計算値)を
+// 実測値の裏付けとして採用する: KEY_X(7) + KEY_W(35)*KEY_OCTAVES(8) + KEY_RIGHT_W(11)
+// = 298、すなわち最後に描かれるピクセルはx=297で、実測結果(描画右端297)と一致する。
+export const TRACK_PANEL_W = KEY_X + KEY_W * KEY_OCTAVES + KEY_RIGHT_W; // = 298
+
 const BAR_L_X = 66;
 const BAR_L_W = 14;
 const BAR_X = BAR_L_X + BAR_L_W;
