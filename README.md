@@ -62,7 +62,7 @@ The player currently has a few honest limitations worth stating up front.
 - **The PMD compiler (this project's own MML→binary converter) only
   supports the v1 basic command set** — PPZ8, LFO, portamento, and similar
   are out of scope. See `docs/pmd-compiler-spec.md` for details.
-- **Phones and tablets are not supported.**
+- **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
 
 ## ⚠ MML differences between drivers (`t`/`T`/`C` are swapped)
 

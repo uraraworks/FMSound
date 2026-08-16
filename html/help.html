@@ -166,7 +166,7 @@
         <li><strong>リズム(G)パートは、実チップYM2608のROM由来PCMではなく、代替のPCMサンプルで鳴ります。</strong> 同梱している音源コアは実チップのROMを持たないため、フリー素材の代替ドラムサンプルを読み込んで再生しています(出典はNOTICE.md参照)。作者本人が本物のYM2608のリズム音とは波形が根本的に異なると明言している代替品です。</li>
         <li><strong>MUCOM88のコンパイルエラーメッセージは、このページの表示言語設定に関わらず常に日本語で出ます。</strong> wasm内に組み込まれた日本語のエラーテーブル由来のため、UIを英語にしていてもエラー本文だけは日本語のままです。</li>
         <li>PPZ8・LFO・ポルタメント等、PMDコンパイラ(自作のMML→バイナリ変換)が対応する範囲はv1の基本コマンドまでです。</li>
-        <li>スマホ・タブレットには未対応です。</li>
+        <li>スマホは現時点では画面が最適化されておらず、対応を予定しています。タブレットは現時点では動作確認・最適化を行っていません。</li>
       </ul>
     </div>
     <div data-lang="en" data-help-section="caveats">
@@ -176,7 +176,7 @@
         <li><strong>The rhythm (G) part plays through substitute PCM samples, not the real YM2608 chip's ROM-derived PCM.</strong> The bundled sound core doesn't carry the real chip's ROM, so it plays free substitute drum samples instead (see NOTICE.md for the source). The author of those samples has stated plainly that they're fundamentally different in waveform from the real YM2608's rhythm sound.</li>
         <li><strong>MUCOM88 compile error messages are always in Japanese, regardless of this page's language setting.</strong> They come from a Japanese error table built into the wasm module, so even with the UI set to English, the error text itself stays in Japanese.</li>
         <li>The PMD compiler (this project's own MML→binary converter) supports PPZ8, LFO, portamento, etc. only up to the v1 basic commands.</li>
-        <li>Phones and tablets are not supported.</li>
+        <li>The screen isn't optimized for phones yet, and phone support is planned. Tablets haven't been checked or optimized for at this time.</li>
       </ul>
     </div>
   </section>
