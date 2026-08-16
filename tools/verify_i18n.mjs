@@ -13,13 +13,21 @@
 //      driverTagline実装漏れが実例、2026-08-16利用者報告)を原理的に検出できない。
 //      html/*.js ui/*.js html/index.html を走査し、コメント行を除いて日本語文字を
 //      含む行を列挙する。
+//   7. ja/enのプレースホルダ({files} {url} {status}等の{...}記法)集合が全キーで
+//      一致すること(2026-08-16利用者報告への対応)。訳文側でプレースホルダを
+//      書き落としても例外にはならず、t()のreplaceAll()が単に置換対象を見つけられない
+//      だけなので、利用者の画面に`{fileName}`という文字列がそのまま出て初めて気づく
+//      (実行時には誰も気づけない)。順序は問わず、集合として一致するかだけを見る。
+//   8. t()に辞書へ存在しないキーを渡すとconsole.warnが出ること(2026-08-16利用者報告)。
+//      戻り値がキー文字列そのものになる挙動自体は変えない(空白より読めるものが出る
+//      ほうがまし、という利用者判断)が、タイポ・移行漏れに気づけるよう警告は必須。
 //
 // 実行: node tools/verify_i18n.mjs
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DICT } from '../ui/i18n.js';
+import { DICT, t, setLang } from '../ui/i18n.js';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -224,6 +232,53 @@ function main() {
       );
     }
   }
+
+  // --- 7. ja/enのプレースホルダ集合が全キーで一致する ---
+  const PLACEHOLDER_RE = /\{([^}]+)\}/g;
+  function extractPlaceholders(str) {
+    const set = new Set();
+    let pm;
+    PLACEHOLDER_RE.lastIndex = 0;
+    while ((pm = PLACEHOLDER_RE.exec(str))) set.add(pm[1]);
+    return set;
+  }
+  function placeholderSetsEqual(a, b) {
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
+  }
+  const placeholderMismatches = [];
+  for (const k of jaKeys) {
+    if (!enKeys.has(k)) continue; // 項目1で既に検出済みのキーは対象外
+    const jaPh = extractPlaceholders(DICT.ja[k]);
+    const enPh = extractPlaceholders(DICT.en[k]);
+    if (!placeholderSetsEqual(jaPh, enPh)) {
+      placeholderMismatches.push(`${k}: ja={${[...jaPh].join(', ')}} en={${[...enPh].join(', ')}}`);
+    }
+  }
+  check(
+    '7. 全キーでja/enのプレースホルダ集合が一致する({...}の書き落とし検出)',
+    placeholderMismatches.length === 0,
+    placeholderMismatches.length ? placeholderMismatches.join('\n       ') : undefined,
+  );
+
+  // --- 8. t()に未知キーを渡すとconsole.warnが出る ---
+  const originalWarn = console.warn;
+  let warned = false;
+  let warnedWith = '';
+  console.warn = (...args) => { warned = true; warnedWith = args.join(' '); };
+  let returnedValue;
+  try {
+    setLang('en');
+    returnedValue = t('__verify_i18n_intentionally_missing_key__');
+  } finally {
+    console.warn = originalWarn;
+  }
+  check(
+    '8. t()に辞書へ存在しないキーを渡すとconsole.warnが出る',
+    warned,
+    warned ? `warn: ${warnedWith} / 戻り値: ${JSON.stringify(returnedValue)}` : `戻り値: ${JSON.stringify(returnedValue)}`,
+  );
 
   console.log(`\n${passed} PASS, ${failed} FAIL`);
   process.exit(failed === 0 ? 0 : 1);
