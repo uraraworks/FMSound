@@ -54,8 +54,9 @@ import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
 import {
   resolveSongFromUrl, resolveSongFromFile, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
-  persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
+  SHARE_LINK_FILEBAR_NAME, persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
   closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
+  clearShareFragmentFromAddressBar, shareLibraryFileName, decodeShareFragment,
   ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
@@ -194,6 +195,7 @@ export async function init(ctx) {
       // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
       // `?mml=` はここで取り除く(net-load.js clearLoadedUrlFromAddressBar()参照)。
       clearLoadedUrlFromAddressBar();
+      clearShareFragmentFromAddressBar();
       playBytes(song.bytes, song.fileName);
     },
   });
@@ -402,6 +404,9 @@ export async function init(ctx) {
     // リロード時に「編集欄は新規の雛形なのに消したはずの書庫を読みに行ってしまう」
     // (net-load.js clearLoadedUrlFromAddressBar()冒頭コメント参照。利用者報告)。
     clearLoadedUrlFromAddressBar();
+    // 共有リンク(`#s1=...`)も同じ理由で取り除く(net-load.js
+    // clearShareFragmentFromAddressBar()コメント参照)。
+    clearShareFragmentFromAddressBar();
   });
 
   rescale();
@@ -1191,6 +1196,7 @@ export async function init(ctx) {
     // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
     // 残っている`?mml=`はここで取り除く。
     clearLoadedUrlFromAddressBar();
+    clearShareFragmentFromAddressBar();
 
     if (resolved.kind === 'archive') {
       const pmdCandidates = resolved.candidates.filter((c) => c.driver === 'pmd');
@@ -1347,6 +1353,10 @@ export async function init(ctx) {
       currentSongName = chosen.displayName;
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
       updateTransportButtonUI();
+      // 共有リンクの優先順位は`?mml=`より高い設計なので、残っていれば消す
+      // (net-load.js clearShareFragmentFromAddressBar()コメント参照。消し忘れると
+      // リロード時に新しく開いたURLの曲より古い共有曲が優先されてしまう)。
+      clearShareFragmentFromAddressBar();
       reflectLoadedUrlInAddressBar(url);
       return;
     }
@@ -1360,6 +1370,7 @@ export async function init(ctx) {
     currentSongName = resolved.fileName;
     setNetStatus(t('net.loadedReady', { name: resolved.name }), false);
     updateTransportButtonUI();
+    clearShareFragmentFromAddressBar();
     reflectLoadedUrlInAddressBar(url);
     // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
     // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。
@@ -1393,7 +1404,57 @@ export async function init(ctx) {
     updateTransportButtonUI();
   }
 
-  if (ctx.songUrl) {
+  // --- 共有リンク(`#s1=...`、net/share-link.js)からの読み込み ---
+  //
+  // MUCOM側(html/mucom-app.js loadSongFromShareFragment()と同じ設計。コメントの詳細は
+  // そちらを参照)と違い、PMDはMMLソースの直接再生(applyMmlBytes()相当)を持たず、
+  // 「曲を開く」経路はコンパイル済みバイナリ(.M/.m)の直接再生が前提になっている
+  // (ファイル冒頭コメント参照)。共有リンクはMMLソースそのものを運ぶため、
+  // pendingUrlSong(バイナリ直接再生の仕組み)は使わず、エディタモードへ切り替えて
+  // mmlTextareaへ流し込むだけにする。needsCompileNow()は「pendingUrlSongが無く
+  // mmlTextareaに中身がある」状態を素直に「コンパイル待ち」として扱うため
+  // (上のneedsCompileNow()コメント参照)、これだけで再生ボタンが
+  // 「コンパイル&再生」として自然に有効化される(自動再生はしない)。
+  //
+  // 復元したテキストは既にUTF-8と分かっている(net/share-link.jsのエンコードはUTF-8固定)ため、
+  // 文字コードの自動判定はしない(利用者指示。PMD側はそもそも.mml読み込み時に文字コード
+  // 判定を行っていないため、ここでも単純にUTF-8としてデコードするだけでよい)。
+  //
+  // エラー時は利用者に分かる文言でエラー表示するだけに留め、falseを返して
+  // 下のif連鎖(?mml=/既定サンプル)へフォールバックさせる(無言で失敗しない)。
+  async function loadSongFromShareFragment() {
+    let bytes;
+    try {
+      bytes = await decodeShareFragment(location.hash);
+    } catch (err) {
+      setNetStatus(describeNetError(err), true);
+      return false;
+    }
+    if (bytes === null) return false; // 共有リンクではない通常のアクセス
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    if (uiMode !== 'editor') setUiMode('editor');
+    mmlTextarea.value = text;
+    mmlEditorApi.render();
+    mmlDirty = false;
+    pendingUrlSong = null;
+    clearCompileStatus();
+    currentSongName = SHARE_LINK_FILEBAR_NAME;
+    setNetStatus(t('net.loadedFromShareLink'), false);
+    updateTransportButtonUI();
+    // 自動取り込み: MUCOM側と同じ理由でkind: 'local' + 内容ハッシュ入りファイル名を使う
+    // (net-load.js shareLibraryFileName()コメント参照)。
+    persistSongToLibrary({
+      driver: 'pmd',
+      bytes,
+      fileName: shareLibraryFileName(bytes),
+      origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    });
+    return true;
+  }
+
+  if (await loadSongFromShareFragment()) {
+    // 共有リンクから読み込めた場合はここで完了(下のctx.songUrl/既定サンプルへは進まない)。
+  } else if (ctx.songUrl) {
     loadSongFromUrl(ctx.songUrl);
   } else if (!hasDraft) {
     loadDefaultSample();

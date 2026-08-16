@@ -37,8 +37,9 @@ import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
 import {
   resolveSongFromUrl, resolveSongFromFile, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
-  persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
+  SHARE_LINK_FILEBAR_NAME, persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
   closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
+  clearShareFragmentFromAddressBar, shareLibraryFileName, decodeShareFragment,
   ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
@@ -238,6 +239,7 @@ export async function init(ctx) {
       // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
       // `?mml=` はここで取り除く(new-load.js clearLoadedUrlFromAddressBar()参照)。
       clearLoadedUrlFromAddressBar();
+      clearShareFragmentFromAddressBar();
       // #voice対応: ライブラリに保存された外部音色バンク(net/library.js voiceBank、
       // 対になるシステムディスクが見つかった曲だけ非null)をそのまま引き継ぐ。
       // 引き継がないと「初回は鳴っていたのに、ライブラリから開き直すと既定バンクの
@@ -1187,6 +1189,9 @@ export async function init(ctx) {
     // リロード時に「編集欄は新規の雛形なのに消したはずの書庫を読みに行ってしまう」
     // (net-load.js clearLoadedUrlFromAddressBar()冒頭コメント参照。利用者報告)。
     clearLoadedUrlFromAddressBar();
+    // 共有リンク(`#s1=...`)も同じ理由で取り除く(net-load.js
+    // clearShareFragmentFromAddressBar()コメント参照)。
+    clearShareFragmentFromAddressBar();
   });
 
   // 課題(net配線): 文字コードは決め打ちしない(以前はshift_jis固定だった)。
@@ -1274,6 +1279,7 @@ export async function init(ctx) {
     // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
     // 残っている`?mml=`はここで取り除く。
     clearLoadedUrlFromAddressBar();
+    clearShareFragmentFromAddressBar();
 
     if (resolved.kind === 'archive') {
       const mucomCandidates = resolved.candidates.filter((c) => c.driver === 'mucom');
@@ -1485,6 +1491,11 @@ export async function init(ctx) {
           : t('net.loadedReady', { name: chosen.displayName }),
         false,
       );
+      // 共有リンクよりこちらを優先させたい(=新しく開いたURLの曲をリロード後も
+      // 保つ)ため、フラグメントが残っていれば消す(net-load.js
+      // clearShareFragmentFromAddressBar()コメント参照。共有リンクの優先順位は
+      // `?mml=`より高い設計のため、消し忘れるとリロード時に古い共有曲が復活する)。
+      clearShareFragmentFromAddressBar();
       reflectLoadedUrlInAddressBar(url);
       return;
     }
@@ -1494,6 +1505,7 @@ export async function init(ctx) {
     // resolved.nameのまま(役割が違ってよい、利用者判断)。
     applyMmlBytes(resolved.bytes, { name: resolved.fileName });
     setNetStatus(t('net.loadedReady', { name: resolved.name }), false);
+    clearShareFragmentFromAddressBar();
     reflectLoadedUrlInAddressBar(url);
     // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
     // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。
@@ -1515,7 +1527,50 @@ export async function init(ctx) {
     applyMmlBytes(buffer, { name: 'sample_fur_elise_mucom.muc' });
   }
 
-  if (ctx.songUrl) {
+  // --- 共有リンク(`#s1=...`、net/share-link.js)からの読み込み ---
+  //
+  // URLのフラグメントはサーバーへ送信されないため、GitHub Pagesのような静的ホスティング
+  // のままで「曲そのものをURLに載せて共有する」を実現できる(利用者判断、確定済みの設計)。
+  // ?mml=・下書き・既定サンプルのどれよりも優先する(下のif連鎖。共有リンクは
+  // 「この曲そのもの」を運ぶ最も明示的な指定であるため、他の状態に埋もれさせない)。
+  //
+  // 復元したテキストは既にUTF-8と分かっている(net/share-link.jsのエンコードはUTF-8固定)
+  // ため、applyMmlBytes()の文字コード自動判定(decodeMmlBytes、CP932/UTF-8のヒューリスティック
+  // 判定)には任せず、forceEncoding: 'utf-8' を明示する(利用者指示: 推定に任せると
+  // 誤判定で文字化けする)。
+  //
+  // エラー時(未知バージョンの`#s2=`等・base64/gzipとして壊れたデータ・展開後サイズ
+  // 上限超過)は利用者に分かる文言でエラー表示するだけに留め(無言で失敗しない・
+  // 化けたテキストをエディタへ入れない)、falseを返して下のif連鎖にフォールバック
+  // させる(共有リンクが無い/壊れているだけで、曲を読み込めない状態のまま放置しない)。
+  // 自動再生はしない(他の読み込み経路と同じ理由。AudioContextはユーザー操作を要求する)。
+  async function loadSongFromShareFragment() {
+    let bytes;
+    try {
+      bytes = await decodeShareFragment(location.hash);
+    } catch (err) {
+      setNetStatus(describeNetError(err), true);
+      return false;
+    }
+    if (bytes === null) return false; // 共有リンクではない通常のアクセス
+    applyMmlBytes(bytes, { name: SHARE_LINK_FILEBAR_NAME, forceEncoding: 'utf-8' });
+    setNetStatus(t('net.loadedFromShareLink'), false);
+    // 自動取り込み: URL/ファイルからの読み込みと同様にライブラリへ残す。出所がURLでも
+    // ローカルファイルでもない(URL自体が曲データを丸ごと運ぶ)ため kind: 'local' +
+    // 内容ハッシュ入りファイル名を使う(net-load.js shareLibraryFileName()コメント参照。
+    // 同じ共有リンクを何度開いても重複が増えない)。
+    persistSongToLibrary({
+      driver: 'mucom',
+      bytes,
+      fileName: shareLibraryFileName(bytes),
+      origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    });
+    return true;
+  }
+
+  if (await loadSongFromShareFragment()) {
+    // 共有リンクから読み込めた場合はここで完了(下のctx.songUrl/既定サンプルへは進まない)。
+  } else if (ctx.songUrl) {
     loadSongFromUrl(ctx.songUrl);
   } else if (!hasDraft) {
     loadDefaultSample();

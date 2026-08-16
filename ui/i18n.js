@@ -141,6 +141,9 @@ const ja = {
   'net.loadedReady': '読み込みました: {name}(再生ボタンを押してください)',
   'net.loadedReadyWithVoiceBank': '読み込みました: {name}(音色バンク: {source}、再生ボタンを押してください)',
 
+  // --- 共有リンク(URLフラグメント`#s1=...`)からの読み込み ---
+  'net.loadedFromShareLink': '共有リンクから曲を読み込みました(再生ボタンを押してください)',
+
   'mucom.encodingBadge': '文字コード判定: {label}(自動判定。クリックで切り替え)',
   'mucom.unresolvedVoiceNames': '\n[注意] 一部の音色名を解決できませんでした: {names}',
   'mucom.voiceBankInUse': '\n[情報] このディスクの音色バンク({source})を使用しています',
@@ -194,6 +197,15 @@ const ja = {
   'net.error.lzh.dataExceedsFile': 'LZH: 圧縮データがファイル末尾を超えています ({name})',
   'net.error.lzh.unsupportedMethod': 'LZH: 未対応の圧縮メソッドです: {methodId} ({name})',
   'net.error.lzh.crcMismatch': 'LZH: CRC16が一致しません ({name}): 期待値={expected}, 実際={actual}',
+
+  // --- 共有リンク(net/share-link.js)のエラー。net/error.*と同じ作法(err.code+params、
+  // ui/net-error.js describeNetError()経由)。フラグメントは第三者が作ったリンクから
+  // 来うるため、無言で失敗させず必ずここへ落とす。
+  'net.error.share.malformed': '共有リンクの形式が不正です(バージョン部分が見つかりません)',
+  'net.error.share.unknownVersion': '未対応の形式の共有リンクです(バージョン: {version})。新しいFMSoundで作られたリンクの可能性があります',
+  'net.error.share.invalidBase64': '共有リンクのデータが壊れています(base64として不正です)',
+  'net.error.share.invalidGzip': '共有リンクのデータが壊れています(圧縮データとして不正です)',
+  'net.error.share.decodedTooLarge': '共有リンクのデータが大きすぎます(展開後のサイズが上限{limit}バイトを超えました)',
 };
 
 const en = {
@@ -296,6 +308,8 @@ const en = {
   'net.loadedReady': 'Loaded: {name} (press the play button)',
   'net.loadedReadyWithVoiceBank': 'Loaded: {name} (voice bank: {source}, press the play button)',
 
+  'net.loadedFromShareLink': 'Loaded a song from a share link (press the play button)',
+
   'mucom.encodingBadge': 'Detected encoding: {label} (auto-detected, click to switch)',
   'mucom.unresolvedVoiceNames': '\n[Note] Could not resolve some instrument names: {names}',
   'mucom.voiceBankInUse': '\n[Info] Using this disk\'s voice bank ({source})',
@@ -345,6 +359,12 @@ const en = {
   'net.error.lzh.dataExceedsFile': 'LZH: the compressed data exceeds the end of the file ({name})',
   'net.error.lzh.unsupportedMethod': 'LZH: unsupported compression method: {methodId} ({name})',
   'net.error.lzh.crcMismatch': 'LZH: CRC16 mismatch ({name}): expected={expected}, actual={actual}',
+
+  'net.error.share.malformed': 'This share link is malformed (no version segment found)',
+  'net.error.share.unknownVersion': 'This share link uses an unsupported format (version: {version}). It may have been created by a newer version of FMSound',
+  'net.error.share.invalidBase64': 'This share link\'s data is corrupted (invalid base64)',
+  'net.error.share.invalidGzip': 'This share link\'s data is corrupted (invalid compressed data)',
+  'net.error.share.decodedTooLarge': 'This share link\'s data is too large (decoded size exceeded the {limit}-byte limit)',
 };
 
 export const DICT = { ja, en };

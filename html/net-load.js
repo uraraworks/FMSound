@@ -10,8 +10,16 @@ export { ARCHIVE_EXTENSIONS };
 import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
-import { openLibraryDb, saveSong, importArchiveSongs } from './net/library.js';
+import { openLibraryDb, saveSong, importArchiveSongs, hashBytes } from './net/library.js';
 import { describeSongCandidate } from './net/album-info.js';
+import {
+  encodeShareFragment, decodeShareFragment, buildShareUrl, shareLinkLengthStatus,
+  SHARE_LINK_VERSION, SHARE_LINK_URL_LIMIT, MAX_DECOMPRESSED_BYTES,
+} from './net/share-link.js';
+export {
+  encodeShareFragment, decodeShareFragment, buildShareUrl, shareLinkLengthStatus,
+  SHARE_LINK_VERSION, SHARE_LINK_URL_LIMIT, MAX_DECOMPRESSED_BYTES,
+};
 import { t } from './ui/i18n.js';
 
 // FILEBAR(FMDSP MUSIC FILEバー)専用の固定ラベル。「読み込み元がファイルでない」
@@ -20,6 +28,12 @@ import { t } from './ui/i18n.js';
 // html/mucom-app.js)の下書き復元ブロックはこの定数をそのままcurrentSongNameへ
 // 代入するだけにする。ASCIIのみで構成(fmdsp/rightpane.jsのMEDIUM_FONTはANK専用)。
 export const FILEBAR_RESTORED_DRAFT_NAME = '(RESTORED DRAFT)';
+
+// FILEBAR専用の固定ラベル、共有リンク(`#s1=...`)から復元した曲用。理由は
+// FILEBAR_RESTORED_DRAFT_NAMEと同じ(ASCIIのみ・翻訳しない。fmdsp/rightpane.jsの
+// MEDIUM_FONTはANK専用のため)。共有リンクにはファイル名という概念が無いので、
+// 曲を開く他の経路(URL/ファイル/書庫)のような実ファイル名を渡せない代わりにこれを使う。
+export const SHARE_LINK_FILEBAR_NAME = '(SHARED LINK)';
 
 /**
  * URLのパス部分末尾からファイル名相当の文字列を取り出す(拡張子推測・表示名に使う)。
@@ -352,6 +366,45 @@ export function clearLoadedUrlFromAddressBar() {
     // location.hrefが不正/historyが使えない環境向けの保険。反映できなくても
     // 曲自体の切り替えは既に成功しているため、例外は投げない。
   }
+}
+
+/**
+ * clearLoadedUrlFromAddressBar()の共有リンク(`#s1=...`)版。
+ *
+ * このアプリはURLのフラグメント(`#`以降)を共有リンク以外の用途に使わないため、
+ * 中身を見ずに「空でなければ丸ごと消す」でよい(net/share-link.jsのバージョン判定に
+ * 触れる必要が無い)。呼び出しどころはclearLoadedUrlFromAddressBar()と同じ3箇所
+ * (新規作成/ファイルから開く/曲ライブラリ選択)に加え、`?mml=<URL>`読み込み成功時
+ * (reflectLoadedUrlInAddressBar()の呼び出し箇所)にも置く: 共有リンクの優先順位は
+ * `?mml=`より高い設計(html/mucom-app.js・html/pmd-app.js起動時の分岐参照)なので、
+ * フラグメントを消し忘れるとリロード時に新しく開いたはずの`?mml=`の曲を無視して
+ * 古い共有曲が復活してしまう。
+ */
+export function clearShareFragmentFromAddressBar() {
+  if (typeof location === 'undefined' || typeof history === 'undefined') return;
+  if (!location.hash) return;
+  try {
+    const next = new URL(location.href);
+    next.hash = '';
+    history.replaceState(history.state, '', next.toString());
+  } catch {
+    // 保険。曲自体の切り替えは既に成功しているため例外は投げない。
+  }
+}
+
+/**
+ * 共有リンク(`#s1=...`)から復元した曲を曲ライブラリへ保存する際のファイル名を作る。
+ * 出所がURLでもローカルファイルでもない(URLそのものが曲データを丸ごと運んでいる)ため、
+ * `net/library.js computeSongId()`の`kind:'local'`分岐(`local:<ファイル名>`)へ
+ * 素直に乗せる目的で、内容ハッシュ(hashBytes())をファイル名に埋め込む: 同じ共有リンクを
+ * 何度開いても同じidになり重複が増えず(既存の「同じ書庫を2回開いても増えない」規則と
+ * 揃う)、違う内容の共有曲は別idになる(全部同じ名前だと後勝ちで上書きされてしまうため)。
+ * 表示上の曲名はresolveLibraryFields()がMMLヘッダの#titleを優先するため、この名前が
+ * 目に触れるのは#titleが無い曲だけ(通常はここが表に出ない)。
+ * @param {Uint8Array} bytes
+ */
+export function shareLibraryFileName(bytes) {
+  return `shared-${hashBytes(bytes)}.mml`;
 }
 
 /**
