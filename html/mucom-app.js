@@ -11,8 +11,11 @@ import createMucomWeb from './mucom88.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
 import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } from './fmdsp/trackrow.js';
-import { buildMucomChannelMask, channelForRow } from './fmdsp/channel-mask.js';
-import { canvasPointFromClientClick, trackRowIndexAt } from './fmdsp/track-click.js';
+import {
+  buildMucomChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
+  channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
+} from './fmdsp/channel-mask.js';
+import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment } from './fmdsp/comment.js';
@@ -568,16 +571,26 @@ export async function init(ctx) {
   const vram = new Vram(PC98_W, PC98_H);
   const canvasCtx = canvas.getContext('2d');
 
-  // トラック行クリックミュート機能(利用者指示: クリックでミュート、もう一度で解除。
-  // ソロ機能は無し)。mutedRows: ミュート中の行index(0-9、fmdsp/trackrow.jsの
-  // TRACK_DISP_TABLE_OPNA順=FM1-6,SSG1-3,ADPCM)。
+  // トラック行/レベルメータークリックミュート機能(利用者指示: クリックでミュート、
+  // もう一度で解除。ソロ機能は無し)。
+  //
+  // 2026-08-16: 唯一の状態(single source of truth)を mutedChannels
+  // (Set<string>、fmdsp/channel-mask.jsの論理チャンネル名の集合)に一本化した
+  // (html/pmd-app.jsの同名コメント参照。リズムは対応するトラック行を持たないため、
+  // レベルメータークリックを追加するにあたり行indexではなくチャンネル名を状態の
+  // 単位にした。トラック行/メーターのどちらから操作しても同じmutedChannelsを
+  // 書き換えるので二重管理にならず表示も自動的に同期する)。
   // マスク値の組み立ては fmdsp/channel-mask.js の buildMucomChannelMask() に
   // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
   // 作って両方へ渡すような真似は絶対にしない)。
-  const mutedRows = new Set();
+  const mutedChannels = new Set();
+  function toggleMutedChannel(channel) {
+    if (!channel) return;
+    if (mutedChannels.has(channel)) mutedChannels.delete(channel); else mutedChannels.add(channel);
+    applyChannelMask();
+  }
   function applyChannelMask() {
     if (typeof Module.setChannelMask === 'function') {
-      const mutedChannels = new Set([...mutedRows].map((row) => channelForRow(row)));
       Module.setChannelMask(buildMucomChannelMask(mutedChannels));
     }
   }
@@ -588,9 +601,19 @@ export async function init(ctx) {
     const row = trackRowIndexAt(point.x, point.y, {
       trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
     });
-    if (row < 0) return;
-    if (mutedRows.has(row)) mutedRows.delete(row); else mutedRows.add(row);
-    applyChannelMask();
+    if (row >= 0) {
+      toggleMutedChannel(channelForRow(row));
+      return;
+    }
+    // トラック行にも当たらなかった場合、レベルメータークリックミュートの判定
+    // (2026-08-16追加。リズムはトラック行を持たないため、ミュートできるのは
+    // ここ経由のみ)。
+    const col = levelColumnIndexAt(point.x, point.y, {
+      columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,
+      topY: rightpane.LEVEL_TRACK_Y, bottomY: rightpane.LEVEL_KEY_Y + 8,
+      columnCount: LEVEL_COLUMN_CHANNELS.length,
+    });
+    if (col >= 0) toggleMutedChannel(channelForLevelColumn(col));
   });
 
   const palette = PALETTES[0];
@@ -601,6 +624,11 @@ export async function init(ctx) {
   const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
   const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
   let rightPaneFrameCounter = 0;
+  // FRAMES PER SECOND(右ペイン)。html/pmd-app.jsの同名コメント参照
+  // (fmdsp/rightpane.js createFpsCounter/tickFpsCounter、updateChannelStatus()の
+  // 呼び出し間隔=実測フレームレートをそのまま使う)。
+  const fpsCounter = rightpane.createFpsCounter();
+  let currentFps = 0;
   // 曲が読み込まれていない/停止中でもパート行の枠を描くためのプレースホルダ
   // (trackrow.js createIdleEntryTracks() 参照)。
   const idleEntryTracks = createIdleEntryTracks();
@@ -815,7 +843,7 @@ export async function init(ctx) {
 
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks, mutedRows);
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels));
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
 
       const audioState = globalThis.mucomAudioState;
@@ -829,7 +857,7 @@ export async function init(ctx) {
         timerb: 0,
         loopCnt: maxCount > 0 ? Math.floor(intCount / maxCount) : 0,
         cpuUsage: 0,
-        fps: 0,
+        fps: currentFps,
         timerbCntLoop: 0,
         loopTimerbCnt: 0,
         playing: rightPanePlaying,
@@ -842,7 +870,7 @@ export async function init(ctx) {
       const fft = Module.HEAPU8.subarray(fftBase, fftBase + Module.getFftBinCount());
       const levels = readLevels(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState);
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels));
       rightpane.drawFileBar(vram, currentSongName);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
@@ -852,6 +880,9 @@ export async function init(ctx) {
   const debug = document.getElementById('snapshotDebug');
 
   function updateChannelStatus() {
+    // rAFの実測頻度をFPSとして数える。html/pmd-app.jsの同名コメント参照
+    // (早期return=一時停止スキップより前に置き、描画ループ自体の呼び出し頻度を測る)。
+    currentFps = rightpane.tickFpsCounter(fpsCounter, performance.now());
     updateTransportButtonUI();
 
     if (Boolean(globalThis.mucomAudioState?.paused)) {
@@ -876,7 +907,7 @@ export async function init(ctx) {
           stoppedFrameDrawn = true;
           idleDrawnSongName = currentSongName;
           vram.pixels.set(staticVramSnapshot);
-          drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRows);
+          drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels));
           drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
           rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
           rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
@@ -990,7 +1021,7 @@ export async function init(ctx) {
     adapter.reset();
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
-    mutedRows.clear();
+    mutedChannels.clear();
     applyChannelMask();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;

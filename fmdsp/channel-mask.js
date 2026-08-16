@@ -28,9 +28,10 @@ export const RHYTHM_CHANNEL = 'RHYTHM';
 // (= track_type_table を FM1-6,SSG1-3,ADPCM の順に辿ったもの)と一致させる。
 // 本Web版のFMDSPはこの10行のみを表示し、リズム専用の行を持たない
 // (html/mucom-adapter.js CH_TO_SLOTのコメント参照: MUCOM側リズムパート(G)は
-// 対応する表示行が無いため写像先を持たない)。そのためクリックでミュートできる
-// のはこの10チャンネルのみ。RHYTHM_CHANNELはUIからは到達しないが、ビット組み立て
-// 関数自体はテスト可能性のため受け付ける。
+// 対応する表示行が無いため写像先を持たない)。そのためトラック行クリックで
+// ミュートできるのはこの10チャンネルのみ。
+// 2026-08-16追記: RHYTHM_CHANNELはトラック行こそ持たないが、下のレベルメーター
+// クリック(LEVEL_COLUMN_CHANNELS)経由ではUIから到達できるようになった。
 export const TRACK_ROW_CHANNELS = [...FM_CHANNELS, ...SSG_CHANNELS, ADPCM_CHANNEL];
 
 function fmSsgBits(mutedSet) {
@@ -59,4 +60,46 @@ export function buildPmdChannelMask(mutedSet) {
 // トラック行index(0-9) -> 論理チャンネル名。範囲外はundefined。
 export function channelForRow(rowIndex) {
   return TRACK_ROW_CHANNELS[rowIndex];
+}
+
+// --- レベルメーター(右ペイン、fmdsp/rightpane.js drawLevelMeters)のクリック対応 ---
+// 2026-08-16追加: リズムパートはトラック行を持たない(上のTRACK_ROW_CHANNELSの
+// コメント参照)ため、クリックでミュートする手段が無かった。上流はレベルメーター
+// index9(RHYTHM列)にリズムのマスク状態を反映している
+// (upstream/98fmplayer/fmdsp/fmdsp-pacc.c:1717 `levels[c].masked = c == 9 ?
+// fp->masked_rhythm : fp->masked[levels[c].t]`、:1988 masked_rhythm算出)ので、
+// 同じ列をクリック対象にする。
+//
+// レベルメーター列(FMDSP_LEVEL_COUNT=19)のうち0-10列の対応(出典:
+// fmdsp-pacc.c:1670-1696、fmdsp/rightpane.js drawLevelLabels()の列見出しと一致):
+//   0-5=FM1-6, 6-8=SSG1-3, 9=RHYTHM, 10=ADPCM, 11-18=PPZ8 1-8
+// PPZ8(11-18)はbuildMucomChannelMask/buildPmdChannelMaskがそもそもマスク値の
+// 組み立てに対応していない(TRACK_ROW_CHANNELSにも含まれない)ため、クリック対象に
+// 含めない(未対応チャンネルをクリックできる見た目にすると、押しても効かない
+// UIになってしまう)。
+export const LEVEL_COLUMN_CHANNELS = [
+  ...FM_CHANNELS, ...SSG_CHANNELS, RHYTHM_CHANNEL, ADPCM_CHANNEL,
+];
+
+// レベルメーター列index(0-18) -> 論理チャンネル名。11以上(PPZ8)はundefined。
+export function channelForLevelColumn(columnIndex) {
+  return LEVEL_COLUMN_CHANNELS[columnIndex];
+}
+
+// mutedChannels(Set<string>、論理チャンネル名の集合)を、トラック行クリック用の
+// Set<number>(行index)へ変換する。トラック行描画(fmdsp/trackrow.js
+// drawTrackRows)とレベルメーター描画(fmdsp/rightpane.js drawLevelMeters)の
+// 両方が同じmutedChannelsを唯一の状態(single source of truth)として参照できる
+// ようにするための変換関数(html/pmd-app.js・html/mucom-app.js共通)。
+export function mutedRowsFromChannels(mutedChannels) {
+  const rows = new Set();
+  TRACK_ROW_CHANNELS.forEach((ch, row) => { if (mutedChannels.has(ch)) rows.add(row); });
+  return rows;
+}
+
+// mutedChannelsを、レベルメーター描画用のSet<number>(列index)へ変換する。
+export function mutedColumnsFromChannels(mutedChannels) {
+  const columns = new Set();
+  LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (mutedChannels.has(ch)) columns.add(col); });
+  return columns;
 }

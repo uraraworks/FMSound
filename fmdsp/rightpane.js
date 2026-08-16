@@ -67,6 +67,7 @@ const MEDIUM_FONT = new SmallFont(FONT_MEDIUM); // font_fmdsp_medium (6x8)
 const COLOR_1 = 1;
 const COLOR_2 = 2;
 const COLOR_3 = 3;
+const COLOR_5 = 5;
 const COLOR_7 = 7;
 
 // --- 位置定数 (fmdsp_sprites.h の enum より、file:line は行コメントに個別記載) ---
@@ -699,6 +700,8 @@ function levelToBars(rawLevel) {
   return fllevel > 0 ? Math.floor(fllevel) : 0;
 }
 
+const EMPTY_MUTED_COLUMNS = new Set();
+
 // LEVELメーター(19ch)バー本体+PANPOT+PROG/KEY。fmdsp-pacc.c:1660-1805。
 // levels: 長さFMDSP_LEVEL_COUNT(=19)の配列、各要素は
 //   docs/right-pane-data.md §2 のflat_level_status 5フィールドをそのまま
@@ -713,7 +716,15 @@ function levelToBars(rawLevel) {
 //   - RHYTHM(index 9)のPROG/KEYはB/S/T・H/T/R表示だが、元データが
 //     opna->drum.drums[].playingで別経路(エクスポートされていない)のため
 //     描画しない(依頼メモ「PROG/KEYは19ch中18ch分(RHYTHMを除く)」どおり)。
-export function drawLevelMeters(vram, levels, peakState) {
+//
+// mutedColumns: 2026-08-16追加。レベルメータークリックミュート機能用(このタスクの
+// scope)。Set<number>(列index)。fmdsp/channel-mask.js mutedColumnsFromChannels()
+// でmutedChannels(トラック行クリックと共通の唯一の状態)から都度作る想定。
+// PANPOTの色をfmdsp-pacc.c:1765-1769
+// `levels[c].masked ? fp->buf_panpot_5_d : fp->buf_panpot_1_d` のとおり
+// 色5/色1で切り替える(値そのものは変えない。バー本体は音自体が消えるので
+// 自然にlevelが下がって表現される。fmdsp-pacc.cもバー本体は masked で分岐しない)。
+export function drawLevelMeters(vram, levels, peakState, mutedColumns = EMPTY_MUTED_COLUMNS) {
   for (let c = 0; c < FMDSP_LEVEL_COUNT; ++c) {
     const entry = levels[c] || {};
     const llevel = levelToBars(entry.level || 0);
@@ -740,7 +751,7 @@ export function drawLevelMeters(vram, levels, peakState) {
     vram.blitColor(
       panSprite, PANPOT_W,
       LEVEL_X + LEVEL_W * c - 1, PANPOT_Y, PANPOT_W, PANPOT_H,
-      COLOR_1
+      mutedColumns.has(c) ? COLOR_5 : COLOR_1
     );
 
     if (c === 9) continue; // RHYTHM列: PROG/KEYは未供給データにつき描画しない
@@ -784,6 +795,6 @@ export {
   TIME_X, TIME_Y, CLOCK_Y, TIMERB_Y, LOOPCNT_Y, VOLDOWN_Y, PGMNUM_Y,
   CPU_X, CPU_Y, CPU_NUM_X, CPU_NUM_Y, FPS_X, FPS_NUM_X,
   SPECTRUM_X, SPECTRUM_Y, FFTDISPLEN,
-  LEVEL_X, LEVEL_Y, LEVEL_W, LEVEL_DISP_W, PANPOT_Y, LEVEL_PROG_Y, LEVEL_KEY_Y,
+  LEVEL_X, LEVEL_Y, LEVEL_W, LEVEL_DISP_W, LEVEL_TRACK_Y, PANPOT_Y, LEVEL_PROG_Y, LEVEL_KEY_Y,
   FMDSP_LEVEL_COUNT,
 };

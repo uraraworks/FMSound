@@ -29,8 +29,11 @@ import createPmdWeb from './pmdweb.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
 import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } from './fmdsp/trackrow.js';
-import { buildPmdChannelMask, channelForRow } from './fmdsp/channel-mask.js';
-import { canvasPointFromClientClick, trackRowIndexAt } from './fmdsp/track-click.js';
+import {
+  buildPmdChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
+  channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
+} from './fmdsp/channel-mask.js';
+import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment, commentScroll } from './fmdsp/comment.js';
@@ -449,16 +452,30 @@ export async function init(ctx) {
   const canvasCtx = canvas.getContext('2d');
   const palette = PALETTES[0];
 
-  // トラック行クリックミュート機能(利用者指示: クリックでミュート、もう一度で解除。
-  // ソロ機能は無し)。mutedRows: ミュート中の行index(0-9、fmdsp/trackrow.jsの
-  // TRACK_DISP_TABLE_OPNA順=FM1-6,SSG1-3,ADPCM)。
+  // トラック行/レベルメータークリックミュート機能(利用者指示: クリックでミュート、
+  // もう一度で解除。ソロ機能は無し)。
+  //
+  // 2026-08-16: 唯一の状態(single source of truth)を mutedChannels
+  // (Set<string>、fmdsp/channel-mask.jsの論理チャンネル名の集合)に一本化した。
+  // 以前はミュート中の「行index」をそのまま状態として持っていたが、リズムは
+  // 対応する行を持たない(TRACK_ROW_CHANNELSのコメント参照)ため、レベルメーター
+  // クリック(リズム列を含む)を追加するにあたり「行index」を状態の単位にしたままでは
+  // 表現できなかった。mutedChannelsを唯一の状態にし、描画に必要な
+  // Set<number>(行index/列index)はmutedRowsFromChannels()/mutedColumnsFromChannels()
+  // で毎フレーム導出する(=トラック行クリックとメータークリックのどちらから
+  // ミュートしても同じmutedChannelsを書き換えるので、二重管理にならず表示も自動的に
+  // 同期する)。
   // マスク値の組み立ては fmdsp/channel-mask.js の buildPmdChannelMask() に
   // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
   // 作って両方へ渡すような真似は絶対にしない)。
-  const mutedRows = new Set();
+  const mutedChannels = new Set();
+  function toggleMutedChannel(channel) {
+    if (!channel) return;
+    if (mutedChannels.has(channel)) mutedChannels.delete(channel); else mutedChannels.add(channel);
+    applyChannelMask();
+  }
   function applyChannelMask() {
     if (typeof Module.setChannelMask === 'function') {
-      const mutedChannels = new Set([...mutedRows].map((row) => channelForRow(row)));
       Module.setChannelMask(buildPmdChannelMask(mutedChannels));
     }
   }
@@ -472,6 +489,12 @@ export async function init(ctx) {
   const fftPeakState = rightpane.createPeakState(rightpane.FFTDISPLEN);
   const levelPeakState = rightpane.createPeakState(rightpane.FMDSP_LEVEL_COUNT);
   let rightPaneFrameCounter = 0;
+  // FRAMES PER SECOND(右ペイン)。updateChannelStatus()はrAF駆動の描画ループ本体
+  // なので、その呼び出し間隔=実測フレームレートをそのままFPS表示に使う
+  // (fmdsp/rightpane.js createFpsCounter/tickFpsCounter参照。上流fmdsp_fps_30()も
+  // wasm/音源と無関係にホスト側の描画頻度を数えているだけなので意味が一致する)。
+  const fpsCounter = rightpane.createFpsCounter();
+  let currentFps = 0;
   // 曲が読み込まれていない/停止中でもパート行の枠を描くためのプレースホルダ
   // (trackrow.js createIdleEntryTracks() 参照)。
   const idleEntryTracks = createIdleEntryTracks();
@@ -526,9 +549,19 @@ export async function init(ctx) {
     const row = trackRowIndexAt(x, y, {
       trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
     });
-    if (row < 0) return;
-    if (mutedRows.has(row)) mutedRows.delete(row); else mutedRows.add(row);
-    applyChannelMask();
+    if (row >= 0) {
+      toggleMutedChannel(channelForRow(row));
+      return;
+    }
+    // トラック行にも当たらなかった場合、レベルメータークリックミュートの判定
+    // (2026-08-16追加、fmdsp/channel-mask.js LEVEL_COLUMN_CHANNELS参照。
+    // リズムはトラック行を持たないため、ミュートできるのはここ経由のみ)。
+    const col = levelColumnIndexAt(x, y, {
+      columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,
+      topY: rightpane.LEVEL_TRACK_Y, bottomY: rightpane.LEVEL_KEY_Y + 8,
+      columnCount: LEVEL_COLUMN_CHANNELS.length,
+    });
+    if (col >= 0) toggleMutedChannel(channelForLevelColumn(col));
   });
 
   const ringSize = 2048;
@@ -631,7 +664,7 @@ export async function init(ctx) {
     }
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks, mutedRows);
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels));
       const modePmd = Module.getCommentModePmd() !== 0;
       const triangles = [];
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -646,15 +679,18 @@ export async function init(ctx) {
       // PASSED TIME(=entry.frame。opna.generated_framesそのものであり、
       // fmdsp-pacc.cのpassed time計算(:1502)と同一の値)/CLOCK COUNT/
       // TIMER B CYCLE/LOOP COUNT/ループバーは fmdriver_work(fmdriver.h)由来で
-      // 取得できる(docs/right-pane-data.md §7)。CPU/FPSに対応するwasm exportは
-      // 存在しないため、でっち上げず0のまま渡す(旧pmdweb/html/index.htmlと同じ方針)。
+      // 取得できる(docs/right-pane-data.md §7)。
+      // CPU POWER COUNT: ブラウザにプロセスCPU使用率を取得するAPIが無く恒久的に
+      // 取得不能(でっち上げず0のまま渡す。drawCpuFps側が暗色描画に落とす)。
+      // FRAMES PER SECOND: 2026-08-16実装。rightpane.tickFpsCounter()が
+      // updateChannelStatus()の実行間隔(=rAFの実測頻度)から算出した値。
       rightpane.drawDynamic(vram, {
         generatedFrames: BigInt(entry[SNAPSHOT_HEADER.FRAME] >>> 0),
         timerbCnt,
         timerb,
         loopCnt,
         cpuUsage: 0,
-        fps: 0,
+        fps: currentFps,
         timerbCntLoop,
         loopTimerbCnt,
         playing: rightPanePlaying,
@@ -665,7 +701,7 @@ export async function init(ctx) {
 
       const { fft, levels } = readRightPaneData(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState);
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels));
       rightpane.drawFileBar(vram, currentSongName);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
@@ -814,7 +850,7 @@ export async function init(ctx) {
     const error = Module.playMusic('/edited.M');
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
-    mutedRows.clear();
+    mutedChannels.clear();
     applyChannelMask();
     if (error) {
       renderCompileErrors([{ line: null, message: t('mml.playbackError', { error }) }]);
@@ -877,6 +913,10 @@ export async function init(ctx) {
   const debug = document.getElementById('snapshotDebug');
 
   function updateChannelStatus() {
+    // rAFの実測頻度をFPSとして数える。早期return(一時停止中の再描画スキップ)より
+    // 前に置くことで、「描画ループ自体が呼ばれる頻度」を測る
+    // (実際に毎回canvasへ描くかどうかは別問題として扱う)。
+    currentFps = rightpane.tickFpsCounter(fpsCounter, performance.now());
     updateTransportButtonUI();
 
     if (Boolean(globalThis.pmdAudioState?.paused)) {
@@ -902,7 +942,7 @@ export async function init(ctx) {
         stoppedFrameDrawn = true;
         idleDrawnSongName = currentSongName;
         vram.pixels.set(staticVramSnapshot);
-        drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRows);
+        drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels));
         const modePmd = Module.getCommentModePmd() !== 0;
         const triangles = [];
         drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -995,7 +1035,7 @@ export async function init(ctx) {
     const error = Module.playMusic('/' + name);
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
-    mutedRows.clear();
+    mutedChannels.clear();
     applyChannelMask();
     if (error) {
       alert(error);
