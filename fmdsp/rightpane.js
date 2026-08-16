@@ -76,6 +76,13 @@ const COLOR_7 = 7;
 // そのまま流用する。
 const COLOR_UNAVAILABLE = COLOR_3;
 
+// 2026-08-17: レベルメーターのPANPOT表示、3段階目「曲が使っていない」用。
+// fmdsp/trackrow.js COLOR_UNUSED(輝度の根拠・選定理由は同ファイルの詳細コメント
+// 参照)と同じ値(index3)を流用し、パート行とレベルメーターで「未使用」の色を
+// 揃える。ミュート色(COLOR_5、輝度0.1298)より暗いことをtools/verify_dim_tier_luminance.mjs
+// で検査する。
+const COLOR_UNUSED = COLOR_3;
+
 // --- 位置定数 (fmdsp_sprites.h の enum より、file:line は行コメントに個別記載) ---
 const LOGO_Y = 1; // :97
 const LOGO_FM_X = 312; // :102
@@ -795,7 +802,11 @@ const EMPTY_MUTED_COLUMNS = new Set();
 // `levels[c].masked ? fp->buf_panpot_5_d : fp->buf_panpot_1_d` のとおり
 // 色5/色1で切り替える(値そのものは変えない。バー本体は音自体が消えるので
 // 自然にlevelが下がって表現される。fmdsp-pacc.cもバー本体は masked で分岐しない)。
-export function drawLevelMeters(vram, levels, peakState, mutedColumns = EMPTY_MUTED_COLUMNS) {
+// unusedColumns: 2026-08-17追加。曲が使っていない列(Set<number>)。
+// fmdsp/channel-mask.js unusedColumnsFromChannels()で作る。PANPOTの色を
+// unused > muted > 通常 の優先順で切り替える(trackrow.jsのtierColorと同じ考え方。
+// 曲が使っていない列を利用者がさらにミュートしても見た目は変えない)。
+export function drawLevelMeters(vram, levels, peakState, mutedColumns = EMPTY_MUTED_COLUMNS, unusedColumns = EMPTY_MUTED_COLUMNS) {
   for (let c = 0; c < FMDSP_LEVEL_COUNT; ++c) {
     const entry = levels[c] || {};
     const llevel = levelToBars(entry.level || 0);
@@ -822,7 +833,7 @@ export function drawLevelMeters(vram, levels, peakState, mutedColumns = EMPTY_MU
     vram.blitColor(
       panSprite, PANPOT_W,
       LEVEL_X + LEVEL_W * c - 1, PANPOT_Y, PANPOT_W, PANPOT_H,
-      mutedColumns.has(c) ? COLOR_5 : COLOR_1
+      unusedColumns.has(c) ? COLOR_UNUSED : (mutedColumns.has(c) ? COLOR_5 : COLOR_1)
     );
 
     if (c === 9) continue; // RHYTHM列: PROG/KEYは未供給データにつき描画しない
@@ -868,4 +879,5 @@ export {
   SPECTRUM_X, SPECTRUM_Y, FFTDISPLEN,
   LEVEL_X, LEVEL_Y, LEVEL_W, LEVEL_DISP_W, LEVEL_TRACK_Y, PANPOT_Y, LEVEL_PROG_Y, LEVEL_KEY_Y,
   FMDSP_LEVEL_COUNT,
+  COLOR_1, COLOR_5, COLOR_UNUSED,
 };

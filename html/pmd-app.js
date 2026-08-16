@@ -32,6 +32,7 @@ import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } 
 import {
   buildPmdChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
   channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
+  usedChannelsFromPmdMmlParts, unusedRowsFromChannels, unusedColumnsFromChannels,
 } from './fmdsp/channel-mask.js';
 import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
 import { trackRowHoverRect, levelColumnHoverRect, drawHoverOutline, COLOR_HOVER } from './fmdsp/hover.js';
@@ -470,6 +471,12 @@ export async function init(ctx) {
   // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
   // 作って両方へ渡すような真似は絶対にしない)。
   const mutedChannels = new Set();
+  // 2026-08-17: 「曲が使っていないパート」の集合(Set<string>|null)。nullは
+  // 「判定不能」を表し、その場合は未使用暗色化を一切行わない
+  // (fmdsp/channel-mask.js usedChannelsFromPmdMmlParts()のコメント参照。
+  // 「曲を開く」で読み込んだ.M/.mバイナリは判定手段が無いためnullのまま。
+  // でっち上げない)。
+  let pmdUsedChannels = null;
   function toggleMutedChannel(channel) {
     if (!channel) return;
     if (mutedChannels.has(channel)) mutedChannels.delete(channel); else mutedChannels.add(channel);
@@ -702,7 +709,7 @@ export async function init(ctx) {
     }
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels));
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(pmdUsedChannels));
       const modePmd = Module.getCommentModePmd() !== 0;
       const triangles = [];
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -739,7 +746,7 @@ export async function init(ctx) {
 
       const { fft, levels } = readRightPaneData(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels));
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels), unusedColumnsFromChannels(pmdUsedChannels));
       rightpane.drawFileBar(vram, currentSongName);
       drawHover(vram);
 
@@ -885,7 +892,7 @@ export async function init(ctx) {
     // renderCompileErrors()が今回の結果で上書きするが、「開始時に消す」という
     // 要求どおりの箇所として明示的に置く)。
     clearCompileStatus();
-    const { file, errors } = compileMml(source);
+    const { file, errors, layout } = compileMml(source);
     if (errors.length > 0) {
       renderCompileErrors(errors);
       updateTransportButtonUI();
@@ -897,6 +904,11 @@ export async function init(ctx) {
     // 次の曲へ持ち越さない)。
     mutedChannels.clear();
     applyChannelMask();
+    // 2026-08-17: 「曲が使っていないパート」判定(利用者指示B)。このアプリの
+    // v1コンパイラでMMLをコンパイルした場合のみ、どのパートに実際にイベントが
+    // あるかが分かる(fmdsp/channel-mask.js usedChannelsFromPmdMmlParts参照。
+    // RHYTHM/ADPCMはこのコンパイラが構造的に出力しないため常に未使用扱いになる)。
+    pmdUsedChannels = usedChannelsFromPmdMmlParts(Object.keys(layout.tracks));
     if (error) {
       renderCompileErrors([{ line: null, message: t('mml.playbackError', { error }) }]);
       updateTransportButtonUI();
@@ -992,7 +1004,7 @@ export async function init(ctx) {
         idleDrawnSongName = currentSongName;
         idleDrawnHoverKey = hoverKeyOf(hoverTarget);
         vram.pixels.set(staticVramSnapshot);
-        drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels));
+        drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(pmdUsedChannels));
         const modePmd = Module.getCommentModePmd() !== 0;
         const triangles = [];
         drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -1088,6 +1100,11 @@ export async function init(ctx) {
     // 次の曲へ持ち越さない)。
     mutedChannels.clear();
     applyChannelMask();
+    // 2026-08-17: この経路(.M/.mバイナリの直接再生)はMMLソースを経由しないため
+    // 「曲が使っていないパート」を判定する手段が無い(fmdsp/channel-mask.js
+    // usedChannelsFromPmdMmlParts()冒頭コメント参照)。でっち上げずnull
+    // (判定不能=未使用暗色化なし)に戻す。
+    pmdUsedChannels = null;
     if (error) {
       alert(error);
     } else {

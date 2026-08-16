@@ -63,23 +63,58 @@ export const TRACK_H = 32;
 //   fmdsp-pacc.c:2076 color(2)  … buf_font_2 / buf_font_2_d (トラック種別・TINFO)
 //   fmdsp-pacc.c:2086 color(7)  … buf_solid_7 系 (レスト/マスク時・現在tick)
 //   fmdsp-pacc.c:2110/2112      … 鍵盤ハイライト: masked=8, 通常=6
-const COLOR_LABEL = 1;
-const COLOR_TYPE = 2;
+// COLOR_LABEL/COLOR_TYPE/COLOR_KEY_HILITEはexportして、通常>ミュート>未使用の
+// 輝度順を検査するtools/verify_dim_tier_luminance.mjsから直接参照できるようにする
+// (「通常」側は要素ごとに色が違うため、代表値ではなくこの3色すべてを検査対象にする)。
+export const COLOR_LABEL = 1;
+export const COLOR_TYPE = 2;
 const COLOR_BAR_BG = 3;
 const COLOR_BAR_REST = 7;
-const COLOR_KEY_HILITE = 6;
+export const COLOR_KEY_HILITE = 6;
 const COLOR_KEY_HILITE_SUB = 8;
 
-// ミュート中の行に使う色。2026-08-16 トラック行クリックミュート機能追加時、
-// 新しい色や記号は作らず「FMDSPが既に持っている暗い側の色」を流用する方針とした。
-// COLOR_BAR_BG(=3)は本モジュールで元々「未再生(playing=false)時のゲージバー
-// 背景色」として使われている値であり、fmdsp/rightpane.js の
-// drawTransportIcons()(PLAY/STOP/PAUSEアイコン)でも同じ値COLOR_3を
-// 「非アクティブ状態」の色として使っている(rightpane.js:496,499-501の
-// コメント「状態に応じて色2(アクティブ)/3(非アクティブ)を切替」参照)。
-// この2箇所の先例から、色3=FMDSP内の「暗い/非アクティブ」語彙だと判断し、
-// ミュート表示にもそのまま流用する(新色は追加しない)。
-const COLOR_MUTED = COLOR_BAR_BG;
+// ミュート中/未使用の行に使う色。
+//
+// 2026-08-17 利用者指示: 「利用者がミュートしたパート」と「曲がそもそも
+// 使っていないパート」を見分けられるよう、通常 > ミュート > 未使用 の3段階を
+// 実際の輝度順にする。色は新しく作らずFMDSPの既存パレット(tools/gen_palette.py
+// が出力するfmdsp/palette.js、PALETTES[0]。html/mucom-app.js・html/pmd-app.js
+// 双方が使っているのはこの1パレットのみ)から選ぶこと、という制約のもと、
+// 実際のRGBをWCAGの相対輝度式(sRGB→線形化してから0.2126R+0.7152G+0.0722Bを
+// とる標準式。ガンマ補正無しの単純加重和だと「彩度の高い色は暗く見えるはずが
+// 実は明るい」という誤判定をする実例に当たった。下記参照)で計算して並べた。
+//
+//   index: RGB               相対輝度(WCAG)
+//   0    : [  0,  0,  0]     0.0000  (背景色。前景には使えない)
+//   3    : [ 68, 68,119]     0.0670  (旧COLOR_MUTED。背景の次に暗い)
+//   7    : [ 51, 51,238]     0.0924  (**注意**: ガンマ補正なしの単純加重和では
+//                                      index3より暗く見えるが、実際は明るい。
+//                                      彩度の高い青は補正無しの式だと過小評価される)
+//   5    : [102,102, 85]     0.1298
+//   9    : [ 68,102,170]     0.1363
+//   2    : [102,136,255]     0.2765  (COLOR_TYPE)
+//   1    : [170,170,153]     0.3960  (COLOR_LABEL)
+//   8    : [  0,187,255]     0.4276  (COLOR_KEY_HILITE_SUB)
+//   4    : [204,204,187]     0.5961
+//   6    : [136,255, 68]     0.7717  (COLOR_KEY_HILITE)
+//
+// index3([68,68,119])は黒(index0)の次に暗く、通常色(1/2/6、輝度0.28-0.77)より
+// 常に暗いミュート色として2026-08-16版で採用済みだった。しかし黒の次に暗い時点で
+// 「index3よりさらに暗いが黒ではない」色がこのパレットに存在しない
+// (index7は上表の注のとおり実際にはindex3より明るい)。3段階を成立させるには
+// ミュート色を1段階明るい方へ動かす必要があると判断し、
+//   ミュート = index5 ([102,102,85], 輝度0.1298)
+//     rightpane.js drawLevelMeters()のミュート中PANPOT表示が元々COLOR_5を
+//     使っており(2cc4eae)、トラック行側もこれに合わせることでパート行と
+//     レベルメーターのミュート色が揃う副次効果もある。
+//   未使用 = index3 ([68,68,119], 輝度0.0670)
+//     旧COLOR_MUTEDをそのまま「さらに暗い」側へ回す。COLOR_BAR_BG/
+//     rightpane.jsのCOLOR_UNAVAILABLEと同じ値で、元々「非再生/測定不能」を
+//     指す語彙だったため「曲が使っていない」の意味とも自然に合う。
+// 0.396(通常最小) > 0.1298(ミュート) > 0.0670(未使用) > 0(背景) の順になり、
+// 3段階が輝度順であることをtools/verify_dim_tier_luminance.mjsで検査する。
+export const COLOR_MUTED = 5;
+export const COLOR_UNUSED = COLOR_BAR_BG; // = 3
 
 // fmdriver.h の enum FMDRIVER_TRACKTYPE_* / FMDRIVER_TRACK_INFO_* を
 // このモジュール内だけの整数定数として再掲(値は upstream ヘッダと一致させる)。
@@ -144,11 +179,15 @@ function statusString(data) {
 // font 引数は未使用(呼び出し側との互換のため残すだけ)。パート行は本家と同じ
 // font_fmdsp_small (SMALL_FONT) 固定で描く。曲名/コメント欄は別モジュールで
 // shinonome ROM を使う想定(このモジュールのスコープ外)。
-export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
+export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, unused = false) {
   const smallFont = SMALL_FONT;
   const [type, num] = TRACK_TYPE_TABLE[slotIndex];
-  const typeColor = muted ? COLOR_MUTED : COLOR_TYPE;
-  const labelColor = muted ? COLOR_MUTED : COLOR_LABEL;
+  // 優先順位: 未使用 > ミュート > 通常 (unusedはmutedを兼ねた見た目になる。
+  // 曲が使っていないパートを利用者がさらにミュートしても、元々鳴らないので
+  // 見た目を変える必要が無い)。
+  const tierColor = unused ? COLOR_UNUSED : (muted ? COLOR_MUTED : undefined);
+  const typeColor = tierColor ?? COLOR_TYPE;
+  const labelColor = tierColor ?? COLOR_LABEL;
   const playing = data[FIELD.PLAYING] !== 0;
   const info = data[FIELD.INFO];
   const key = data[FIELD.KEY];
@@ -163,14 +202,14 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
   // --- 行0: トラック番号(数字スプライト) + 種別ラベル + TINFO(EX/EFF等) ---
   // fmdsp-pacc.c:472-485 (update_track_without_key)。NUMスプライトは
   // y+1 (fmdsp-pacc.c:480,484)。
-  // ミュート中は数字スプライトも COLOR_MUTED で塗り直す(blitCopyだとスプライト
-  // に焼き込まれた色番号(2/3、アンチエイリアス用の2階調)がそのまま出るため、
-  // blitColorに切り替えて非0ピクセルを一律 COLOR_MUTED で塗る)。
+  // ミュート中/未使用中は数字スプライトも塗り直す(blitCopyだとスプライトに
+  // 焼き込まれた色番号(2/3、アンチエイリアス用の2階調)がそのまま出るため、
+  // blitColorに切り替えて非0ピクセルを一律tierColorで塗る)。
   const num1 = Math.floor(num / 10) % 10;
   const num2 = num % 10;
-  if (muted) {
-    vram.blitColor(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H, COLOR_MUTED);
-    vram.blitColor(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H, COLOR_MUTED);
+  if (tierColor !== undefined) {
+    vram.blitColor(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H, tierColor);
+    vram.blitColor(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H, tierColor);
   } else {
     vram.blitCopy(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H);
     vram.blitCopy(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H);
@@ -288,10 +327,13 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
 // entryTracks: index.html 側で作る「trackスロット index -> flatten済みInt32配列」の配列。
 // mutedRows: ミュート中の行index(0-9)の集合(Set<number>)。省略時は誰もミュート
 // されていない(トラック行クリックミュート機能、docs参照はfmdsp/channel-mask.js)。
-export function drawTrackRows(vram, font, entryTracks, mutedRows = EMPTY_MUTED_ROWS) {
+// unusedRows: 曲が使っていない行index(0-9)の集合(Set<number>)。省略時は
+// 誰も未使用扱いにしない(2026-08-17追加。判定できないときは呼び出し側が
+// 空集合を渡すこと。fmdsp/channel-mask.js unusedRowsFromChannels参照)。
+export function drawTrackRows(vram, font, entryTracks, mutedRows = EMPTY_MUTED_ROWS, unusedRows = EMPTY_MUTED_ROWS) {
   TRACK_DISP_TABLE_OPNA.forEach((slotIndex, row) => {
     const data = entryTracks[slotIndex];
-    drawTrackRow(vram, font, 0, TRACK_H * row, slotIndex, data, mutedRows.has(row));
+    drawTrackRow(vram, font, 0, TRACK_H * row, slotIndex, data, mutedRows.has(row), unusedRows.has(row));
   });
 }
 

@@ -19,6 +19,11 @@
 //     ADPCM=bit15=0x8000)
 // 両者とも極性は同じ: ビットを立てる = そのチャンネルが鳴らなくなる。
 
+// 「曲が使っていないパート」判定(下のusedChannelsFromPmdMmlParts参照)のため、
+// PMD MMLパーサのパート文字順をそのまま借りる(重複定義しない。パーサ側が
+// A-Iの順=FM1-6,SSG1-3の順であることの唯一の情報源)。
+import { PART_LETTERS } from '../compiler/pmd_mml_parser.mjs';
+
 export const FM_CHANNELS = ['FM1', 'FM2', 'FM3', 'FM4', 'FM5', 'FM6'];
 export const SSG_CHANNELS = ['SSG1', 'SSG2', 'SSG3'];
 export const ADPCM_CHANNEL = 'ADPCM';
@@ -101,5 +106,101 @@ export function mutedRowsFromChannels(mutedChannels) {
 export function mutedColumnsFromChannels(mutedChannels) {
   const columns = new Set();
   LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (mutedChannels.has(ch)) columns.add(col); });
+  return columns;
+}
+
+// --- 「曲が使っていないパート」の判定(2026-08-17追加) ---
+// 利用者指示: ミュート(利用者が消した)と未使用(曲がそもそも鳴らさない)を
+// 見た目で区別できるようにする。区別するには「このチャンネルを曲が使っているか」
+// を判定する必要があるが、判定できないエンジン/経路では絶対に推測しない
+// (usedChannels自体をnullのまま返し、呼び出し側はnullを「全チャンネル使用扱い
+// (=未使用暗色化をしない)」として扱う。下のunusedRowsFromChannels/
+// unusedColumnsFromChannels参照)。
+
+// MUCOM88: MMLコンパイル時のログ([ Total count ]行、cmucom.cpp:1759-1769の
+// PRINTF("%c:%d ", 'A'+i, tcount[i]))から、各チャンネル(A-K)のtick数を読み取る。
+// tick数が1以上のチャンネルを「曲が使っている」とみなす(tools/measure_mucom_adpcm_corpus.mjs
+// がKパート単体の有無判定に使っているのと同じ基準を全チャンネルへ広げたもの)。
+// MUCOM88はこのアプリでは常にMMLをコンパイルしてから再生する(あらかじめコンパイル
+// 済みの.mubを直接読み込む経路が無い)ため、コンパイルが成功する限りこの判定は
+// 常に使える。
+//
+// MUCOM88のチャンネル文字(A-K) -> 論理チャンネル名の対応。
+// 出典: html/mucom-adapter.js CH_TO_SLOT のコメント(upstream/MucomWeb/mucom88/src/cmucom.h
+// MUCOM_CH_FM1=0 / MUCOM_CH_PSG=3 / MUCOM_CH_RHYTHM=6 / MUCOM_CH_FM2=7 / MUCOM_CH_ADPCM=10)。
+// ch0-2=A-C=FM1-3, ch3-5=D-F=SSG1-3, ch6=G=RHYTHM, ch7-9=H-J=FM4-6, ch10=K=ADPCM。
+const MUCOM_CH_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'];
+const MUCOM_CH_TO_CHANNEL = [
+  FM_CHANNELS[0], FM_CHANNELS[1], FM_CHANNELS[2],
+  SSG_CHANNELS[0], SSG_CHANNELS[1], SSG_CHANNELS[2],
+  RHYTHM_CHANNEL,
+  FM_CHANNELS[3], FM_CHANNELS[4], FM_CHANNELS[5],
+  ADPCM_CHANNEL,
+];
+
+// MUCOM88のコンパイルログ全文(Module.getCompileMessagePointer/Lengthをデコードした
+// もの)から使用チャンネル集合を組み立てる。"[ Total count ]"行が見つからない
+// (コンパイル失敗、ログ形式が想定外)場合はnullを返す(でっち上げない)。
+export function usedChannelsFromMucomCompileLog(log) {
+  if (typeof log !== 'string') return null;
+  const m = /\[ Total count \][^\n]*\n([^\n]*)/.exec(log);
+  if (!m) return null;
+  const used = new Set();
+  const re = /([A-K]):(\d+)/g;
+  let match;
+  let any = false;
+  while ((match = re.exec(m[1])) !== null) {
+    any = true;
+    const idx = MUCOM_CH_LETTERS.indexOf(match[1]);
+    if (idx >= 0 && parseInt(match[2], 10) > 0) used.add(MUCOM_CH_TO_CHANNEL[idx]);
+  }
+  return any ? used : null;
+}
+
+// PMD: MMLをこのアプリのv1コンパイラ(compiler/pmd_mml_compiler.mjs)で読み込んだ
+// 場合のみ判定できる。同コンパイラのPART_LETTERS(A-I)はFM1-6/SSG1-3の9パートのみを
+// 表し、配列indexの並びはFM_CHANNELS+SSG_CHANNELSの並びと一致する(pmd_mml_parser.mjs
+// 冒頭コメント「A-F=FM1-6, G-I=SSG1-3」参照)。
+// 重要: 同コンパイラはRHYTHM/ADPCMを構造的に一切出力しない
+// (compiler/pmd_mml_compiler.mjs `// ADPCM/RHYTHM: v1未対応、空トラック`
+// のとおり、該当ヘッダを常にEMPTY_TRACK_OFFで埋める)。そのためRHYTHM/ADPCMは
+// 「判定できない」のではなく「このアプリでMML入力した曲では絶対に鳴らない」と
+// 確定できる事実であり、usedPartLettersに含まれることは無い(=常に未使用表示になる)。
+//
+// usedPartLetters: parseMml()が返すtracksのkeys、またはcompileMml()が返す
+// layout.tracksのObject.keys()(どちらもPART_LETTERSの部分集合の配列)。
+export function usedChannelsFromPmdMmlParts(usedPartLetters) {
+  const used = new Set();
+  usedPartLetters.forEach((letter) => {
+    const idx = PMD_MML_PART_LETTERS.indexOf(letter);
+    if (idx >= 0) used.add(PMD_MML_PART_ORDER[idx]);
+  });
+  return used;
+}
+
+// PMDの「曲を開く」(.M/.mバイナリを直接再生。MMLソースを経由しない)経路は、
+// fmdriver_track_status(upstream/98fmplayer/fmdriver/fmdriver.h)に「このトラックに
+// データがあるか」を表すフィールドが無く(playingは「今現在鳴っているか」の
+// 瞬間値でしかない)、既存のwasm exportからも曲全体を通した使用状況を読み取る
+// 手段が無い。全曲を最後まで走らせて監視すれば分かるかもしれないが、それは
+// 「読み込んだ瞬間に表示する」という本機能の要件に合わないため実装しない。
+// 呼び出し側はこの経路ではusedChannelsをnull(判定不能)のままにすること。
+export const PMD_MML_PART_LETTERS = PART_LETTERS;
+export const PMD_MML_PART_ORDER = [...FM_CHANNELS, ...SSG_CHANNELS];
+
+// usedChannels(Set<string>|null)を、トラック行描画用のSet<number>(未使用の行index)
+// へ変換する。usedChannelsがnull(判定不能)のときは何も暗くしない(空集合を返す)。
+export function unusedRowsFromChannels(usedChannels) {
+  const rows = new Set();
+  if (!usedChannels) return rows;
+  TRACK_ROW_CHANNELS.forEach((ch, row) => { if (!usedChannels.has(ch)) rows.add(row); });
+  return rows;
+}
+
+// usedChannelsを、レベルメーター描画用のSet<number>(未使用の列index)へ変換する。
+export function unusedColumnsFromChannels(usedChannels) {
+  const columns = new Set();
+  if (!usedChannels) return columns;
+  LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (!usedChannels.has(ch)) columns.add(col); });
   return columns;
 }

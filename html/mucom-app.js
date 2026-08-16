@@ -14,6 +14,7 @@ import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } 
 import {
   buildMucomChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
   channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
+  usedChannelsFromMucomCompileLog, unusedRowsFromChannels, unusedColumnsFromChannels,
 } from './fmdsp/channel-mask.js';
 import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
 import { trackRowHoverRect, levelColumnHoverRect, drawHoverOutline, COLOR_HOVER } from './fmdsp/hover.js';
@@ -591,6 +592,10 @@ export async function init(ctx) {
   // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
   // 作って両方へ渡すような真似は絶対にしない)。
   const mutedChannels = new Set();
+  // 2026-08-17: 「曲が使っていないパート」の集合(Set<string>|null)。nullは
+  // 「判定不能」を表し、その場合は未使用暗色化を一切行わない(fmdsp/channel-mask.js
+  // usedChannelsFromMucomCompileLog()のコメント参照。でっち上げない)。
+  let mucomUsedChannels = null;
   function toggleMutedChannel(channel) {
     if (!channel) return;
     if (mutedChannels.has(channel)) mutedChannels.delete(channel); else mutedChannels.add(channel);
@@ -884,7 +889,7 @@ export async function init(ctx) {
 
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels));
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(mucomUsedChannels));
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
 
       const audioState = globalThis.mucomAudioState;
@@ -911,7 +916,7 @@ export async function init(ctx) {
       const fft = Module.HEAPU8.subarray(fftBase, fftBase + Module.getFftBinCount());
       const levels = readLevels(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels));
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels), unusedColumnsFromChannels(mucomUsedChannels));
       rightpane.drawFileBar(vram, currentSongName);
       drawHover(vram);
 
@@ -954,7 +959,7 @@ export async function init(ctx) {
           idleDrawnSongName = currentSongName;
           idleDrawnHoverKey = hoverKeyOf(hoverTarget);
           vram.pixels.set(staticVramSnapshot);
-          drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels));
+          drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(mucomUsedChannels));
           drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
           rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
           rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
@@ -1103,6 +1108,10 @@ export async function init(ctx) {
     const msgLen = Module.getCompileMessageLength();
     const msgBytes = Module.HEAPU8.subarray(msgPtr, msgPtr + msgLen);
     let compileMessage = cp932MessageDecoder.decode(msgBytes);
+    // 2026-08-17: 「曲が使っていないパート」判定(利用者指示B)。unresolvedNames等の
+    // 追記文字列で"[ Total count ]"行が汚れる前の、コンパイラそのままの出力を渡す
+    // (fmdsp/channel-mask.js usedChannelsFromMucomCompileLog参照)。
+    mucomUsedChannels = usedChannelsFromMucomCompileLog(compileMessage);
     if (unresolvedNames.length > 0) {
       compileMessage += t('mucom.unresolvedVoiceNames', { names: unresolvedNames.join(', ') });
     }
