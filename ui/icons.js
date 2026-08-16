@@ -70,4 +70,11 @@ export const ICONS = {
     'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
   // 課題D: 下向き矢印+受け皿＝ダウンロード。
   download: 'M12 3v11 M7 10l5 5 5-5 M4 20h16',
+  // 曲ライブラリ: 音符＋リスト(取り込み済みの曲一覧を開く)。
+  library: {
+    path: 'M9 18V5l11-2v13 M4 21h6 M15 19h6',
+    extra:
+      '<circle cx="6" cy="18" r="2.2" fill="currentColor" stroke="none"/>' +
+      '<circle cx="18" cy="16" r="2.2" fill="currentColor" stroke="none"/>',
+  },
 };

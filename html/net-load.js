@@ -9,6 +9,8 @@ import { resolveArchiveFileName, extractArchive, baseNameOf } from './net/archiv
 import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
+import { albumGroupPathFor, resolveTrackInfo } from './net/album-info.js';
+import { openLibraryDb, saveSong } from './net/library.js';
 
 // FILEBAR(FMDSP MUSIC FILEバー)専用の固定ラベル。「読み込み元がファイルでない」
 // 経路(下書き復元)向け(課題B追補、2026-08-15、利用者報告)。曲を読み込む経路が
@@ -63,13 +65,24 @@ function filenameFromContentDisposition(headers) {
  * @param {Uint8Array} bytes
  */
 function titleFromMmlHeader(bytes) {
+  return mmlHeaderField(bytes, 'title');
+}
+
+/**
+ * MMLテキストの `#<field>` 行(大文字小文字無視。MUCOM88の`#title`/PMDテキストの
+ * `#Title`等どちらも拾える)から値を取り出す。titleFromMmlHeader()の一般化版
+ * (課題: 曲ライブラリの作曲者表示にも同じ抽出が要るため)。
+ * @param {Uint8Array} bytes @param {string} field
+ */
+function mmlHeaderField(bytes, field) {
   let text;
   try {
     ({ text } = decodeMmlBytes(bytes));
   } catch {
     return null;
   }
-  const m = /^[ \t]*#title[ \t]+(.+?)[ \t]*$/im.exec(text);
+  const re = new RegExp(`^[ \\t]*#${field}[ \\t]+(.+?)[ \\t]*$`, 'im');
+  const m = re.exec(text);
   return m ? m[1].trim() || null : null;
 }
 
@@ -128,10 +141,14 @@ function resolveSingleFileNameOnly(url, headers) {
  * (#titleへのフォールバックを含む。ツールバーの「読み込みました: ...」用)、
  * fileNameはFMDSPのMUSIC FILEバー専用でファイル名以外へは絶対にフォールバック
  * しない(上のresolveSingleFileNameOnly()参照)。
+ * `entries`/`archiveLabel`(archive kindのみ)は曲ライブラリのアルバム/トラック解決
+ * (describeArchiveSongOrigin()参照)に使う。書庫展開結果(LIST_*.txt含む)をここで
+ * 一度だけ保持しておき、選ばれた候補ごとに再展開しなくて済むようにする。
  * @param {string} url @param {(loaded:number, total:number|null)=>void} [onProgress]
  * @returns {Promise<
  *   | { kind: 'single', name: string | null, fileName: string | null, bytes: Uint8Array }
- *   | { kind: 'archive', candidates: import('./net/song-select.js').SongCandidate[] }
+ *   | { kind: 'archive', candidates: import('./net/song-select.js').SongCandidate['0'][],
+ *       entries: import('./net/archive-util.js').ArchiveEntry[], archiveLabel: string }
  * >}
  */
 export async function resolveSongFromUrl(url, onProgress) {
@@ -145,7 +162,7 @@ export async function resolveSongFromUrl(url, onProgress) {
   if (archiveFileName) {
     const entries = await extractArchive(archiveFileName, bytes);
     const candidates = findSongCandidates(entries);
-    return { kind: 'archive', candidates };
+    return { kind: 'archive', candidates, entries, archiveLabel: nameFromUrl };
   }
   return {
     kind: 'single',
@@ -153,6 +170,69 @@ export async function resolveSongFromUrl(url, onProgress) {
     fileName: resolveSingleFileNameOnly(url, responseHeaders),
     bytes,
   };
+}
+
+/**
+ * 書庫由来の曲(SongCandidate)から、曲ライブラリ保存用の出所情報(origin)と
+ * トラック情報(LIST_*.txtから拾えたタイトル/作曲者/トラック番号。取れなければ全てnull)を
+ * まとめて組み立てる。アルバムの単位・トラック名解決の実際のロジックはnet/album-info.js
+ * (DOM非依存、tools/verify_library.mjsから直接検証できる)に置いてあり、ここではそれを
+ * 呼ぶだけ。
+ * @param {string} url @param {import('./net/archive-util.js').ArchiveEntry[]} entries
+ * @param {string} archiveLabel @param {string} entryPath
+ */
+export function describeArchiveSongOrigin(url, entries, archiveLabel, entryPath) {
+  const groupPath = albumGroupPathFor(entryPath);
+  const trackInfo = resolveTrackInfo(entries, entryPath);
+  return {
+    origin: { kind: 'url', url, archiveName: archiveLabel, groupPath, entryPath },
+    trackInfo,
+  };
+}
+
+// --- 曲ライブラリへの自動取り込み(IndexedDB、net/library.js) -------------------------
+//
+// DBは初回アクセス時に一度だけ開き、以降は使い回す(呼び出しのたびにopen()すると
+// onupgradeneeded等のイベント配線が重複するため)。IndexedDBが使えない環境では
+// openLibraryDb()がnullを返すので、以降の呼び出しは全て静かに何もしない
+// (ui/mml-draft.jsのlocalStorage同様、保存できないだけで再生自体は継続する)。
+let libraryDbPromise = null;
+export function getLibraryDb() {
+  if (!libraryDbPromise) libraryDbPromise = openLibraryDb();
+  return libraryDbPromise;
+}
+
+/**
+ * 自動取り込み: `?mml=` / ドラッグ&ドロップ / 書庫からの曲選択で読み込んだ曲を
+ * IndexedDBへ保存する。保存に失敗しても例外を投げない(呼び出し側は結果を待たずに
+ * 進んでよい。失敗時はコンソール警告のみ)。
+ *
+ * 曲名の優先順位: MMLヘッダ(`#title`/`#Title`。読み込んだ生バイト列から直接判定する。
+ * PMDのバイナリ`.M`はテキストとして意味を成さないため単に一致せずnullになるだけで安全)
+ * > trackInfo(LIST_*.txt由来、archive経由の読み込みのみ) > null(呼び出し側は
+ * ファイル名を表示する)。
+ * @param {{ driver: 'mucom'|'pmd', bytes: Uint8Array, fileName: string,
+ *   origin: object, trackInfo?: { trackNumber: number|null, trackTitle: string|null, composer: string|null } }} input
+ */
+export async function persistSongToLibrary(input) {
+  try {
+    const db = await getLibraryDb();
+    if (!db) return;
+    const title = titleFromMmlHeader(input.bytes) ?? input.trackInfo?.trackTitle ?? null;
+    const composer = mmlHeaderField(input.bytes, 'composer') ?? input.trackInfo?.composer ?? null;
+    const trackNumber = input.trackInfo?.trackNumber ?? null;
+    await saveSong(db, {
+      driver: input.driver,
+      fileName: input.fileName,
+      title,
+      composer,
+      trackNumber,
+      origin: input.origin,
+      bytes: input.bytes,
+    });
+  } catch (err) {
+    console.warn('[net-load] 曲のライブラリ保存に失敗しました(再生は継続します)', err);
+  }
 }
 
 /**

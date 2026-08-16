@@ -25,7 +25,11 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
-import { resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME } from './net-load.js';
+import {
+  resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
+  describeArchiveSongOrigin, persistSongToLibrary, getLibraryDb, urlBaseName,
+} from './net-load.js';
+import { createLibraryPanel } from './ui/library-panel.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 import { encodeCp932 } from './ui/cp932-encode.js';
@@ -184,6 +188,20 @@ export async function init(ctx) {
   // ツールバーの「曲を開く」「ダウンロード」と同じ並びのアイコンボタンへ移す。
   const btnNewMml = iconButton(ICONS.newFile, '新規作成');
   toolbar.insertBefore(btnNewMml, btnDownload);
+
+  // 曲ライブラリ(取り込み済みの曲一覧。IndexedDB、net/library.js)。
+  const btnLibrary = iconButton(ICONS.library, '曲ライブラリ');
+  toolbar.insertBefore(btnLibrary, btnDownload);
+  const libraryPanel = createLibraryPanel({
+    driver: 'mucom',
+    getDb: getLibraryDb,
+    onSelect: (song) => {
+      applyMmlBytes(song.bytes, { name: song.fileName });
+      compileAndPlay();
+    },
+  });
+  btnLibrary.addEventListener('click', () => libraryPanel.render());
+  setupPopover(btnLibrary, libraryPanel.popoverEl);
 
   function applyUiMode(mode) {
     editorPane.classList.toggle('hidden', mode !== 'editor');
@@ -998,6 +1016,15 @@ export async function init(ctx) {
     file.arrayBuffer().then((buffer) => {
       applyMmlBytes(buffer, { name: file.name });
       compileAndPlay();
+      // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
+      // そのまま曲ライブラリへ残す。ローカルファイルにはURLが無いため、出所は
+      // ファイル名だけで識別する(net/library.js computeSongId()参照)。
+      persistSongToLibrary({
+        driver: 'mucom',
+        bytes: new Uint8Array(buffer),
+        fileName: file.name,
+        origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+      });
     });
   }
 
@@ -1082,6 +1109,10 @@ export async function init(ctx) {
       }
       applyMmlBytes(chosen.entry.data, { name: chosen.displayName });
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
+      // 自動取り込み: 書庫からの曲選択もそのままライブラリへ残す。アルバム(d88単位)/
+      // トラック名(LIST_*.txt由来)の解決はdescribeArchiveSongOrigin()に委ねる。
+      const { origin, trackInfo } = describeArchiveSongOrigin(url, resolved.entries, resolved.archiveLabel, chosen.entry.name);
+      persistSongToLibrary({ driver: 'mucom', bytes: chosen.entry.data, fileName: chosen.displayName, origin, trackInfo });
       return;
     }
 
@@ -1090,6 +1121,14 @@ export async function init(ctx) {
     // resolved.nameのまま(役割が違ってよい、利用者判断)。
     applyMmlBytes(resolved.bytes, { name: resolved.fileName });
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
+    // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
+    // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。
+    persistSongToLibrary({
+      driver: 'mucom',
+      bytes: resolved.bytes,
+      fileName: resolved.fileName ?? urlBaseName(url),
+      origin: { kind: 'url', url, archiveName: null, groupPath: null, entryPath: null },
+    });
   }
 
   // 課題E: ?mml=の指定も下書きも無い初見時は、同梱サンプル(エリーゼのために)を

@@ -42,7 +42,11 @@ import { setMmlStatus, clearMmlStatus } from './ui/mml-status.js';
 import { setupTransportShortcuts, SHORTCUT_PLAY_HINT } from './ui/shortcuts.js';
 import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
-import { resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME } from './net-load.js';
+import {
+  resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
+  describeArchiveSongOrigin, persistSongToLibrary, getLibraryDb, urlBaseName,
+} from './net-load.js';
+import { createLibraryPanel } from './ui/library-panel.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -166,6 +170,19 @@ export async function init(ctx) {
   // ツールバーの「曲を開く」「ダウンロード」と同じ並びのアイコンボタンへ移す。
   const btnNewMml = iconButton(ICONS.newFile, '新規作成');
   toolbar.insertBefore(btnNewMml, btnDownload);
+
+  // 曲ライブラリ(取り込み済みの曲一覧。IndexedDB、net/library.js)。
+  const btnLibrary = iconButton(ICONS.library, '曲ライブラリ');
+  toolbar.insertBefore(btnLibrary, btnDownload);
+  const libraryPanel = createLibraryPanel({
+    driver: 'pmd',
+    getDb: getLibraryDb,
+    onSelect: (song) => {
+      playBytes(song.bytes, song.fileName);
+    },
+  });
+  btnLibrary.addEventListener('click', () => libraryPanel.render());
+  setupPopover(btnLibrary, libraryPanel.popoverEl);
 
   let uiMode = 'player';
 
@@ -936,9 +953,24 @@ export async function init(ctx) {
     fileInput.value = '';
     fileInput.click();
   });
+  // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
+  // そのまま曲ライブラリへ残す。ローカルファイルにはURLが無いため、出所はファイル名
+  // だけで識別する(net/library.js computeSongId()参照)。
+  function persistLocalPmdSong(bytes, fileName) {
+    persistSongToLibrary({
+      driver: 'pmd',
+      bytes,
+      fileName,
+      origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    });
+  }
+
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files && fileInput.files[0];
-    if (file) await playBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    if (!file) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await playBytes(bytes, file.name);
+    persistLocalPmdSong(bytes, file.name);
   });
 
   // 課題B: ドロップの受付はapp.js側(ページ全体、setupPageDropZone)に一本化した。
@@ -951,7 +983,10 @@ export async function init(ctx) {
         false);
     }
     const file = files[0];
-    if (file) await playBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    if (!file) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await playBytes(bytes, file.name);
+    persistLocalPmdSong(bytes, file.name);
   };
 
   // --- 課題D: ダウンロード(MMLソース/コンパイル済み.M/asmのdb配列)。
@@ -1022,6 +1057,10 @@ export async function init(ctx) {
       currentSongName = chosen.displayName;
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
       updateTransportButtonUI();
+      // 自動取り込み: 読み込むだけで(再生ボタンを押す前でも)ライブラリへ残す。
+      // アルバム(d88単位)/トラック名(LIST_*.txt由来)の解決はdescribeArchiveSongOrigin()に委ねる。
+      const { origin, trackInfo } = describeArchiveSongOrigin(url, resolved.entries, resolved.archiveLabel, chosen.entry.name);
+      persistSongToLibrary({ driver: 'pmd', bytes: chosen.entry.data, fileName: chosen.displayName, origin, trackInfo });
       return;
     }
 
@@ -1034,6 +1073,14 @@ export async function init(ctx) {
     currentSongName = resolved.fileName;
     setNetStatus(`読み込みました: ${resolved.name}(再生ボタンを押してください)`, false);
     updateTransportButtonUI();
+    // 自動取り込み: 単体ファイルURLも同様にライブラリへ残す(書庫ではないためアルバム
+    // 情報は持たない=「個別ファイル」グループに入る。net/library.js groupSongsIntoAlbums()参照)。
+    persistSongToLibrary({
+      driver: 'pmd',
+      bytes: resolved.bytes,
+      fileName: resolved.fileName ?? urlBaseName(url),
+      origin: { kind: 'url', url, archiveName: null, groupPath: null, entryPath: null },
+    });
   }
 
   // 課題E: ?mml=の指定も下書きも無い初見時は、同梱サンプル(エリーゼのために)を
