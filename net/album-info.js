@@ -131,3 +131,40 @@ export function resolveTrackInfo(entries, entryPath) {
   if (!found) return notFound;
   return { trackNumber: found.trackNumber, trackTitle: found.title, composer: found.composer };
 }
+
+/**
+ * 書庫内の再生候補1件分の表示文字列を組み立てる。
+ *
+ * 【修正3・2026-08-16、利用者報告】書庫選択モーダル(html/net-load.js pickSongCandidate())は
+ * 常に候補のファイル名(例"bos010.muc")をそのまま出していたため、曲名で表示する曲ライブラリ
+ * (ui/library-panel.js、net/library.js resolveLibraryFields())と表示が食い違い、選択画面の
+ * ほうが分かりにくかった。**新しい解決処理は書かず**、ライブラリと同じ resolveTrackInfo()
+ * (LIST_*.txt由来のトラック名)と albumGroupPathFor()/albumLabelFor()(d88単位のアルバム名)を
+ * そのまま使う。曲名が解決できなければファイル名にフォールバックする(無理に当てない。PMDの
+ * 書庫はLIST_*.txtを持たないのが普通なので、その場合はファイル名のままで正常)。
+ * ライブラリのような2段階の折りたたみにはせず、アルバム名は1行に併記するだけに留める
+ * (選択画面は「今開いた書庫から1曲選ぶ」一回性のUIのため、利用者指示)。
+ *
+ * DOM非依存(net/層)に置いているのは、html/net-load.jsがブラウザ実行前提のURL/History API
+ * (reflectLoadedUrlInAddressBar()等)を含み、Node(tools/配下のverifyスクリプト)から直接
+ * importできない(ビルド時にhtml/直下へnet/を並べる前提の相対パスのため)ためで、
+ * tools/verify_song_picker_display.mjsから単体で検証できるようにする狙いもある。
+ * @param {import('./song-select.js').SongCandidate} candidate
+ * @param {{ entries?: import('./archive-util.js').ArchiveEntry[], archiveLabel?: string }} [opts]
+ */
+export function describeSongCandidate(candidate, opts = {}) {
+  const driverLabel = candidate.driver === 'mucom' ? 'MUCOM88' : 'PMD';
+  if (!opts.entries) {
+    return `${candidate.displayName} (${driverLabel})`;
+  }
+  const entryPath = candidate.entry.name;
+  const trackInfo = resolveTrackInfo(opts.entries, entryPath);
+  const groupPath = albumGroupPathFor(entryPath);
+  // albumLabelFor()はgroupPath無し(=d88に属さない単体曲)でも書庫自体のラベルを
+  // 返す設計(冒頭コメント参照)なので、groupPathの有無で分岐せずそのまま渡す。
+  const albumLabel = albumLabelFor(groupPath, opts.archiveLabel ?? '');
+  const title = trackInfo.trackTitle ?? candidate.displayName;
+  const numberLabel = trackInfo.trackNumber != null ? `${trackInfo.trackNumber}. ` : '';
+  const albumSuffix = albumLabel ? ` / ${albumLabel}` : '';
+  return `${numberLabel}${title} (${driverLabel}${albumSuffix})`;
+}
