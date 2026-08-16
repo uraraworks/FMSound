@@ -12,7 +12,9 @@
 //
 // 実行: node tools/gen_help_shots.mjs
 //
-// 生成物: html/help/<name>.<lang>.png (ja/en × overview/open-menu/fmdsp/editor/settings)
+// 生成物: html/help/<name>.<lang>.png (ja/en × overview/open-menu/editor/settings)
+// + html/help/fmdsp.png (言語に依らず1枚。2026-08-16、下記「3. fmdsp」のコメント参照:
+//   FMDSP自体の表示が元々すべて英字で、ja/en間で見た目が変わらないため統合した)。
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
@@ -376,21 +378,25 @@ async function main() {
           }
         }
 
-        async function shoot(name, clip) {
+        // fileNameOverrideを渡すと `${name}.${lang}.png` の代わりにそのファイル名で
+        // 保存する(fmdspのように言語で見た目が変わらない画面を1枚に統合する用途、
+        // 下記参照)。
+        async function shoot(name, clip, fileNameOverride) {
           const params = { format: 'png' };
           if (clip) params.clip = { ...clip, scale: 1 };
           const { data } = await cdp.send('Page.captureScreenshot', params);
           const buf = Buffer.from(data, 'base64');
-          const path = join(OUT_DIR, `${name}.${lang}.png`);
+          const fileName = fileNameOverride ?? `${name}.${lang}.png`;
+          const path = join(OUT_DIR, fileName);
           writeFileSync(path, buf);
           const decoded = decodePng(buf);
           const colorCount = countDistinctColors(decoded.rgba);
           results.push({
             name, lang, width: decoded.width, height: decoded.height,
-            bytes: buf.length, colorCount,
+            bytes: buf.length, colorCount, fileName,
           });
           if (colorCount <= 1) {
-            notes.push(`[MONOCHROME] ${name}.${lang}.png は単色(色数=${colorCount})`);
+            notes.push(`[MONOCHROME] ${fileName} は単色(色数=${colorCount})`);
           }
           return { path, colorCount };
         }
@@ -427,23 +433,33 @@ async function main() {
 
         // 3. fmdsp: canvas領域を切り出す。描画がrAF依存なので、単色でなくなるまで
         //    ポーリングで待つ(固定sleepにしない)。
+        //
+        // 【2026-08-16、前回撮影の実測を反映】fmdsp.ja.png と fmdsp.en.png は
+        // md5完全一致だった(FMDSP自体の表示が元々すべて英字のため、言語切替の
+        // 影響を受けない)。異常ではないが、言語別に2枚持つ意味が無いので
+        // fmdsp.png の1枚に統合する(撮影自体はja側でのみ行う)。ただし
+        // 「英語版DOMへの日本語混入が無いか」のcheckJaLeak('fmdsp')自体は
+        // 撮影の有無に関わらず両言語で回す(checkJaLeak内部でlang!=='en'なら
+        // 何もしないため、ja側の呼び出しは実質no-opだが対称性のため残す)。
         let fmdspNonBlack = 0;
-        try {
-          fmdspNonBlack = await pollUntil(cdp, `
-            (() => {
-              const cv = document.getElementById('fmdsp-canvas');
-              if (!cv) return 0;
-              const ctx = cv.getContext('2d');
-              const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-              let nonBlack = 0;
-              for (let i = 0; i < d.length; i += 4) {
-                if (d[i] || d[i + 1] || d[i + 2]) nonBlack++;
-              }
-              return nonBlack;
-            })()
-          `, { timeoutMs: 6000, intervalMs: 200, label: 'fmdsp canvas non-blank' });
-        } catch (e) {
-          notes.push(`[WARN] fmdsp canvasが規定時間内に非単色にならなかった(lang=${lang}): ${e.message}`);
+        if (lang === 'ja') {
+          try {
+            fmdspNonBlack = await pollUntil(cdp, `
+              (() => {
+                const cv = document.getElementById('fmdsp-canvas');
+                if (!cv) return 0;
+                const ctx = cv.getContext('2d');
+                const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+                let nonBlack = 0;
+                for (let i = 0; i < d.length; i += 4) {
+                  if (d[i] || d[i + 1] || d[i + 2]) nonBlack++;
+                }
+                return nonBlack;
+              })()
+            `, { timeoutMs: 6000, intervalMs: 200, label: 'fmdsp canvas non-blank' });
+          } catch (e) {
+            notes.push(`[WARN] fmdsp canvasが規定時間内に非単色にならなかった(lang=${lang}): ${e.message}`);
+          }
         }
         const stageBox = await cdp.evaluate(`
           (() => {
@@ -453,8 +469,10 @@ async function main() {
           })()
         `);
         await checkJaLeak('fmdsp');
-        await shoot('fmdsp', stageBox);
-        notes.push(`[INFO] fmdsp非黒ピクセル数(lang=${lang}): ${fmdspNonBlack}`);
+        if (lang === 'ja') {
+          await shoot('fmdsp', stageBox, 'fmdsp.png');
+          notes.push(`[INFO] fmdsp非黒ピクセル数(lang=${lang}): ${fmdspNonBlack}`);
+        }
 
         // 4. editor: エディタモードへ切替→enginePaneを切り出す
         const editorLabel = JSON.stringify(L.editorMode);
@@ -529,7 +547,7 @@ async function main() {
   let totalBytes = 0;
   for (const r of results) {
     totalBytes += r.bytes;
-    log(`${r.name}.${r.lang}.png: ${r.width}x${r.height} ${(r.bytes / 1024).toFixed(1)}KB colors=${r.colorCount}${r.colorCount <= 1 ? ' [MONOCHROME!]' : ''}`);
+    log(`${r.fileName}: ${r.width}x${r.height} ${(r.bytes / 1024).toFixed(1)}KB colors=${r.colorCount}${r.colorCount <= 1 ? ' [MONOCHROME!]' : ''}`);
   }
   log(`合計: ${(totalBytes / 1024).toFixed(1)}KB`);
   if (notes.length > 0) {
