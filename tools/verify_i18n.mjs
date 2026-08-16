@@ -213,7 +213,17 @@ function main() {
     ...walkFiles(join(REPO_ROOT, 'html'), ['.js']),
     ...walkFiles(join(REPO_ROOT, 'ui'), ['.js']),
     join(REPO_ROOT, 'html/index.html'),
-  ].filter((f) => f !== join(REPO_ROOT, 'ui/i18n.js')); // 辞書自体は対象外(上のコメント参照)
+    join(REPO_ROOT, 'html/help.html'),
+  ].filter(
+    (f) =>
+      f !== join(REPO_ROOT, 'ui/i18n.js') && // 辞書自体は対象外(上のコメント参照)
+      // html/help.html(使い方ページ)は data-lang="ja"/"en" 方式(html/help.htmlの
+      // コメント・タスク指示参照)で、日本語の本文がそのままHTMLに存在するのが正常な
+      // 設計。他ファイルと同じ「i18n非経由の日本語=訳し忘れ」という前提が成り立たない
+      // ため、0件を要求する検査対象から明示的に除外する(黙って対象外にせず、ここで
+      // 理由を明記する)。data-lang集合の整合性はtools/verify_help_page.mjsが別途担保する。
+      f !== join(REPO_ROOT, 'html/help.html'),
+  );
 
   for (const abs of allTargets) {
     const rel = abs.slice(REPO_ROOT.length).replace(/\\/g, '/');

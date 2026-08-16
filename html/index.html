@@ -46,11 +46,13 @@
        余地があるため作法を揃える必要はない、という利用者判断)。 -->
   <div class="lang-switch" role="group" data-i18n-title="toolbar.langLabel">
     <span class="driver-switch-label" data-i18n="toolbar.langLabel"></span>
-    <!-- 言語名は選択中のUI言語に関わらず常に自言語表記(endonym)で出す(他の
-         言語切替UIの慣習と同じ)。翻訳しないので辞書は引かない。
+    <!-- 2026-08-16(利用者判断): ボタン表記はJA/ENの短縮形にする。ただし短縮形だけだと
+         スクリーンリーダー等の読み上げで意味が取れないため、aria-labelには従来どおり
+         言語名(endonym)をフルで残す。言語名は選択中のUI言語に関わらず常に自言語表記
+         (endonym)で出す(他の言語切替UIの慣習と同じ)。翻訳しないので辞書は引かない。
          tools/verify_i18n.mjs 項目6のi18n-exemptマーカー対象。 -->
-    <button type="button" id="langBtnJa" class="lang-toggle-btn" aria-pressed="false">日本語</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
-    <button type="button" id="langBtnEn" class="lang-toggle-btn" aria-pressed="false">English</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+    <button type="button" id="langBtnJa" class="lang-toggle-btn" aria-pressed="false" aria-label="日本語">JA</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+    <button type="button" id="langBtnEn" class="lang-toggle-btn" aria-pressed="false" aria-label="English">EN</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
   </div>
 </header>
 

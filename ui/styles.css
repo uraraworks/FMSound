@@ -309,6 +309,28 @@ header.app-header .app-tagline {
   background: var(--footer-btn-bg-hover);
 }
 
+/* 使い方ページ(html/help.html)への導線は<a>で作る(iconLink()、ui/icons.js参照)。
+   <button>と見た目を揃えるための最小限の上書き(display/text-decorationはaの既定を
+   打ち消す必要がある。それ以外の色・サイズ・角丸等は上のbutton.icon-btnルールを
+   セレクタごと共有できないため個別に複製する)。 */
+.toolbar a.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  border: 1px solid var(--footer-btn-border);
+  border-radius: 5px;
+  padding: 6px;
+  width: 32px;
+  height: 32px;
+  text-decoration: none;
+}
+
+.toolbar a.icon-btn:hover {
+  background: var(--footer-btn-bg-hover);
+}
+
 .toolbar button.icon-btn:disabled {
   background: var(--footer-disabled-bg);
   color: var(--footer-disabled-text);
@@ -1136,4 +1158,107 @@ body.pseudo-fullscreen .console-card {
 .library-clear-all:hover {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+/*
+ * 使い方ページ(html/help.html)。header.app-header/footer.app-footerはアプリ本体と
+ * 共有(このファイル冒頭のルール)するが、bodyのアプリシェル化(height:100svh;
+ * overflow:hidden;の1画面固定レイアウト)は文章ページに不向きなので、
+ * .help-body側で通常のスクロールへ戻す。
+ */
+body.help-body {
+  height: auto;
+  overflow: visible;
+}
+
+.help-main {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+  box-sizing: border-box;
+  line-height: 1.7;
+}
+
+.help-main h2 {
+  margin: 2em 0 0.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.15rem;
+}
+
+.help-main h2:first-of-type {
+  margin-top: 0.4em;
+}
+
+.help-main h3 {
+  margin: 1.2em 0 0.4em;
+  font-size: 1rem;
+}
+
+.help-main p {
+  margin: 0.6em 0;
+}
+
+.help-main code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+.help-main a {
+  color: var(--accent-dim);
+}
+
+.help-main a:hover {
+  color: var(--accent);
+}
+
+.help-section {
+  margin-bottom: 0.4em;
+}
+
+.help-back a {
+  font-size: 0.9rem;
+}
+
+.help-back-bottom {
+  margin-top: 2.4em;
+}
+
+/* スクリーンショット。フルページ撮影(gen_help_shots.mjs)の枚は下側が余白なので、
+   --crop修飾で上側だけを主役にして切り詰める(撮り直しても画像側でなくレイアウト側で
+   吸収する、という設計)。editor/fmdspは元から実寸に近いクロップ済みなので無修飾のまま。 */
+.help-shot {
+  margin: 0.8em 0 1.2em;
+}
+
+.help-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.help-shot--crop {
+  max-height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.help-shot--crop img {
+  border: 0;
+  border-radius: 0;
+  object-fit: cover;
+  object-position: top;
+}
+
+@media (max-width: 640px) {
+  .help-main {
+    padding: 14px 10px 32px;
+  }
 }

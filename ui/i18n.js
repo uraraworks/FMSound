@@ -45,6 +45,13 @@ const ja = {
   'toolbar.playerMode': 'プレイヤーモードへ切替',
   'toolbar.newFile': '新規作成',
   'toolbar.library': '曲ライブラリ',
+  'toolbar.help': '使い方',
+
+  // --- html/help.html(使い方ページ)のUI由来ラベル。本文(長文)は辞書に入れず
+  // data-lang="ja"/"en"のHTML2ブロック方式にする(html/help.htmlのコメント参照)ので、
+  // ここに載るのはヘッダー・戻るリンクなどの短い固定ラベルのみ。
+  'help.pageTitle': '使い方',
+  'help.backToApp': '← アプリに戻る',
 
   'settings.title': '設定',
   'settings.sampleRate': 'サンプルレート',
@@ -198,6 +205,10 @@ const en = {
   'toolbar.playerMode': 'Switch to player mode',
   'toolbar.newFile': 'New',
   'toolbar.library': 'Song library',
+  'toolbar.help': 'Help',
+
+  'help.pageTitle': 'Help',
+  'help.backToApp': '← Back to the app',
 
   'settings.title': 'Settings',
   'settings.sampleRate': 'Sample rate',

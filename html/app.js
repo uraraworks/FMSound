@@ -16,7 +16,7 @@
 // 曲の再生・コンパイル・FMDSP描画・エンジン固有ボタンの追加はengine-app側の責務。
 
 import { PC98_W, PC98_H } from './fmdsp/vram.js';
-import { ICONS, iconButton } from './ui/icons.js';
+import { ICONS, iconButton, iconLink } from './ui/icons.js';
 import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER, FMSOUND_BUILD_ID } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
@@ -190,8 +190,15 @@ const btnOpenFile = iconButton(ICONS.open, t('toolbar.open'));
 const btnDownload = iconButton(ICONS.download, t('toolbar.download'));
 const btnSettings = iconButton(ICONS.settings, t('toolbar.settings'));
 const btnFullscreen = iconButton(ICONS.fullscreen, t('toolbar.fullscreen'));
+// 使い方ページ(html/help.html)を別タブで開くリンク。他の共通ボタンと違い操作対象が
+// このページ自体ではなく別ページへの遷移なので<a>で作る(iconLink()、rel="noopener"必須)。
+// エンジン固有ボタンより後ろ・ツールバー末尾に置く(「まず触ってから、必要なら読む」の
+// 導線として最後尾が自然、という判断。他ボタンのようにinsertBeforeで割り込まれない)。
+const btnHelp = iconLink(ICONS.help, t('toolbar.help'), './help.html');
+btnHelp.target = '_blank';
+btnHelp.rel = 'noopener';
 // エンジン固有ボタン(MUCOM88のエディタモード切替等)はこのボタンの手前に挿し込む。
-toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnDownload, btnSettings, btnFullscreen);
+toolbar.append(btnPlayPause, btnStop, btnOpenFile, btnDownload, btnSettings, btnFullscreen, btnHelp);
 btnPlayPause.disabled = true;
 btnStop.disabled = true;
 

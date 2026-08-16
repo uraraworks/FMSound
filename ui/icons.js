@@ -34,6 +34,22 @@ export function iconButton(icon, label, extraClass = '') {
   return btn;
 }
 
+/**
+ * ツールバー用のアイコンのみリンク(.icon-btn、<a>版)を組み立てる。iconButton()と
+ * 見た目・作法は同じだが、ページ遷移(別タブで使い方ページを開く等)にはbuttonではなく
+ * 実体のあるリンクを使う(URLをホバー/コピーできる、右クリックメニューが使える等の
+ * リンクとしての既定動作を保つため)。
+ */
+export function iconLink(icon, label, href, extraClass = '') {
+  const a = document.createElement('a');
+  a.className = extraClass ? `icon-btn ${extraClass}` : 'icon-btn';
+  a.href = href;
+  a.title = label;
+  a.setAttribute('aria-label', label);
+  a.append(svgIcon(icon.path ?? icon, icon.extra ?? ''));
+  return a;
+}
+
 // プレイヤー系ツールバーで使う最小限のアイコン集合。
 // play/stop は塗りつぶし図形の方が視認性が高いため、pathD は空にして extra の
 // <rect>/<path fill> で表現する(svgIcon()の第2引数)。
@@ -70,6 +86,14 @@ export const ICONS = {
     'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
   // 課題D: 下向き矢印+受け皿＝ダウンロード。
   download: 'M12 3v11 M7 10l5 5 5-5 M4 20h16',
+  // 使い方ページ(html/help.html)への導線。丸＋「?」＝ヘルプ(定番の表記)。
+  help: {
+    path: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
+    extra:
+      '<path d="M9.2 9.3a2.8 2.8 0 0 1 5.4.9c0 1.6-2.1 2-2.4 3.3" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" fill="none"/>' +
+      '<circle cx="12" cy="16.6" r="0.9" fill="currentColor" stroke="none"/>',
+  },
   // 曲ライブラリ: 音符＋リスト(取り込み済みの曲一覧を開く)。
   library: {
     path: 'M9 18V5l11-2v13 M4 21h6 M15 19h6',

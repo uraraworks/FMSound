@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ja" id="htmlRoot">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FMSound — 使い方 / Help</title>
+<link rel="stylesheet" href="./ui/styles.css">
+</head>
+<body class="help-body">
+<header class="app-header">
+  <div class="app-title-row">
+    <h1>FMSound</h1>
+  </div>
+  <p class="app-tagline" data-i18n="help.pageTitle"></p>
+  <div class="lang-switch" role="group" data-i18n-title="toolbar.langLabel">
+    <span class="driver-switch-label" data-i18n="toolbar.langLabel"></span>
+    <!-- html/index.htmlのトグルと同じ作法(2026-08-16、JA/EN短縮表記+aria-labelに
+         言語名(endonym)をフルで残す)。tools/verify_i18n.mjs 項目6のi18n-exempt対象。 -->
+    <button type="button" id="langBtnJa" class="lang-toggle-btn" aria-pressed="false" aria-label="日本語">JA</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+    <button type="button" id="langBtnEn" class="lang-toggle-btn" aria-pressed="false" aria-label="English">EN</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+  </div>
+</header>
+
+<main class="help-main">
+  <p class="help-back"><a href="./index.html" data-i18n="help.backToApp"></a></p>
+
+  <!--
+    本文の持ち方(利用者指示): 段落ごとに辞書キーを切ると辞書が肥大するため、
+    長文の本文は data-lang="ja"/"en" の2ブロックを隣り合わせに持ち、表示側(help.js)が
+    片方だけ見せる。各ブロックに data-help-section="<節名>" を付け、tools/verify_help_page.mjs が
+    ja側とen側で節名の集合が完全一致することを検査する(片方にしか無い節を検出するため)。
+  -->
+
+  <section class="help-section" data-help-section="overview">
+    <div data-lang="ja" data-help-section="overview">
+      <h2>これは何か</h2>
+      <p>FMSound は、PC-9801用FM音源ドライバ「PMD」とPC-8801用「MUCOM88」、2つのドライバのMMLをブラウザだけで演奏できるプレイヤー兼エディタです。ビルド済みのwasmと共通のWeb UIで動き、サーバーは不要です。</p>
+      <p>ただ音を鳴らすだけでなく、FMDSP風の画面でパートごとの演奏状態(音色・音程・ゲート・音量)をリアルタイムに描画します。スペクトラムアナライザとレベルメーターも実際のドライバの出力から動きます。</p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/overview.ja.png" alt="FMSoundを開いた直後の画面。中央に黒いコンソール画面とツールバーがある">
+      </div>
+    </div>
+    <div data-lang="en" data-help-section="overview">
+      <h2>What this is</h2>
+      <p>FMSound is a browser-only player and editor for MML played through two FM sound driver engines — <strong>PMD</strong> (PC-9801) and <strong>MUCOM88</strong> (PC-8801). It runs on prebuilt wasm and a shared web UI; no server is required.</p>
+      <p>It doesn't just play sound — it draws a FMDSP-style screen that renders each part's playback state (voice, pitch, gate, volume) in real time. The spectrum analyzer and level meters are also driven live from the real driver's output.</p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/overview.en.png" alt="FMSound right after it loads, showing the dark console screen and toolbar in the center">
+      </div>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="quickstart">
+    <div data-lang="ja" data-help-section="quickstart">
+      <h2>すぐ試す</h2>
+      <p>ページを開くと、既定で同梱サンプル(「エリーゼのために」冒頭)が読み込まれた状態になっています。ツールバーの再生ボタン(▶)を押すだけで音が出ます。</p>
+      <p>ヘッダーの「音源ドライバ」プルダウンで PMD (PC-9801) / MUCOM88 (PC-8801) を切り替えられます(<code>?driver=pmd</code> / <code>?driver=mucom</code> のURLクエリでも指定可能)。</p>
+    </div>
+    <div data-lang="en" data-help-section="quickstart">
+      <h2>Try it right away</h2>
+      <p>Opening the page loads a bundled sample by default (the opening of "Für Elise"). Just press the play button (▶) on the toolbar to hear it.</p>
+      <p>The "Sound driver" dropdown in the header switches between PMD (PC-9801) and MUCOM88 (PC-8801) (also selectable via the <code>?driver=pmd</code> / <code>?driver=mucom</code> URL query).</p>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="open-song">
+    <div data-lang="ja" data-help-section="open-song">
+      <h2>曲を開く</h2>
+      <p>ツールバーの「曲を開く」アイコンから、「ファイルから開く」と「URLから開く」を選べます。</p>
+      <h3>ファイルから開く</h3>
+      <p>手元の <code>.M</code>/<code>.m</code>(PMD)、<code>.muc</code>(MUCOM88)ファイルを選ぶか、画面のどこにドラッグ&ドロップしても読み込めます。ZIP/LZHで固めた書庫を渡すと中身を展開して曲を選べます(書庫の中に <code>.d88</code> ディスクイメージが入っている場合は、さらにその中も展開します)。</p>
+      <h3>URLから開く</h3>
+      <p>URLを入力して「実行」を押すと、そのURLの曲データ(または書庫)を取得して開きます。取得するだけで自動再生はしません(ブラウザの制約で音声再生にはユーザー操作が必要なため、読み込んだあとは再生ボタンを押してください)。</p>
+      <p><strong>対応している配信元:</strong> GitHub(<code>raw.githubusercontent.com</code>)や jsDelivr(<code>cdn.jsdelivr.net</code>)のように、クロスオリジン取得(CORS)を許可しているホストは直接取得できます。Google Drive・Dropboxの共有リンクは、このサイトに中継サーバーが設定されている場合にのみ利用できます(中継サーバーが設定されていない場合はその旨のエラーになります)。<strong>OneDriveの共有リンクには対応していません。</strong></p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/open-menu.ja.png" alt="「曲を開く」メニューを開いた状態。ファイルから開く/URLから開くの2択が並ぶ">
+      </div>
+    </div>
+    <div data-lang="en" data-help-section="open-song">
+      <h2>Opening a song</h2>
+      <p>The toolbar's "Open song" icon offers two choices: "Open from file" and "Open from URL".</p>
+      <h3>Opening from a file</h3>
+      <p>Pick a local <code>.M</code>/<code>.m</code> (PMD) or <code>.muc</code> (MUCOM88) file, or drag & drop it anywhere on the page. Pointing it at a ZIP/LZH archive extracts the contents so you can pick a song from inside (if the archive contains a <code>.d88</code> disk image, that gets extracted too).</p>
+      <h3>Opening from a URL</h3>
+      <p>Enter a URL and press "Go" to fetch and open the song data (or archive) at that URL. Fetching alone doesn't autoplay — browsers require a user gesture before audio can play, so press the play button after it loads.</p>
+      <p><strong>Sources it supports:</strong> Hosts that allow cross-origin fetches (CORS), such as GitHub (<code>raw.githubusercontent.com</code>) and jsDelivr (<code>cdn.jsdelivr.net</code>), can be fetched directly. Google Drive and Dropbox share links only work when this site has a relay server configured (otherwise you'll get an error saying so). <strong>OneDrive share links are not supported.</strong></p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/open-menu.en.png" alt="The 'Open song' menu open, showing the 'Open from file' / 'Open from URL' choices">
+      </div>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="library">
+    <div data-lang="ja" data-help-section="library">
+      <h2>曲ライブラリ</h2>
+      <p>URLやドラッグ&ドロップで読み込んだ曲は、ブラウザの IndexedDB に自動で保存され、次回以降もツールバーの「曲ライブラリ」アイコンから開けます。<code>.d88</code> ディスクイメージ単位で1つのアルバムとしてまとめられます(d88を含まない書庫は、書庫自体が1アルバムになります)。</p>
+      <p>保存はこの端末・このブラウザに閉じており、他の端末とは共有されません。プライベートブラウズ中など保存先が利用できない環境では、その旨が表示されます。</p>
+    </div>
+    <div data-lang="en" data-help-section="library">
+      <h2>Song library</h2>
+      <p>Songs loaded via URL or drag & drop are automatically saved to the browser's IndexedDB, so they stay available from the toolbar's "Song library" icon on later visits. Songs are grouped into one album per <code>.d88</code> disk image (an archive without a d88 becomes one album by itself).</p>
+      <p>Storage is local to this device and browser; it isn't shared with other devices. If the storage isn't available (e.g. during private browsing), the library says so.</p>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="editor">
+    <div data-lang="ja" data-help-section="editor">
+      <h2>MMLを書く・コンパイルする</h2>
+      <p>ツールバーの「エディタモードへ切替」ボタンで、MMLを直接書いて鳴らすモードに切り替えられます。行番号ガター付きのエディタで、構文ごとに色分け表示されます。</p>
+      <p>キーボードショートカット: <code>⌘/Ctrl+Enter</code> でコンパイル&再生、<code>Esc</code> で停止。</p>
+      <p>「新規作成」ボタンで空(またはテンプレート)のMMLから書き始められます。編集内容は入力のたびにブラウザへ自動保存され、次回このページを開いたときに復元されます。</p>
+      <div class="help-shot">
+        <img src="./help/editor.ja.png" alt="エディタモードの画面。行番号付きのMMLエディタと、下にコンパイル結果が表示されている">
+      </div>
+    </div>
+    <div data-lang="en" data-help-section="editor">
+      <h2>Writing and compiling MML</h2>
+      <p>The toolbar's "Switch to editor mode" button switches to a mode where you write MML directly and play it. The editor has a line-number gutter and syntax highlighting.</p>
+      <p>Keyboard shortcuts: <code>⌘/Ctrl+Enter</code> to compile & play, <code>Esc</code> to stop.</p>
+      <p>The "New" button starts you off with an empty (or template) MML. Your edits are saved to the browser automatically as you type, and restored the next time you open this page.</p>
+      <div class="help-shot">
+        <img src="./help/editor.en.png" alt="Editor mode, showing the line-numbered MML editor with the compile result below it">
+      </div>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="screen">
+    <div data-lang="ja" data-help-section="screen">
+      <h2>画面の見かた</h2>
+      <p>実行画面は、98fmplayer由来の FMDSP 風のパート表示です。パートごとの音色・音程・ゲート・音量をリアルタイムに描画し、右側にはスペクトラムアナライザとレベルメーターを表示します。いずれも実際の音源ドライバの出力から動いています。</p>
+      <div class="help-shot">
+        <img src="./help/fmdsp.png" alt="FMDSP風のパート表示画面。左にパートごとの音色・音程等の一覧、右にスペクトラムアナライザとレベルメーター">
+      </div>
+    </div>
+    <div data-lang="en" data-help-section="screen">
+      <h2>Reading the screen</h2>
+      <p>The playback screen is a FMDSP-style part display, based on 98fmplayer. It renders each part's voice, pitch, gate, and volume in real time, with a spectrum analyzer and level meters on the right. Both are driven live from the actual sound driver's output.</p>
+      <div class="help-shot">
+        <img src="./help/fmdsp.png" alt="The FMDSP-style part display: a per-part list of voice/pitch/etc. on the left, spectrum analyzer and level meters on the right">
+      </div>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="settings">
+    <div data-lang="ja" data-help-section="settings">
+      <h2>設定</h2>
+      <p>ツールバーの「設定」アイコンから、サンプルレート・音声同期の較正(ms)・「音声に同期して描画する」の切替ができます。</p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/settings.ja.png" alt="設定ポップオーバー。サンプルレート・同期較正・描画同期のチェックボックスが並ぶ">
+      </div>
+    </div>
+    <div data-lang="en" data-help-section="settings">
+      <h2>Settings</h2>
+      <p>The toolbar's "Settings" icon lets you change the sample rate, the sync calibration (ms), and toggle "Draw synced to audio".</p>
+      <div class="help-shot help-shot--crop">
+        <img src="./help/settings.en.png" alt="The settings popover, listing the sample rate, sync calibration, and the draw-synced-to-audio checkbox">
+      </div>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="caveats">
+    <div data-lang="ja" data-help-section="caveats">
+      <h2>制約と注意</h2>
+      <ul>
+        <li><strong>#voice、および同梱の標準バンク以外を指す#pcmで指定される外部ファイルは読み込めません。</strong> <code>#pcm mucompcm.bin</code>(標準ADPCMバンク)は同梱済みで通常どおり鳴りますが、それ以外のファイル名を指す<code>#voice</code>/<code>#pcm</code>は音色が既定のものに、ADPCMが無音になります。読み込んだ曲がこの形で解決できないファイルを参照している場合は、画面上にその旨が表示されます。</li>
+        <li><strong>リズム(G)パートは、実チップYM2608のROM由来PCMではなく、代替のPCMサンプルで鳴ります。</strong> 同梱している音源コアは実チップのROMを持たないため、フリー素材の代替ドラムサンプルを読み込んで再生しています(出典はNOTICE.md参照)。作者本人が本物のYM2608のリズム音とは波形が根本的に異なると明言している代替品です。</li>
+        <li><strong>MUCOM88のコンパイルエラーメッセージは、このページの表示言語設定に関わらず常に日本語で出ます。</strong> wasm内に組み込まれた日本語のエラーテーブル由来のため、UIを英語にしていてもエラー本文だけは日本語のままです。</li>
+        <li>PPZ8・LFO・ポルタメント等、PMDコンパイラ(自作のMML→バイナリ変換)が対応する範囲はv1の基本コマンドまでです。</li>
+        <li>スマホ・タブレットには未対応です。</li>
+      </ul>
+    </div>
+    <div data-lang="en" data-help-section="caveats">
+      <h2>Limitations and caveats</h2>
+      <ul>
+        <li><strong>It can't load external files referenced by #voice, or by #pcm other than the bundled default bank.</strong> <code>#pcm mucompcm.bin</code> (the standard ADPCM bank) is bundled and plays normally; any other <code>#voice</code>/<code>#pcm</code> filename falls back to default voices and silent ADPCM. If a loaded song references a file that can't be resolved this way, the UI shows a notice.</li>
+        <li><strong>The rhythm (G) part plays through substitute PCM samples, not the real YM2608 chip's ROM-derived PCM.</strong> The bundled sound core doesn't carry the real chip's ROM, so it plays free substitute drum samples instead (see NOTICE.md for the source). The author of those samples has stated plainly that they're fundamentally different in waveform from the real YM2608's rhythm sound.</li>
+        <li><strong>MUCOM88 compile error messages are always in Japanese, regardless of this page's language setting.</strong> They come from a Japanese error table built into the wasm module, so even with the UI set to English, the error text itself stays in Japanese.</li>
+        <li>The PMD compiler (this project's own MML→binary converter) supports PPZ8, LFO, portamento, etc. only up to the v1 basic commands.</li>
+        <li>Phones and tablets are not supported.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="help-section" data-help-section="license">
+    <div data-lang="ja" data-help-section="license">
+      <h2>ライセンス</h2>
+      <p>FMSoundは <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>(表示 - 非営利 - 継承 4.0 国際)で提供されています。同梱しているMUCOM88がCC BY-NC-SA 4.0で継承(ShareAlike)が付くため、それを取り込んだFMSound全体が同じ条件になっています。</p>
+      <p>第三者の著作物に由来する生成物の出所・ライセンス全文は <a href="https://github.com/uraraworks/FMSound/blob/master/NOTICE.md" target="_blank" rel="noopener">NOTICE.md</a> に、ライセンス全文は <a href="https://github.com/uraraworks/FMSound/blob/master/LICENSE" target="_blank" rel="noopener">LICENSE</a> にまとめてあります。</p>
+    </div>
+    <div data-lang="en" data-help-section="license">
+      <h2>License</h2>
+      <p>FMSound is provided under <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a> (Attribution-NonCommercial-ShareAlike 4.0 International). This follows from the bundled MUCOM88 carrying CC BY-NC-SA 4.0 with a ShareAlike clause, which brings the whole of FMSound under the same terms.</p>
+      <p>The provenance and full license text of generated assets that derive from third-party works are collected in <a href="https://github.com/uraraworks/FMSound/blob/master/NOTICE.md" target="_blank" rel="noopener">NOTICE.md</a>; the full project license is in <a href="https://github.com/uraraworks/FMSound/blob/master/LICENSE" target="_blank" rel="noopener">LICENSE</a>.</p>
+    </div>
+  </section>
+
+  <p class="help-back help-back-bottom"><a href="./index.html" data-i18n="help.backToApp"></a></p>
+</main>
+
+<footer class="app-footer">
+  <span><a href="https://github.com/uraraworks/FMSound" target="_blank" rel="noopener">FMSound on GitHub</a></span>
+</footer>
+
+<script type="module" src="./help.js"></script>
+</body>
+</html>
