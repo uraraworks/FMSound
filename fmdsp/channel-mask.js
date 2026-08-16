@@ -197,9 +197,34 @@ export function unusedRowsFromChannels(usedChannels) {
   return rows;
 }
 
+// レベルメーター列11-18(PPZ8 1-8)。上のLEVEL_COLUMN_CHANNELSのコメントの
+// とおりPPZ8はマスク対応チャンネルの一覧に含まれないため、専用の定数として
+// 列数だけここに置く(FMDSP_LEVEL_COUNT=19はfmdsp/rightpane.jsの定義が
+// 唯一の情報源なので、ここでは重複定義せず単純に11からの残り8列とする)。
+const PPZ8_LEVEL_COLUMN_START = 11;
+const PPZ8_LEVEL_COLUMN_COUNT = 8;
+
 // usedChannelsを、レベルメーター描画用のSet<number>(未使用の列index)へ変換する。
+//
+// PPZ8列(11-18)の扱い(2026-08-17追加。利用者指摘: 「レベルメーターの右側が
+// 鍵盤の数より多いが、右側は使われることがあるのか」):
+// PPZ8(PMDのPCM 8ch)は、このWeb版では構造的に絶対に鳴らない。
+//   - MUCOM88には元々PPZ8の概念自体が存在しない(fmgenにPPZ8相当の実装が無い)。
+//   - PMD側はppz8_init()やミキサー配線こそ存在するが、本Web版はPPZ8の
+//     サンプルバンク(.PPC/.PVI)をUIから一切読み込まない
+//     (pmdweb/src/PmdCore.c:503 コメント参照)。バンクが無ければ鳴らしようが
+//     ない。
+// これはusedChannelsFromMucomCompileLog/usedChannelsFromPmdMmlPartsのような
+// 「曲ごとに変わる使用状況」の判定とは性質が違う(常に不使用と確定できる、
+// エンジン側の構造の話)。そのためusedChannels(曲固有・null=判定不能もあり得る)
+// の中身に関わらず、PPZ8列は常にunused扱いにする(=呼び出し元がnullを渡しても
+// この8列だけは暗く表示される。他の0-10列はnull時に何も暗くしない従来どおりの
+// 挙動を維持する)。
+// 将来PPZ8バンクの読み込みに対応したら、この一律unused判定をやめて曲ごとの
+// 使用状況判定に差し替える必要がある。
 export function unusedColumnsFromChannels(usedChannels) {
   const columns = new Set();
+  for (let i = 0; i < PPZ8_LEVEL_COLUMN_COUNT; i += 1) columns.add(PPZ8_LEVEL_COLUMN_START + i);
   if (!usedChannels) return columns;
   LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (!usedChannels.has(ch)) columns.add(col); });
   return columns;

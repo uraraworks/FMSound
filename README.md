@@ -97,6 +97,14 @@ The player currently has a few honest limitations worth stating up front.
   it reads from. FRAMES PER SECOND, by contrast, *is* implemented — it just
   counts the host draw loop's own frequency, no driver data needed. See
   `docs/right-pane-data.md` §8 for the source-level detail.
+- **The rightmost 8 columns of the level meter (PPZ8 1-8) are always shown
+  dimmed as "unused" and never light up.** PPZ8 is PMD's 8-channel PCM
+  engine. MUCOM88 has no concept of PPZ8 at all, and while PMD's driver code
+  does wire up a PPZ8 mixer, this web build never lets you load a PPZ8
+  sample bank (.PPC/.PVI) from the UI, so those channels can never produce
+  sound in either engine. They're excluded from mute-click and hover
+  targets for the same reason. See `fmdsp/channel-mask.js`
+  `unusedColumnsFromChannels()` for the source-level detail.
 - **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
 
 ## ⚠ MML differences between drivers (`t`/`T`/`C` are swapped)
