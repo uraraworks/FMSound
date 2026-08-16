@@ -1,110 +1,123 @@
 # FMSound
 
-PC-9801 の **PMD**、PC-8801 の **MUCOM88** — 2つの FM 音源ドライバの MML を
-ブラウザだけで演奏できるプレイヤー兼エディタです。ビルド済みの wasm と共通の
-Web UI で動き、サーバーは不要です。
+[日本語](README.ja.md)
+
+A browser-only player and editor for MML played through two FM sound driver
+engines — **PMD** (PC-9801) and **MUCOM88** (PC-8801). It runs on prebuilt
+wasm and a shared web UI; no server is required.
 
 ### ▶ <https://uraraworks.github.io/FMSound/>
 
-インストール不要で、そのままブラウザで試せます。
-（[PMD で開く](https://uraraworks.github.io/FMSound/?driver=pmd) /
-[MUCOM88 で開く](https://uraraworks.github.io/FMSound/?driver=mucom)）
+No install needed — try it straight in your browser.
+([Open with PMD](https://uraraworks.github.io/FMSound/?driver=pmd) /
+[Open with MUCOM88](https://uraraworks.github.io/FMSound/?driver=mucom))
 
-**このリポジトリの一番の特徴**は、ただ音を鳴らすだけでなく、
-[FMDSP](https://github.com/myon98/98fmplayer) 風の画面で
-**パートごとの演奏状態（音色・音程・ゲート・音量）をリアルタイムに描画する**ことです。
-スペクトラムアナライザとレベルメーターも本物のドライバの出力から動きます。
+**What sets this repository apart** is that it doesn't just play sound — it
+draws a [FMDSP](https://github.com/myon98/98fmplayer)-style screen that
+**renders each part's playback state (voice, pitch, gate, volume) in real
+time.** The spectrum analyzer and level meters are also driven live from the
+real driver's output.
 
-## 使い方
+## Usage
 
-1. ページを開くと、既定で同梱サンプル（「エリーゼのために」冒頭）が読み込まれた
-   状態になっています。再生ボタンを押すだけで音が出ます。
-2. ヘッダーの「音源ドライバ」プルダウンで PMD (PC-9801) / MUCOM88 (PC-8801) を
-   切り替えられます（`?driver=pmd` / `?driver=mucom` のURLクエリでも指定可能）。
-3. ツールバーのアイコンから「曲を開く」（手元の `.M`/`.m`/`.muc` ファイル、または
-   ドラッグ&ドロップ）、「エディタモードへ切替」（MML を直接書いて鳴らす）、
-   「ダウンロード」（MML ソース / コンパイル済みバイナリ / asm の db 配列、の3種）
-   ができます。
-4. `?mml=<URL>` を付けると、指定した URL の MML/曲ファイルを読み込んだ状態で
-   開けます。ZIP/LZH で固めた書庫を指定すると中身を展開して曲を選べます
-   （読み込むだけで自動再生はしません。ブラウザの制約で音声再生にはユーザー操作が
-   必要なため、再生ボタンを押してください）。
-5. キーボードショートカット: `⌘/Ctrl+Enter` でコンパイル&再生、`Esc` で停止。
+1. Opening the page loads a bundled sample by default (the opening of
+   "Für Elise"). Just press play to hear it.
+2. The "Sound driver" dropdown in the header switches between PMD (PC-9801)
+   and MUCOM88 (PC-8801) (also selectable via the `?driver=pmd` /
+   `?driver=mucom` URL query).
+3. The toolbar icons let you "Open a song" (a local `.M`/`.m`/`.muc` file, or
+   drag & drop), "Switch to editor mode" (write and play MML directly), and
+   "Download" (MML source / compiled binary / asm `db` array — three
+   formats).
+4. Adding `?mml=<URL>` opens the page with the MML/song file at that URL
+   already loaded. Pointing it at a ZIP/LZH archive extracts the contents so
+   you can pick a song from inside (loading only — it won't autoplay, since
+   browsers require a user gesture before audio can play, so press play
+   yourself).
+5. Keyboard shortcuts: `⌘/Ctrl+Enter` to compile & play, `Esc` to stop.
 
-## できないこと（重要）
+## What it can't do (important)
 
-現状のプレーヤーには、正直に書いておくべき制約がいくつかあります。
+The player currently has a few honest limitations worth stating up front.
 
-- **`#voice` / `#pcm` で指定される外部ファイルを読み込めません。**
-  そのため音色が既定のものに、ADPCM が無音になります。読み込んだ MML がこれらを
-  参照している場合は、画面上にその旨を表示します（音色とドラムが本来と異なる、
-  という注意）。
-- **リズムパートは、本物の YM2608 とは異なる代替サンプルで鳴ります。**
-  同梱している音源コアは実チップの ROM 由来 PCM を持たないため、フリー素材の
-  代替ドラムサンプル（`html/rhythm/2608_*.WAV`、出典は `NOTICE.md` 参照）を
-  読み込んで再生しています。作者本人が「本物の YM2608 のリズム音とは根本的に
-  波形が異なる」と明言している代替品である点をご了承ください。リズムパートを
-  使っている曲を読み込んだ場合、画面上にその旨を表示します。
-- **PPZ8・LFO・ポルタメント等、PMD コンパイラ（自作の MML→バイナリ変換）が
-  対応する範囲は v1 の基本コマンドまでです。** 詳細は `docs/pmd-compiler-spec.md`
-  参照。
-- **スマホ・タブレットには未対応です。**
+- **It can't load external files referenced by `#voice` / `#pcm`.** As a
+  result, voices fall back to defaults and ADPCM is silent. If a loaded MML
+  references these, the UI shows a notice (that the voices and drums differ
+  from the original).
+- **The rhythm part plays through substitute samples that differ from a real
+  YM2608.** The bundled sound core doesn't carry the real chip's ROM-derived
+  PCM, so it plays free substitute drum samples instead
+  (`html/rhythm/2608_*.WAV`; see `NOTICE.md` for the source). The author of
+  the original driver has stated plainly that these substitutes are
+  "fundamentally different in waveform from the real YM2608's rhythm sound,"
+  and this project inherits that same caveat. When a loaded song uses the
+  rhythm part, the UI shows a notice about this.
+- **The PMD compiler (this project's own MML→binary converter) only
+  supports the v1 basic command set** — PPZ8, LFO, portamento, and similar
+  are out of scope. See `docs/pmd-compiler-spec.md` for details.
+- **Phones and tablets are not supported.**
 
-## ⚠ ドライバごとの MML の違い（`t`/`T`/`C` が入れ替わっています）
+## ⚠ MML differences between drivers (`t`/`T`/`C` are swapped)
 
-PMD と MUCOM88 で、**`t` と `T` の意味が逆**です。開発中に2回とも踏んだ罠なので、
-必ず確認してください。
+Between PMD and MUCOM88, **the meaning of `t` and `T` is reversed.** This is
+a trap that was hit twice during development, so please double-check it.
 
-| | `t`（小文字） | `T`（大文字） |
+| | `t` (lowercase) | `T` (uppercase) |
 |---|---|---|
-| **PMD** | テンポ（**2分音符**基準の絶対値。一般的な BPM の**半分**の値） | TimerB の生値 |
-| **MUCOM88** | TimerB の生値 | テンポ（BPM 相当） |
+| **PMD** | Tempo (absolute value based on a **half note**; **half** the value of a typical BPM) | Raw TimerB value |
+| **MUCOM88** | Raw TimerB value | Tempo (equivalent to BPM) |
 
-さらに **MUCOM88 の `C` はテンポではありません。** 全音符あたりのクロック数（分解能）
-の指定で、既定値は 128 です。テンポを変えたいときは `T` を使ってください。
+In addition, **MUCOM88's `C` is not tempo.** It specifies the clock count per
+whole note (resolution), defaulting to 128. Use `T` to change the tempo.
 
-## 今後の予定
+## Roadmap
 
-- `#voice`/`#pcm` の読み込み対応
-- スマホ対応（再生側・編集側の両方）
-- アプリ間でのデータ受け渡し（曲データの共有等）
+- Support for loading `#voice`/`#pcm`
+- Phone support (both playback and editing)
+- Data exchange between apps (e.g. sharing song data)
 
-## ライセンスと出典
+## License and credits
 
-**FMSound は [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja)
-（表示 - 非営利 - 継承 4.0 国際）で提供します。** 全文は [`LICENSE`](./LICENSE) を参照してください。
+**FMSound is provided under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+(Attribution-NonCommercial-ShareAlike 4.0 International).** See
+[`LICENSE`](./LICENSE) for the full text.
 
-これは自ら選んだ条件ではなく、**同梱している MUCOM88 が CC BY-NC-SA 4.0 で
-継承（ShareAlike）が付く**ため、それを取り込んだ FMSound 全体が同じ条件に
-揃うことによります。PMD 側の実装の由来（98fmplayer）は BSD 2-Clause なので、
-**PMD 部分だけを自由な条件で使いたい場合は、FMSound ではなく 98fmplayer や
-本家 PMD を直接参照してください。**
+This isn't a condition chosen by this project — it's inherited because the
+bundled **MUCOM88 carries CC BY-NC-SA 4.0 with a ShareAlike clause**, and
+incorporating it brings FMSound as a whole under the same terms. The PMD
+side's implementation (98fmplayer) is licensed BSD 2-Clause, so **if you
+want to use just the PMD part under permissive terms, refer to 98fmplayer or
+the original PMD directly instead of FMSound.**
 
-音源ドライバの実装は、以下の上流プロジェクトを wasm へ移植・利用しています。
-第三者の著作物に由来する生成物の出所・ライセンス全文は
-**[`NOTICE.md`](./NOTICE.md)** にまとめています。
+The sound driver implementations are ports of the following upstream
+projects to wasm. The provenance and full license text for generated
+artifacts derived from third-party works are collected in
+**[`NOTICE.md`](./NOTICE.md)**.
 
-- **PMD**: [98fmplayer](https://github.com/myon98/98fmplayer)（BSD 2-Clause）
+- **PMD**: [98fmplayer](https://github.com/myon98/98fmplayer) (BSD 2-Clause)
 - **MUCOM88**: [OPEN MUCOM88](https://github.com/onitama/mucom88) /
   [MUCOM88 on Web](https://github.com/aosoft/MucomWeb)
-  （[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja) —
-  **非商用・継承**が付きます）
+  ([CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) —
+  carries **NonCommercial and ShareAlike** terms)
 
-同梱サンプル曲（「エリーゼのために」冒頭、ベートーヴェン作曲・パブリックドメイン）の
-MML アレンジは本プロジェクトの著作物です。詳細は `NOTICE.md` を参照してください。
+The bundled sample song (the opening of "Für Elise," composed by Beethoven,
+public domain) MML arrangement is this project's own work. See `NOTICE.md`
+for details.
 
-ROM イメージ（PC-98 本体 BIOS 等）や市販ソフトウェアのデータは、
-本リポジトリに一切含まれていません。
+No ROM images (PC-98 firmware, etc.) or commercial software data are
+included in this repository.
 
-## ビルド手順
+## Build instructions
 
-このリポジトリは `upstream/`（参照する外部リポジトリ群、79MB）を **追跡していません**
-（`.gitignore` 参照）。そのため、クローンしただけではビルドできません。
-以下の手順で取得してください。
+This repository does **not** track `upstream/` (the external repositories it
+references, 79MB) — see `.gitignore`. As a result, cloning alone won't let
+you build; fetch them with the steps below.
 
-取得先とリビジョンは [`upstream-revisions.env`](./upstream-revisions.env)
-に一元化してあります（GitHub Actions のビルドもここを参照します。固定する
-理由もファイル内のコメント参照）。
+The fetch locations and pinned revisions are centralized in
+[`upstream-revisions.env`](./upstream-revisions.env) (the GitHub Actions
+build also reads this file; see the comments in the file for why revisions
+are pinned).
 
 ```bash
 set -a; source upstream-revisions.env; set +a
@@ -118,12 +131,12 @@ git -C upstream/MucomWeb checkout --detach "$UPSTREAM_MUCOMWEB_REV"
 git -C upstream/MucomWeb submodule update --init --recursive
 ```
 
-ツールチェーンは `PC98/emsdk`（emscripten SDK）を `emsdk` というシンボリックリンク
-経由で共有しています。リンク先が無い場合は emscripten SDK を別途取得し、
-`emsdk` を有効なパスへ張り直してください。
+The toolchain is shared via `PC98/emsdk` (the emscripten SDK), linked in as
+the `emsdk` symlink. If the link target is missing, obtain the emscripten SDK
+separately and repoint `emsdk` at a valid path.
 
 ```bash
-# リポジトリのルート(このREADME.mdがあるディレクトリ)を起点にする
+# Run from the repository root (the directory containing this README.md)
 
 # MUCOM88
 cd mucomweb
@@ -134,33 +147,36 @@ emcmake cmake -S . -B build-web -DWEB_BROWSER=1 -DCMAKE_BUILD_TYPE=Release && cm
 cd ../pmdweb
 emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build build-web -j4
 
-# 両ドライバを1ディレクトリへ組み立てる(?driver=切替の実地確認・配信物確認用)
+# Assemble both drivers into one directory (for local ?driver= switching checks and to inspect what gets shipped)
 cd ..
 tools/build_dist.sh
 ```
 
-`dist/` が組み立て後の配信用ディレクトリです（GitHub Pages はここを配信する想定）。
-ローカルで確認するには、`dist/` を静的サーバーで配信してブラウザで開いてください
-（例: `python3 -m http.server 8000 --directory dist`）。
+`dist/` is the assembled distribution directory (GitHub Pages is expected to
+serve this). To check it locally, serve `dist/` with a static server and
+open it in a browser (e.g. `python3 -m http.server 8000 --directory dist`).
 
-`mucomweb`のconfigure時、`upstream/MucomWeb/mucom88` へ`mucomweb/patches/`配下の
-パッチ（アクセサ公開・レベルメーター・リズムパートの`rhythmpath`指定の3本）が
-自動適用されます。upstream の作業ツリー自体は変更しないので、追跡やコミットは
-不要です。
+When `mucomweb` is configured, patches under `mucomweb/patches/` (three of
+them: exposing accessors, level meters, and the rhythm part's `rhythmpath`)
+are automatically applied to `upstream/MucomWeb/mucom88`. The upstream
+working tree itself is left unmodified, so no tracking or committing is
+needed.
 
-### GitHub Pages への公開（CI）
+### Publishing to GitHub Pages (CI)
 
-`master` への push で [`.github/workflows/pages.yml`](./.github/workflows/pages.yml)
-が上記と同じ手順（upstream 取得 → emsdk 導入 → 両ドライバビルド →
-`net/config.js` 生成 → `tools/build_dist.sh`）を実行し、`dist/` を
-GitHub Pages へデプロイします。中継サーバー URL はリポジトリ変数
-`DISK_PROXY_URL`（Settings → Secrets and variables → Actions → Variables）
-から注入されます。未設定でもビルド・公開自体は失敗しません（中継しない
-だけの動作になります。fork した人が変数を設定しなくても公開できるように
-するための既定挙動）。
+A push to `master` runs
+[`.github/workflows/pages.yml`](./.github/workflows/pages.yml), which
+performs the same steps as above (fetch upstream → set up emsdk → build both
+drivers → generate `net/config.js` → `tools/build_dist.sh`) and deploys
+`dist/` to GitHub Pages. The relay server URL is injected from the
+repository variable `DISK_PROXY_URL` (Settings → Secrets and variables →
+Actions → Variables). Build and publishing succeed even if it's unset (the
+app simply runs without relaying — this default lets forks publish without
+having to set the variable).
 
-### 開発ノート
+### Development notes
 
-upstream の解析結果、設計判断の経緯、実測で判明した各ドライバの性質などは
-[`docs/development-notes.md`](./docs/development-notes.md) にまとめてあります
-（このプロジェクトを改造・移植する場合の参考資料です）。
+The results of analyzing upstream, the reasoning behind design decisions,
+and driver characteristics discovered through measurement are collected in
+[`docs/development-notes.md`](./docs/development-notes.md) (Japanese only —
+useful reference if you're modifying or porting this project).
