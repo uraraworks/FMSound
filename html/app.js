@@ -71,7 +71,9 @@ const DRIVER_LABELS = {
 };
 
 document.getElementById('fmsoundVersionFooter').textContent = ` — FMSound ${FMSOUND_VERSION_FOOTER}`;
-document.getElementById('driverTagline').textContent = `${DRIVER_LABELS[driver]} MMLプレイヤー`;
+// 利用者指示: このタグラインは言語によらず英語表記で統一する(辞書は引かない。
+// ドライバ名(DRIVER_LABELS)は元から英語なので行全体が英語で完結する)。
+document.getElementById('driverTagline').textContent = `${DRIVER_LABELS[driver]} MML Player`;
 
 const driverSelect = document.getElementById('driverSelect');
 driverSelect.value = driver;

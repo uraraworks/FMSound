@@ -62,10 +62,7 @@ export function createDownloadMenu(opts) {
     const { bytes, unmappable } = encodeCp932(text);
     if (!bytes) {
       // 課題D: どの文字が変換できないかを具体的に示す(黙って化けさせない)。
-      alert(
-        `CP932へ変換できない文字が${unmappable.length}種類あります:\n${unmappable.join(' ')}\n\n` +
-        'UTF-8を選ぶか、該当箇所を修正してからやり直してください。',
-      );
+      alert(t('download.cp932UnmappableAlert', { count: unmappable.length, chars: unmappable.join(' ') }));
       return;
     }
     downloadBytes(bytes, mmlFilename, 'text/plain');

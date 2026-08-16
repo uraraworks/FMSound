@@ -8,6 +8,11 @@
 //   4. html/index.html に現れる全てのdata-i18n*属性のキーが辞書に存在すること(タイポ検出)。
 //   5. 辞書にあるがhtml/ ui/ のどこからも参照されていないキーを警告として列挙する
 //      (FAILにはしない。件数は必ず出力する)。
+//   6. i18nを経由しない日本語文字列リテラルの検出。上の1〜5は「辞書の中」の整合性
+//      しか見ておらず、そもそも辞書に入れ忘れて直書きした文字列(html/app.jsの
+//      driverTagline実装漏れが実例、2026-08-16利用者報告)を原理的に検出できない。
+//      html/*.js ui/*.js html/index.html を走査し、コメント行を除いて日本語文字を
+//      含む行を列挙する。
 //
 // 実行: node tools/verify_i18n.mjs
 
@@ -41,6 +46,84 @@ function walkFiles(dir, exts, out = []) {
     }
   }
   return out;
+}
+
+// --- 項目6: L1で「移行完了」と判断したファイル(0件を要求する) ---
+// ここに載っていないhtml/*.js・ui/*.js(html/mucom-app.js・html/pmd-app.js等、
+// L2=動的合成メッセージへ持ち越した分)は件数・該当行をINFOとして出すだけでFAILにしない。
+// 次ラウンドでL2の移行が終わったファイルをこのリストへ移すだけで、進捗がそのまま
+// 検査の強化になる(利用者指示の設計)。
+// 除外理由の補足:
+//   - ui/i18n.js自体は辞書(翻訳の情報源)なので対象外。ここにja文字列があるのは
+//     「i18nを経由していない」の逆で、経由させるための定義そのもの。
+//   - html/index.htmlは<head>(タイトル/meta/OGP)を除いて判定する。OGP/<title>は
+//     利用者指示で今回対象外と明言されており(クローラが?lang=を辿らないため)、
+//     このスクリプトが「訳し忘れ」として誤検出しないようにする。
+const L1_COMPLETE_FILES = [
+  'html/index.html',
+  'html/app.js',
+  'ui/open-menu.js',
+  'ui/download-menu.js',
+  'ui/library-panel.js',
+];
+
+function stripJsComments(text) {
+  // ブロックコメント /* ... */ を先に全体除去してから行ごとに処理する。
+  // 除去は空文字ではなく「マッチ内の改行だけ残す」形にする(単純に''へ置換すると
+  // 複数行コメントぶん行数が縮み、以降の行番号が全部ズレる実装ミスを一度やった)。
+  const noBlock = text.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ''));
+  return noBlock.split(/\r\n|\r|\n/).map((line) => {
+    // 「//」を行コメントの開始として扱うが、"https://" のような URL 内の "//" は
+    // 除外する(直前の文字が ':' の場合はコメント開始とみなさない)。
+    let idx = 0;
+    while (true) {
+      idx = line.indexOf('//', idx);
+      if (idx === -1) return line;
+      if (idx === 0 || line[idx - 1] !== ':') return line.slice(0, idx);
+      idx += 2;
+    }
+  });
+}
+
+function stripHtmlComments(text) {
+  // 同上の理由でマッチ内の改行だけ残す(行番号を保つ)。
+  return text.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ''));
+}
+
+// 言語名(endonym、html/index.htmlの<option>日本語</option>等)のように、翻訳の
+// 対象ではなく「常にその表記で固定」が正しいものだけの例外マーカー。同じ行に
+// このトークンを含むコメントを置くと、その行は日本語判定の対象から外れる
+// (コメント除去より前の"生の行"で判定するため、行コメント扱いにされても効く)。
+// 濫用防止: マーカーには理由(なぜ翻訳しないか)を併記すること。
+const EXEMPT_MARKER = 'i18n-exempt';
+
+function findJapaneseLines(relPath, absPath) {
+  const text = readFileSync(absPath, 'utf-8');
+  const rawLines = text.split(/\r\n|\r|\n/);
+  let lines;
+  if (extname(absPath) === '.html') {
+    // <head>除外は行数がズレると誤対応するので、行ごとに空へ置換する形で行う
+    // (stripHtmlHeadを直接使わず、headの範囲だけ検出して該当行を空文字にする)。
+    const headMatch = text.match(/<head\b[^>]*>[\s\S]*?<\/head>/i);
+    let headStartLine = -1;
+    let headEndLine = -1;
+    if (headMatch) {
+      const before = text.slice(0, headMatch.index);
+      headStartLine = before.split(/\r\n|\r|\n/).length - 1;
+      headEndLine = headStartLine + headMatch[0].split(/\r\n|\r|\n/).length - 1;
+    }
+    lines = stripHtmlComments(text).split(/\r\n|\r|\n/).map((line, i) =>
+      i >= headStartLine && i <= headEndLine ? '' : line,
+    );
+  } else {
+    lines = stripJsComments(text);
+  }
+  const hits = [];
+  lines.forEach((line, i) => {
+    if (rawLines[i] && rawLines[i].includes(EXEMPT_MARKER)) return;
+    if (JAPANESE_RE.test(line)) hits.push({ line: i + 1, text: line.trim() });
+  });
+  return hits;
 }
 
 function main() {
@@ -107,6 +190,31 @@ function main() {
     `[INFO] 5. 辞書にあるがhtml/ ui/ から参照されていないキー: ${unused.length}件` +
     (unused.length ? `\n       [${unused.join(', ')}]` : ''),
   );
+
+  // --- 6. i18nを経由しない日本語文字列リテラルの検出 ---
+  const allTargets = [
+    ...walkFiles(join(REPO_ROOT, 'html'), ['.js']),
+    ...walkFiles(join(REPO_ROOT, 'ui'), ['.js']),
+    join(REPO_ROOT, 'html/index.html'),
+  ].filter((f) => f !== join(REPO_ROOT, 'ui/i18n.js')); // 辞書自体は対象外(上のコメント参照)
+
+  for (const abs of allTargets) {
+    const rel = abs.slice(REPO_ROOT.length).replace(/\\/g, '/');
+    const hits = findJapaneseLines(rel, abs);
+    const isL1 = L1_COMPLETE_FILES.includes(rel);
+    if (isL1) {
+      check(
+        `6. [L1完了/0件要求] ${rel} にi18n未経由の日本語文字列が無い`,
+        hits.length === 0,
+        hits.length ? hits.map((h) => `L${h.line}: ${h.text}`).join('\n       ') : undefined,
+      );
+    } else if (hits.length > 0) {
+      console.log(
+        `[INFO] 6. [L2持ち越し] ${rel}: 日本語文字列を含む行 ${hits.length}件\n       ` +
+        hits.map((h) => `L${h.line}: ${h.text}`).join('\n       '),
+      );
+    }
+  }
 
   console.log(`\n${passed} PASS, ${failed} FAIL`);
   process.exit(failed === 0 ? 0 : 1);

@@ -33,7 +33,7 @@
        書き換えてreloadする(=wasmは常に片方だけロードされる、切替時に両方
        抱えることはない)。app.js側で配線する。 -->
   <label class="driver-switch">
-    <span class="driver-switch-label" data-i18n="toolbar.driverLabel">音源ドライバ:</span>
+    <span class="driver-switch-label" data-i18n="toolbar.driverLabel"></span>
     <select id="driverSelect">
       <option value="pmd">PMD (PC-9801)</option>
       <option value="mucom">MUCOM88 (PC-8801)</option>
@@ -42,9 +42,12 @@
   <!-- 言語切替。既存のdriverSelectとまったく同じ作法(location.searchを書き換えて
        reload)。?driver=は消さない(app.js側で配線、両パラメータが共存する)。 -->
   <label class="driver-switch">
-    <span class="driver-switch-label" data-i18n="toolbar.langLabel">言語:</span>
+    <span class="driver-switch-label" data-i18n="toolbar.langLabel"></span>
     <select id="langSelect">
-      <option value="ja">日本語</option>
+      <!-- 言語名は選択中のUI言語に関わらず常に自言語表記(endonym)で出す(他の
+           言語切替UIの慣習と同じ)。翻訳しないので辞書は引かない。
+           tools/verify_i18n.mjs 項目6のi18n-exemptマーカー対象。 -->
+      <option value="ja">日本語</option><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
       <option value="en">English</option>
     </select>
   </label>
@@ -70,9 +73,9 @@
   <input type="file" id="fileInput" class="file-input-hidden">
 
   <div class="settings-popover hidden" id="settingsPopover">
-    <p class="settings-popover-title" data-i18n="settings.title">設定</p>
+    <p class="settings-popover-title" data-i18n="settings.title"></p>
     <div class="settings-row">
-      <label for="srateSelect" data-i18n="settings.sampleRate">サンプルレート</label>
+      <label for="srateSelect" data-i18n="settings.sampleRate"></label>
       <select id="srateSelect">
         <option value="55467" selected>55kHz</option>
         <option value="48000">48kHz</option>
@@ -83,11 +86,11 @@
       </select>
     </div>
     <div class="settings-row">
-      <label for="calibrationMs" data-i18n="settings.calibrationMs">同期較正(ms)</label>
+      <label for="calibrationMs" data-i18n="settings.calibrationMs"></label>
       <input id="calibrationMs" type="number" min="-200" max="200" step="1" value="0">
     </div>
     <label class="settings-checkbox-row">
-      <input id="useSynchronizedStatus" type="checkbox" checked> <span data-i18n="settings.syncDraw">音声に同期して描画する</span>
+      <input id="useSynchronizedStatus" type="checkbox" checked> <span data-i18n="settings.syncDraw"></span>
     </label>
   </div>
 

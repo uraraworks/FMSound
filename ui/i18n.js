@@ -54,6 +54,8 @@ const ja = {
   'download.compiledSection': 'コンパイル済み({label})',
   'download.compileHint': '先にコンパイル&再生(または曲を開く)してください',
   'download.asmSection': 'asmの db 配列(PC-98/PC-88プログラムへ埋め込み用)',
+  'download.cp932UnmappableAlert':
+    'CP932へ変換できない文字が{count}種類あります:\n{chars}\n\nUTF-8を選ぶか、該当箇所を修正してからやり直してください。',
 
   'library.title': '曲ライブラリ',
   'library.titleWithCount': '曲ライブラリ({count}曲)',
@@ -104,6 +106,8 @@ const en = {
   'download.compiledSection': 'Compiled ({label})',
   'download.compileHint': 'Compile & play (or open a song) first',
   'download.asmSection': 'asm db array (for embedding into PC-98/PC-88 programs)',
+  'download.cp932UnmappableAlert':
+    'There are {count} character(s) that cannot be converted to CP932:\n{chars}\n\nChoose UTF-8, or fix the affected characters and try again.',
 
   'library.title': 'Song library',
   'library.titleWithCount': 'Song library ({count} tracks)',
