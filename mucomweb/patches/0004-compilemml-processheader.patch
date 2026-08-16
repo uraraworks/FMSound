@@ -1,0 +1,53 @@
+# EXPERIMENTAL patch — NOT applied by mucomweb/CMakeLists.txt.
+#
+# Purpose: this is a *measurement* patch used to answer a single question —
+# can MUCOM88's `#voice <file>` tag (external FM voice bank) be made to work
+# in the wasm build at all? — not a product change. See
+# docs/voice-external-bank-experiment.md for the write-up and result.
+#
+# Why this patch: mucomweb/src/MucomWeb.cpp's CompileMML() calls
+# CMucom::Compile() directly and never calls CMucom::ProcessHeader() first
+# (confirmed by grep: the string "ProcessHeader" does not appear anywhere in
+# mucomweb/src/MucomWeb.cpp). CMucom::Compile() (cmucom.cpp:1244-1250) reads
+# the voice filename via GetInfoBufferByName("voice"), which reads from the
+# `infobuf` member that ONLY ProcessHeader() (cmucom.cpp:1140-1172) populates
+# (it does `infobuf = new CMemBuf()` then scans lines for a leading '#' and
+# stores them). Without that call, infobuf stays whatever CMucom::Init()/
+# Reset() left it as (see CMucom::Reset(), cmucom.cpp ~253, and the
+# constructor, ~113: both call DeleteInfoBuffer(), which sets infobuf to
+# NULL), so GetInfoBufferByName("voice") reads from a NULL/absent buffer and
+# `#voice` is a silent no-op today, regardless of file existence.
+#
+# CMucom::ProcessHeader(char *text) is declared in cmucom.h:245 as:
+#   int ProcessHeader(char *text);
+# and is called elsewhere in cmucom.cpp exactly like this (ProcessFile(),
+# cmucom.cpp:1085-1103, and CompileFile(), cmucom.cpp:1338-1358):
+#   ProcessHeader(mml);
+#   res = Compile(mml, sname, option);
+# i.e. it takes the same mutable `char *` MML buffer as Compile() and must be
+# called first, on the same buffer, before Compile().
+#
+# This patch changes only mucomweb/src/MucomWeb.cpp's CompileMML() to add
+# that missing call, mirroring CompileFile()'s call order.
+#
+# Apply against the FMSound repo root, e.g.:
+#   git apply mucomweb/patches/0004-compilemml-processheader.patch
+# (Note: unlike 0001-0003, this patch targets mucomweb/src/MucomWeb.cpp, a
+# file FMSound owns directly -- not the upstream/MucomWeb/mucom88 submodule.)
+diff --git a/mucomweb/src/MucomWeb.cpp b/mucomweb/src/MucomWeb.cpp
+index 0000000..0000000 100644
+--- a/mucomweb/src/MucomWeb.cpp
++++ b/mucomweb/src/MucomWeb.cpp
+@@ -456,6 +456,12 @@ std::string CompileMML(const std::string& mml, int sampleRate)
+ 	CMucom mucomCompiler;
+ 	mucomCompiler.Init();
+ 	mucomCompiler.Reset(2);
++	// EXPERIMENTAL (mucomweb/patches/0004-compilemml-processheader.patch):
++	// ProcessHeader() must run before Compile() so that Compile()'s
++	// GetInfoBufferByName("voice") lookup (cmucom.cpp:1246) has anything to
++	// find -- see the patch header comment for the full trace. Mirrors the
++	// call order CMucom::CompileFile() uses (cmucom.cpp:1356-1358).
++	mucomCompiler.ProcessHeader(const_cast<char *>(mml.c_str()));
+ 	if (mucomCompiler.Compile(const_cast<char *>(mml.c_str()), mubPath) >= 0)
+ 	{
+ 		// maxcountはこのコンパイル専用インスタンス側にしか確定しない(上のコメント参照)。
