@@ -278,6 +278,17 @@ export function downloadArchiveEntry(entry) {
  * @param {{ title?: string }} [opts]
  * @returns {Promise<import('./net/song-select.js').SongCandidate | null>} null はキャンセル
  */
+// 「いま開いているこの書庫選択モーダルを閉じる」ための取消関数(無ければnull)。
+// 曲ライブラリ(ui/library-panel.js)側と全画面オーバーレイで重なる不具合対策
+// (2026-08-16、利用者報告)。このモーダルはPromiseで結果を返す一回性のUIで
+// setupPopover()のような{open,close}管理下に無いため、モジュール外(engine-app側)
+// から閉じられるようここだけ最小限の状態を持つ。
+let activeSongPickerCancel = null;
+
+export function closeActiveSongPicker() {
+  if (activeSongPickerCancel) activeSongPickerCancel();
+}
+
 export function pickSongCandidate(candidates, opts = {}) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
@@ -353,9 +364,14 @@ export function pickSongCandidate(candidates, opts = {}) {
       }
     }
     document.addEventListener('keydown', onKey, true);
+    activeSongPickerCancel = () => {
+      cleanup();
+      resolve(null);
+    };
 
     function cleanup() {
       document.removeEventListener('keydown', onKey, true);
+      activeSongPickerCancel = null;
       overlay.remove();
     }
   });

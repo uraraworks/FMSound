@@ -28,6 +28,7 @@ import { setupPopover } from './ui/shell.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
+  closeActiveSongPicker,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
@@ -200,8 +201,15 @@ export async function init(ctx) {
       compileAndPlay();
     },
   });
-  btnLibrary.addEventListener('click', () => libraryPanel.render());
-  setupPopover(btnLibrary, libraryPanel.popoverEl);
+  // 書庫選択モーダル(net-load.js pickSongCandidate())は全画面オーバーレイの
+  // モーダルで、開いている間は他の操作ができない「今の手順」を表す。ライブラリは
+  // 「これまでに取り込んだ全部」を見る別の面なので、ライブラリを開く方が後から
+  // 割り込んだ操作として書庫選択モーダルを閉じる(利用者判断、案A)。
+  btnLibrary.addEventListener('click', () => {
+    closeActiveSongPicker();
+    libraryPanel.render();
+  });
+  const libraryPopover = setupPopover(btnLibrary, libraryPanel.popoverEl);
 
   function applyUiMode(mode) {
     editorPane.classList.toggle('hidden', mode !== 'editor');
@@ -1117,6 +1125,11 @@ export async function init(ctx) {
 
       let chosen = mucomCandidates[0];
       if (mucomCandidates.length > 1) {
+        // 逆方向: 書庫選択モーダルを開く時点でライブラリが開いていたら閉じる。
+        // 全画面オーバーレイ(z-index高)が上に乗るだけだとライブラリの半透明の
+        // 背景越しに透けて重なって見える不具合そのものなので、同じ「後から
+        // 開く方を優先する」考え方をここでも揃える。
+        libraryPopover.close();
         chosen = await pickSongCandidate(mucomCandidates);
         if (!chosen) {
           setNetStatus('曲の選択をキャンセルしました', false);
