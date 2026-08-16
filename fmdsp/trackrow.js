@@ -242,6 +242,9 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
   if (playing || info === TRACK_INFO_SSGEFF) {
     const actualOctave = actualKey >> 4;
     if (actualOctave >= 0 && actualOctave < KEY_OCTAVES && noteInRange(actualKey)) {
+      // actual_key(ピッチベンド/LFO適用後の実際の発音音程)は本家でも常に
+      // buf_key_mask_sub(色8)固定(fmdsp-pacc.c:719-726、masked分岐が無い)。
+      // ミュート状態に関わらずここは変えない。
       vram.blitColor(
         S_KEY_MASK[actualKey & 0xf], KEY_W,
         x + KEY_X + KEY_W * actualOctave, keyBandY, KEY_W, KEY_H,
@@ -250,10 +253,19 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
     }
     const octave = key >> 4;
     if (octave >= 0 && octave < KEY_OCTAVES && noteInRange(key)) {
+      // key(譜面上の音程)のハイライトは本家 fmdsp-pacc.c:728-729
+      // `fp->masked[t] ? fp->buf_key_mask_sub : fp->buf_key_mask` のとおり、
+      // マスク中は色8(COLOR_KEY_HILITE_SUB)、通常時は色6(COLOR_KEY_HILITE)。
+      // 2026-08-16 利用者指摘「ミュート中も鍵盤が明るいまま」への対応:
+      // 以前はここが常にCOLOR_KEY_HILITEだったため、行の文字は暗くなっても
+      // 鍵盤だけ明るいままだった。upstream/98fmplayer/fmdsp/fmdsp-pacc.c:2110/2112
+      // (buf_key_mask_subをcolor(8)で描いた後にbuf_key_maskをcolor(6)で重ね描き)
+      // を実機コードで確認: マスク中のトラックはkeyの矩形がsubバッファへ入るため
+      // 色8のまま(6で上書きされない)。ここでも新色は作らずCOLOR_KEY_HILITE_SUBを流用する。
       vram.blitColor(
         S_KEY_MASK[key & 0xf], KEY_W,
         x + KEY_X + KEY_W * octave, keyBandY, KEY_W, KEY_H,
-        COLOR_KEY_HILITE
+        muted ? COLOR_KEY_HILITE_SUB : COLOR_KEY_HILITE
       );
     }
   }
