@@ -16,6 +16,7 @@ import {
   channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
 } from './fmdsp/channel-mask.js';
 import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
+import { trackRowHoverRect, levelColumnHoverRect, drawHoverOutline, COLOR_HOVER } from './fmdsp/hover.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment } from './fmdsp/comment.js';
@@ -434,6 +435,12 @@ export async function init(ctx) {
   let stoppedFrameDrawn = false;
   // アイドル画面(停止中)で直近に描いた曲名。undefinedは「まだ一度も描いていない」。
   let idleDrawnSongName;
+  // 2026-08-17: アイドル画面は本来「変化が無ければ描き直さない」最適化のため
+  // 一度描いたら固定するが、それだとホバー枠(下のhoverTarget)が停止中は動かず
+  // 残ってしまう。直近に描いたホバー対象をキーとして持ち、変化したときだけ
+  // 再描画させる。
+  let idleDrawnHoverKey;
+  function hoverKeyOf(target) { return target ? `${target.kind}:${target.index}` : ''; }
   // 課題B(2026-08-14): 「曲が終わったこと」を自動検出して頭出し停止する機能を
   // 実装したが、2026-08-15の実機報告(同梱サンプルのループ曲が約6.5秒で止まる)を
   // 受けて再測定した結果、**MUCOM88では信頼できる終了検出手段が無いと判明したため
@@ -594,27 +601,61 @@ export async function init(ctx) {
       Module.setChannelMask(buildMucomChannelMask(mutedChannels));
     }
   }
-  canvas.addEventListener('click', (event) => {
+
+  // トラック行/レベルメーター列の当たり判定config。クリックとホバー枠の両方が
+  // 必ずこの同じオブジェクトを使うことで、「クリックできる範囲」と「枠が出る範囲」
+  // がズレないようにする(利用者指示: 押せそうに見えて何も起きないのが一番悪い)。
+  const TRACK_ROW_HIT_CONFIG = {
+    trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
+  };
+  const LEVEL_COLUMN_HIT_CONFIG = {
+    columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,
+    topY: rightpane.LEVEL_TRACK_Y, bottomY: rightpane.LEVEL_KEY_Y + 8,
+    columnCount: LEVEL_COLUMN_CHANNELS.length,
+  };
+  // クライアント座標(event.clientX/Y)から、トラック行/レベルメーター列のどちらに
+  // 当たったかを返す。当たらなければnull。座標変換自体はfmdsp/track-click.jsの
+  // 既存関数(canvasPointFromClientClick)をそのまま使う(表示倍率が等倍でなくても
+  // ずれない。tools/verify_track_click_hit.mjs参照)。
+  function hitTestCanvas(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
-    const point = canvasPointFromClientClick(event.clientX, event.clientY, rect, PC98_W, PC98_H);
-    if (!point) return;
-    const row = trackRowIndexAt(point.x, point.y, {
-      trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
-    });
-    if (row >= 0) {
-      toggleMutedChannel(channelForRow(row));
-      return;
-    }
-    // トラック行にも当たらなかった場合、レベルメータークリックミュートの判定
+    const point = canvasPointFromClientClick(clientX, clientY, rect, PC98_W, PC98_H);
+    if (!point) return null;
+    const row = trackRowIndexAt(point.x, point.y, TRACK_ROW_HIT_CONFIG);
+    if (row >= 0) return { kind: 'row', index: row };
+    // トラック行に当たらなかった場合、レベルメータークリックミュートの判定
     // (2026-08-16追加。リズムはトラック行を持たないため、ミュートできるのは
     // ここ経由のみ)。
-    const col = levelColumnIndexAt(point.x, point.y, {
-      columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,
-      topY: rightpane.LEVEL_TRACK_Y, bottomY: rightpane.LEVEL_KEY_Y + 8,
-      columnCount: LEVEL_COLUMN_CHANNELS.length,
-    });
-    if (col >= 0) toggleMutedChannel(channelForLevelColumn(col));
+    const col = levelColumnIndexAt(point.x, point.y, LEVEL_COLUMN_HIT_CONFIG);
+    if (col >= 0) return { kind: 'col', index: col };
+    return null;
+  }
+  canvas.addEventListener('click', (event) => {
+    const hit = hitTestCanvas(event.clientX, event.clientY);
+    if (!hit) return;
+    if (hit.kind === 'row') toggleMutedChannel(channelForRow(hit.index));
+    else toggleMutedChannel(channelForLevelColumn(hit.index));
   });
+
+  // ホバー枠(利用者指示A)。クリック可能な対象(上のhitTestCanvasが返す対象と
+  // 完全に同じ集合)にだけ枠を出す。canvas外へ出た/別ウィンドウへフォーカスが
+  // 移った場合は必ず消す(mouseleaveだけだと、マウスが動かないままAlt+Tab等で
+  // フォーカスだけ他アプリへ移った場合に消えないため、blur/visibilitychangeも
+  // 併用する)。
+  let hoverTarget = null;
+  canvas.addEventListener('mousemove', (event) => {
+    hoverTarget = hitTestCanvas(event.clientX, event.clientY);
+  });
+  canvas.addEventListener('mouseleave', () => { hoverTarget = null; });
+  window.addEventListener('blur', () => { hoverTarget = null; });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hoverTarget = null; });
+  function drawHover(vram) {
+    if (!hoverTarget) return;
+    const rect = hoverTarget.kind === 'row'
+      ? trackRowHoverRect(hoverTarget.index, TRACK_ROW_HIT_CONFIG)
+      : levelColumnHoverRect(hoverTarget.index, LEVEL_COLUMN_HIT_CONFIG);
+    drawHoverOutline(vram, rect, COLOR_HOVER);
+  }
 
   const palette = PALETTES[0];
 
@@ -872,6 +913,7 @@ export async function init(ctx) {
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
       rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels));
       rightpane.drawFileBar(vram, currentSongName);
+      drawHover(vram);
 
       canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
     }
@@ -886,11 +928,15 @@ export async function init(ctx) {
     updateTransportButtonUI();
 
     if (Boolean(globalThis.mucomAudioState?.paused)) {
-      if (pausedFrameDrawn) {
+      // 2026-08-17: 一時停止中は本来ここで即returnして描き直しを止める最適化だが、
+      // それだとホバー枠が一時停止中は動かなくなる。ホバー対象が前回描画時と
+      // 変わっていなければ従来どおりスキップする。
+      if (pausedFrameDrawn && idleDrawnHoverKey === hoverKeyOf(hoverTarget)) {
         requestAnimationFrame(updateChannelStatus);
         return;
       }
       pausedFrameDrawn = true;
+      idleDrawnHoverKey = hoverKeyOf(hoverTarget);
     }
 
     if (typeof Module.getSnapshotWriteIndex === 'function' && Module.HEAP32) {
@@ -903,9 +949,10 @@ export async function init(ctx) {
         // idleDrawnSongNameは「?mml=読み込み(非同期fetch)がこの一回描画より後に
         // 完了し、曲名だけ古いまま固定されてしまう」抜けを防ぐため、曲名が変わったら
         // stoppedFrameDrawnの状態に関わらず描き直す(html/pmd-app.jsと同じ対処)。
-        if (fmdspFont && (!stoppedFrameDrawn || idleDrawnSongName !== currentSongName)) {
+        if (fmdspFont && (!stoppedFrameDrawn || idleDrawnSongName !== currentSongName || idleDrawnHoverKey !== hoverKeyOf(hoverTarget))) {
           stoppedFrameDrawn = true;
           idleDrawnSongName = currentSongName;
+          idleDrawnHoverKey = hoverKeyOf(hoverTarget);
           vram.pixels.set(staticVramSnapshot);
           drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels));
           drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
@@ -913,6 +960,7 @@ export async function init(ctx) {
           rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
           rightpane.drawTransportIcons(vram, { playing: false, stopped: true, paused: false });
           rightpane.drawFileBar(vram, currentSongName);
+          drawHover(vram);
           canvasCtx.putImageData(vram.toImageData(palette), 0, 0);
         }
       } else {
