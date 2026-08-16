@@ -17,6 +17,7 @@ import {
   NUM_W, NUM_H, KEY_W, KEY_H, KEY_LEFT_W, KEY_RIGHT_W,
   S_NUM, S_KEY_BG, S_KEY_LEFT, S_KEY_RIGHT, S_KEY_MASK, S_DT_SIGN,
 } from './sprites.js';
+import { TIER_NORMAL, tierFor } from './dim-tier.js';
 
 // パート行専用のフォント。drawTrackRow(s) の font 引数は使わず、常にこれで描く
 // (本家 update_track_without_key/init_track_without_key が font_fmdsp_small
@@ -63,9 +64,9 @@ export const TRACK_H = 32;
 //   fmdsp-pacc.c:2076 color(2)  … buf_font_2 / buf_font_2_d (トラック種別・TINFO)
 //   fmdsp-pacc.c:2086 color(7)  … buf_solid_7 系 (レスト/マスク時・現在tick)
 //   fmdsp-pacc.c:2110/2112      … 鍵盤ハイライト: masked=8, 通常=6
-// COLOR_LABEL/COLOR_TYPE/COLOR_KEY_HILITEはexportして、通常>ミュート>未使用の
-// 輝度順を検査するtools/verify_dim_tier_luminance.mjsから直接参照できるようにする
-// (「通常」側は要素ごとに色が違うため、代表値ではなくこの3色すべてを検査対象にする)。
+//     (本Web版はこの2110/2112のmasked分岐=色差し替えを採用しない。理由は下記)。
+// COLOR_LABEL/COLOR_TYPE/COLOR_KEY_HILITEはexportして、tools/verify_dim_tier_luminance.mjs
+// から直接参照できるようにする。
 export const COLOR_LABEL = 1;
 export const COLOR_TYPE = 2;
 const COLOR_BAR_BG = 3;
@@ -73,48 +74,24 @@ const COLOR_BAR_REST = 7;
 export const COLOR_KEY_HILITE = 6;
 const COLOR_KEY_HILITE_SUB = 8;
 
-// ミュート中/未使用の行に使う色。
+// ミュート中/未使用の行の暗色表示について(2026-08-17、方式を全面差し替え)。
 //
-// 2026-08-17 利用者指示: 「利用者がミュートしたパート」と「曲がそもそも
-// 使っていないパート」を見分けられるよう、通常 > ミュート > 未使用 の3段階を
-// 実際の輝度順にする。色は新しく作らずFMDSPの既存パレット(tools/gen_palette.py
-// が出力するfmdsp/palette.js、PALETTES[0]。html/mucom-app.js・html/pmd-app.js
-// 双方が使っているのはこの1パレットのみ)から選ぶこと、という制約のもと、
-// 実際のRGBをWCAGの相対輝度式(sRGB→線形化してから0.2126R+0.7152G+0.0722Bを
-// とる標準式。ガンマ補正無しの単純加重和だと「彩度の高い色は暗く見えるはずが
-// 実は明るい」という誤判定をする実例に当たった。下記参照)で計算して並べた。
+// 旧方式(パレット番号の付け替え、〜2317820まで)は、通常色6(緑、鍵盤ハイライト)を
+// ミュート時に色8(青、COLOR_KEY_HILITE_SUB)へ差し替えていた。これに利用者から
+// 「通常が緑に対して暗い版は青色になってます。暗くなった感じには見えない」と
+// 指摘があった。既定パレットには色相を保ったまま暗い緑が存在しないため、番号の
+// 付け替えでは解決できない(色相そのものが変わってしまう)。
 //
-//   index: RGB               相対輝度(WCAG)
-//   0    : [  0,  0,  0]     0.0000  (背景色。前景には使えない)
-//   3    : [ 68, 68,119]     0.0670  (旧COLOR_MUTED。背景の次に暗い)
-//   7    : [ 51, 51,238]     0.0924  (**注意**: ガンマ補正なしの単純加重和では
-//                                      index3より暗く見えるが、実際は明るい。
-//                                      彩度の高い青は補正無しの式だと過小評価される)
-//   5    : [102,102, 85]     0.1298
-//   9    : [ 68,102,170]     0.1363
-//   2    : [102,136,255]     0.2765  (COLOR_TYPE)
-//   1    : [170,170,153]     0.3960  (COLOR_LABEL)
-//   8    : [  0,187,255]     0.4276  (COLOR_KEY_HILITE_SUB)
-//   4    : [204,204,187]     0.5961
-//   6    : [136,255, 68]     0.7717  (COLOR_KEY_HILITE)
+// 新方式(利用者判断): 色番号は一切変えず、常にCOLOR_LABEL/COLOR_TYPE/
+// COLOR_KEY_HILITE等の通常色のまま描く。「今どの段階(通常/ミュート/未使用)か」は
+// fmdsp/dim-tier.jsのTIER_*定数でvram.setTier()へ申告するだけにし、実際に暗く
+// するのはfmdsp/vram.js Vram#toImageData()がパレットRGBへ変換する最後の1箇所
+// (元の色 x 係数、RGBの比=色相を保ったまま輝度だけ落とす)に一本化した。
+// 係数の値・選定理由はfmdsp/dim-tier.js参照。
 //
-// index3([68,68,119])は黒(index0)の次に暗く、通常色(1/2/6、輝度0.28-0.77)より
-// 常に暗いミュート色として2026-08-16版で採用済みだった。しかし黒の次に暗い時点で
-// 「index3よりさらに暗いが黒ではない」色がこのパレットに存在しない
-// (index7は上表の注のとおり実際にはindex3より明るい)。3段階を成立させるには
-// ミュート色を1段階明るい方へ動かす必要があると判断し、
-//   ミュート = index5 ([102,102,85], 輝度0.1298)
-//     rightpane.js drawLevelMeters()のミュート中PANPOT表示が元々COLOR_5を
-//     使っており(2cc4eae)、トラック行側もこれに合わせることでパート行と
-//     レベルメーターのミュート色が揃う副次効果もある。
-//   未使用 = index3 ([68,68,119], 輝度0.0670)
-//     旧COLOR_MUTEDをそのまま「さらに暗い」側へ回す。COLOR_BAR_BG/
-//     rightpane.jsのCOLOR_UNAVAILABLEと同じ値で、元々「非再生/測定不能」を
-//     指す語彙だったため「曲が使っていない」の意味とも自然に合う。
-// 0.396(通常最小) > 0.1298(ミュート) > 0.0670(未使用) > 0(背景) の順になり、
-// 3段階が輝度順であることをtools/verify_dim_tier_luminance.mjsで検査する。
-export const COLOR_MUTED = 5;
-export const COLOR_UNUSED = COLOR_BAR_BG; // = 3
+// この結果、鍵盤ハイライトは常に色6(緑)のまま描かれ、ミュート/未使用時は
+// 「暗い緑」になる(旧方式の「青になる」問題が構造的に起こらなくなった)。
+// COLOR_MUTED/COLOR_UNUSEDという専用の色番号は不要になったため廃止した。
 
 // fmdriver.h の enum FMDRIVER_TRACKTYPE_* / FMDRIVER_TRACK_INFO_* を
 // このモジュール内だけの整数定数として再掲(値は upstream ヘッダと一致させる)。
@@ -182,12 +159,20 @@ function statusString(data) {
 export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, unused = false) {
   const smallFont = SMALL_FONT;
   const [type, num] = TRACK_TYPE_TABLE[slotIndex];
-  // 優先順位: 未使用 > ミュート > 通常 (unusedはmutedを兼ねた見た目になる。
-  // 曲が使っていないパートを利用者がさらにミュートしても、元々鳴らないので
-  // 見た目を変える必要が無い)。
-  const tierColor = unused ? COLOR_UNUSED : (muted ? COLOR_MUTED : undefined);
-  const typeColor = tierColor ?? COLOR_TYPE;
-  const labelColor = tierColor ?? COLOR_LABEL;
+  // 段階の優先順位(未使用 > ミュート > 通常)はtierFor()に集約済み
+  // (fmdsp/dim-tier.js。unusedはmutedを兼ねた見た目になる=曲が使っていない
+  // パートを利用者がさらにミュートしても、元々鳴らないので見た目を変える必要が無い)。
+  // この行が属する段階をvramへ申告する。以降このブロック内の
+  // 描画(setPixel経由の全メソッド、drawText/blitCopy/blitColor/fillRectいずれも)は
+  // 色番号を変えずに済み、最終的な暗さはVram#toImageData()側の係数乗算(色相を保つ)
+  // だけで決まる(fmdsp/dim-tier.js参照)。関数を抜ける前に必ずTIER_NORMALへ戻す
+  // (呼び出し順に依存せず、常にこの関数の中だけで段階の開始/終了が閉じるように
+  // finallyで戻す)。
+  const tier = tierFor(muted, unused);
+  vram.setTier(tier);
+  try {
+  const typeColor = COLOR_TYPE;
+  const labelColor = COLOR_LABEL;
   const playing = data[FIELD.PLAYING] !== 0;
   const info = data[FIELD.INFO];
   const key = data[FIELD.KEY];
@@ -202,18 +187,14 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, u
   // --- 行0: トラック番号(数字スプライト) + 種別ラベル + TINFO(EX/EFF等) ---
   // fmdsp-pacc.c:472-485 (update_track_without_key)。NUMスプライトは
   // y+1 (fmdsp-pacc.c:480,484)。
-  // ミュート中/未使用中は数字スプライトも塗り直す(blitCopyだとスプライトに
-  // 焼き込まれた色番号(2/3、アンチエイリアス用の2階調)がそのまま出るため、
-  // blitColorに切り替えて非0ピクセルを一律tierColorで塗る)。
+  // 数字スプライトはblitCopy(スプライトに焼き込まれた色番号2/3、アンチエイリアス用の
+  // 2階調をそのまま使う)。段階による暗さはtoImageData側の係数乗算で自動的にかかる
+  // ため、旧方式のような「ミュート中はblitColorへ切り替えて塗り直す」分岐は不要になった
+  // (焼き込み済みの2階調のアンチエイリアスも保たれたまま暗くなる、という副次的な改善)。
   const num1 = Math.floor(num / 10) % 10;
   const num2 = num % 10;
-  if (tierColor !== undefined) {
-    vram.blitColor(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H, tierColor);
-    vram.blitColor(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H, tierColor);
-  } else {
-    vram.blitCopy(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H);
-    vram.blitCopy(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H);
-  }
+  vram.blitCopy(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H);
+  vram.blitCopy(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H);
 
   drawText(vram, smallFont, TRACK_TYPE_LABEL[type] || '', x + 1, y, typeColor);
 
@@ -283,7 +264,8 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, u
     if (actualOctave >= 0 && actualOctave < KEY_OCTAVES && noteInRange(actualKey)) {
       // actual_key(ピッチベンド/LFO適用後の実際の発音音程)は本家でも常に
       // buf_key_mask_sub(色8)固定(fmdsp-pacc.c:719-726、masked分岐が無い)。
-      // ミュート状態に関わらずここは変えない。
+      // ミュート状態に関わらず色番号自体は変えない(段階による暗さは
+      // vram.setTier()経由でこのブロック全体に自動的にかかる)。
       vram.blitColor(
         S_KEY_MASK[actualKey & 0xf], KEY_W,
         x + KEY_X + KEY_W * actualOctave, keyBandY, KEY_W, KEY_H,
@@ -292,19 +274,16 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, u
     }
     const octave = key >> 4;
     if (octave >= 0 && octave < KEY_OCTAVES && noteInRange(key)) {
-      // key(譜面上の音程)のハイライトは本家 fmdsp-pacc.c:728-729
-      // `fp->masked[t] ? fp->buf_key_mask_sub : fp->buf_key_mask` のとおり、
-      // マスク中は色8(COLOR_KEY_HILITE_SUB)、通常時は色6(COLOR_KEY_HILITE)。
-      // 2026-08-16 利用者指摘「ミュート中も鍵盤が明るいまま」への対応:
-      // 以前はここが常にCOLOR_KEY_HILITEだったため、行の文字は暗くなっても
-      // 鍵盤だけ明るいままだった。upstream/98fmplayer/fmdsp/fmdsp-pacc.c:2110/2112
-      // (buf_key_mask_subをcolor(8)で描いた後にbuf_key_maskをcolor(6)で重ね描き)
-      // を実機コードで確認: マスク中のトラックはkeyの矩形がsubバッファへ入るため
-      // 色8のまま(6で上書きされない)。ここでも新色は作らずCOLOR_KEY_HILITE_SUBを流用する。
+      // key(譜面上の音程)のハイライト。本家 fmdsp-pacc.c:728-729/2110/2112は
+      // マスク中に色8(青系)へ差し替えるが、2026-08-17に利用者から「通常が緑に
+      // 対して暗い版は青色になっている。暗くなった感じには見えない」と指摘があり、
+      // この色差し替え(=upstreamの`masked`分岐)を採用しないことにした
+      // (利用者判断、fmdsp/dim-tier.js冒頭コメント参照)。常に色6(COLOR_KEY_HILITE、
+      // 緑)のまま描き、ミュート/未使用時は「暗い緑」になる(色相を保つ)。
       vram.blitColor(
         S_KEY_MASK[key & 0xf], KEY_W,
         x + KEY_X + KEY_W * octave, keyBandY, KEY_W, KEY_H,
-        muted ? COLOR_KEY_HILITE_SUB : COLOR_KEY_HILITE
+        COLOR_KEY_HILITE
       );
     }
   }
@@ -321,6 +300,11 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false, u
   vram.fillRect(x + BAR_X, barY, BAR_W * width, BAR_H, fillColor);
   vram.fillRect(x + BAR_X + BAR_W * width, barY, BAR_W * (64 - width), BAR_H, COLOR_BAR_BG);
   vram.fillRect(x + BAR_X + BAR_W * (ticks >> 2), barY, BAR_W, BAR_H, COLOR_BAR_REST);
+  } finally {
+    // 必ず通常段階へ戻す。ここでの戻し忘れは、次にこの行のy範囲へ描く
+    // 無関係な要素(例えば右ペインの静的装飾との重なり)まで暗くしてしまう。
+    vram.setTier(TIER_NORMAL);
+  }
 }
 
 // 10行(FMDSP_LEFT_MODE_OPNA)ぶんをまとめて描画する。

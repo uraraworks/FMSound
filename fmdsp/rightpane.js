@@ -16,6 +16,7 @@
 import { drawText, drawTextCp932, SmallFont } from './font.js';
 import { FONT_SMALL, FONT_MEDIUM } from './font_small.js';
 import { encodeCp932, isAsciiOnly } from '../ui/cp932-encode.js';
+import { TIER_NORMAL, tierFor } from './dim-tier.js';
 import {
   NUM_W, NUM_H, S_NUM, S_NUM_COLON, S_NUM_BAR,
   LOGO_FM_W, LOGO_DS_W, LOGO_P_W, LOGO_H, LOGO_W,
@@ -64,24 +65,18 @@ const MEDIUM_FONT = new SmallFont(FONT_MEDIUM); // font_fmdsp_medium (6x8)
 // fmdsp-pacc.c:2063-2130 (fmdsp_pacc_render の draw()呼び出し列)より。
 // buf_font_1系=1, buf_font_2系=2, buf_font_7系=7, buf_solid_2系=2,
 // buf_solid_3系=3, buf_solid_7系=7, buf_panpot_1_d=1, buf_panpot_5_d=5。
-const COLOR_1 = 1;
+export const COLOR_1 = 1;
 const COLOR_2 = 2;
 const COLOR_3 = 3;
-const COLOR_5 = 5;
 const COLOR_7 = 7;
 
 // 2026-08-16: 「出せない項目は0を表示せず、停止中PLAYと同じ暗い側の色にする」
 // 方針(利用者指示)のための共通名。新しい色は作らず、COLOR_3(fmdsp-pacc.c
-// PLAY/STOP/PAUSEアイコンの非アクティブ色、trackrow.js COLOR_MUTEDと同じ値)を
-// そのまま流用する。
+// PLAY/STOP/PAUSEアイコンの非アクティブ色)をそのまま流用する。
+// 注意: これは「CPU POWER COUNT」等、恒久的に取得不能な項目専用の固定暗色で、
+// 下のdrawLevelMeters()が扱うミュート/未使用の3段階(tierベース)とは無関係。
+// 混同しないよう別名のまま残す。
 const COLOR_UNAVAILABLE = COLOR_3;
-
-// 2026-08-17: レベルメーターのPANPOT表示、3段階目「曲が使っていない」用。
-// fmdsp/trackrow.js COLOR_UNUSED(輝度の根拠・選定理由は同ファイルの詳細コメント
-// 参照)と同じ値(index3)を流用し、パート行とレベルメーターで「未使用」の色を
-// 揃える。ミュート色(COLOR_5、輝度0.1298)より暗いことをtools/verify_dim_tier_luminance.mjs
-// で検査する。
-const COLOR_UNUSED = COLOR_3;
 
 // --- 位置定数 (fmdsp_sprites.h の enum より、file:line は行コメントに個別記載) ---
 const LOGO_Y = 1; // :97
@@ -798,63 +793,74 @@ const EMPTY_MUTED_COLUMNS = new Set();
 // mutedColumns: 2026-08-16追加。レベルメータークリックミュート機能用(このタスクの
 // scope)。Set<number>(列index)。fmdsp/channel-mask.js mutedColumnsFromChannels()
 // でmutedChannels(トラック行クリックと共通の唯一の状態)から都度作る想定。
-// PANPOTの色をfmdsp-pacc.c:1765-1769
-// `levels[c].masked ? fp->buf_panpot_5_d : fp->buf_panpot_1_d` のとおり
-// 色5/色1で切り替える(値そのものは変えない。バー本体は音自体が消えるので
-// 自然にlevelが下がって表現される。fmdsp-pacc.cもバー本体は masked で分岐しない)。
 // unusedColumns: 2026-08-17追加。曲が使っていない列(Set<number>)。
-// fmdsp/channel-mask.js unusedColumnsFromChannels()で作る。PANPOTの色を
-// unused > muted > 通常 の優先順で切り替える(trackrow.jsのtierColorと同じ考え方。
-// 曲が使っていない列を利用者がさらにミュートしても見た目は変えない)。
+// fmdsp/channel-mask.js unusedColumnsFromChannels()で作る。
+//
+// 2026-08-17: 暗色表示の方式をパレット番号の付け替えからvram.setTier()による
+// 係数乗算方式へ差し替え(fmdsp/dim-tier.js、fmdsp/trackrow.jsと同じ考え方)。
+// 旧実装はPANPOTだけを色5/色3へ差し替えていたが、利用者指示「対象は行全体」
+// (パート行での指摘、レベルメーターにもそのまま適用: 鍵盤ハイライト・音階表示・
+// 文字情報・レベルメーターが同じ段階では同じ暗さになること)にあわせ、この列の
+// バー本体・ピーク保持ライン・PANPOT・PROG・KEYすべてを同じ段階で一様に暗くする
+// (fmdsp-pacc.cはバー本体をmaskedで分岐しないが、それは上流がミュート状態を
+// レベルメーターの見た目に反映する対象をPANPOTだけに絞っていたためで、本Web版は
+// 利用者指示により「列全体」を対象にする、という意図的な拡張)。
 export function drawLevelMeters(vram, levels, peakState, mutedColumns = EMPTY_MUTED_COLUMNS, unusedColumns = EMPTY_MUTED_COLUMNS) {
   for (let c = 0; c < FMDSP_LEVEL_COUNT; ++c) {
-    const entry = levels[c] || {};
-    const llevel = levelToBars(entry.level || 0);
-    if (llevel > 0) {
-      // buf_horizontal_2_d相当: 生値バー(色2)。
-      vram.fillRect(
-        LEVEL_X + LEVEL_W * c, LEVEL_Y + (64 - llevel * 2),
-        LEVEL_DISP_W, llevel * 2, COLOR_2
+    const tier = tierFor(mutedColumns.has(c), unusedColumns.has(c));
+    vram.setTier(tier);
+    try {
+      const entry = levels[c] || {};
+      const llevel = levelToBars(entry.level || 0);
+      if (llevel > 0) {
+        // buf_horizontal_2_d相当: 生値バー(色2)。
+        vram.fillRect(
+          LEVEL_X + LEVEL_W * c, LEVEL_Y + (64 - llevel * 2),
+          LEVEL_DISP_W, llevel * 2, COLOR_2
+        );
+      }
+      stepPeak(peakState, c, llevel);
+      const peak = peakState.data[c];
+      if (peak > 0) {
+        // buf_horizontal_7_d相当: ピーク保持ライン(色7、高さ1px)。
+        vram.fillRect(
+          LEVEL_X + LEVEL_W * c, LEVEL_Y + (62 - peak * 2),
+          LEVEL_DISP_W, 1, COLOR_7
+        );
+      }
+
+      // PANPOT。fmdsp-pacc.c:1765-1769。pan(0-5)をS_PANPOTの該当フレームへ。
+      // 色は常にCOLOR_1固定(色番号での差し替えはやめた。上のコメント参照)。
+      const pan = Number.isInteger(entry.pan) ? entry.pan : 5;
+      const panSprite = S_PANPOT[pan] ?? S_PANPOT[5];
+      vram.blitColor(
+        panSprite, PANPOT_W,
+        LEVEL_X + LEVEL_W * c - 1, PANPOT_Y, PANPOT_W, PANPOT_H,
+        COLOR_1
       );
-    }
-    stepPeak(peakState, c, llevel);
-    const peak = peakState.data[c];
-    if (peak > 0) {
-      // buf_horizontal_7_d相当: ピーク保持ライン(色7、高さ1px)。
-      vram.fillRect(
-        LEVEL_X + LEVEL_W * c, LEVEL_Y + (62 - peak * 2),
-        LEVEL_DISP_W, 1, COLOR_7
+
+      if (c === 9) continue; // RHYTHM列: PROG/KEYは未供給データにつき描画しない
+
+      // PROG(音色番号、3桁)。fmdsp-pacc.c:1770-1774の非RHYTHM分岐。
+      const prog = entry.prog || 0;
+      drawText(
+        vram, SMALL_FONT, String(Math.max(0, Math.min(999, prog))).padStart(3, '0'),
+        LEVEL_X + LEVEL_W * c, LEVEL_PROG_Y, COLOR_1
       );
+
+      // KEY(現在鍵盤番号)。fmdsp-pacc.c:1793-1803。非再生時・オクターブ内
+      // ノート番号(下位4bit)が12以上(=不正値)のときは"---"。
+      const key = entry.key || 0;
+      const oct = (key >> 4) & 0xff;
+      const n = key & 0xf;
+      const playing = !!entry.playing;
+      const keyText = (playing && n < 12)
+        ? String(Math.max(0, Math.min(999, oct * 12 + n))).padStart(3, '0')
+        : '---';
+      drawText(vram, SMALL_FONT, keyText, LEVEL_X + LEVEL_W * c, LEVEL_KEY_Y, COLOR_1);
+    } finally {
+      vram.setTier(TIER_NORMAL);
     }
-
-    // PANPOT。fmdsp-pacc.c:1765-1769。pan(0-5)をS_PANPOTの該当フレームへ。
-    const pan = Number.isInteger(entry.pan) ? entry.pan : 5;
-    const panSprite = S_PANPOT[pan] ?? S_PANPOT[5];
-    vram.blitColor(
-      panSprite, PANPOT_W,
-      LEVEL_X + LEVEL_W * c - 1, PANPOT_Y, PANPOT_W, PANPOT_H,
-      unusedColumns.has(c) ? COLOR_UNUSED : (mutedColumns.has(c) ? COLOR_5 : COLOR_1)
-    );
-
-    if (c === 9) continue; // RHYTHM列: PROG/KEYは未供給データにつき描画しない
-
-    // PROG(音色番号、3桁)。fmdsp-pacc.c:1770-1774の非RHYTHM分岐。
-    const prog = entry.prog || 0;
-    drawText(
-      vram, SMALL_FONT, String(Math.max(0, Math.min(999, prog))).padStart(3, '0'),
-      LEVEL_X + LEVEL_W * c, LEVEL_PROG_Y, COLOR_1
-    );
-
-    // KEY(現在鍵盤番号)。fmdsp-pacc.c:1793-1803。非再生時・オクターブ内
-    // ノート番号(下位4bit)が12以上(=不正値)のときは"---"。
-    const key = entry.key || 0;
-    const oct = (key >> 4) & 0xff;
-    const n = key & 0xf;
-    const playing = !!entry.playing;
-    const keyText = (playing && n < 12)
-      ? String(Math.max(0, Math.min(999, oct * 12 + n))).padStart(3, '0')
-      : '---';
-    drawText(vram, SMALL_FONT, keyText, LEVEL_X + LEVEL_W * c, LEVEL_KEY_Y, COLOR_1);
   }
 }
 
@@ -879,5 +885,4 @@ export {
   SPECTRUM_X, SPECTRUM_Y, FFTDISPLEN,
   LEVEL_X, LEVEL_Y, LEVEL_W, LEVEL_DISP_W, LEVEL_TRACK_Y, PANPOT_Y, LEVEL_PROG_Y, LEVEL_KEY_Y,
   FMDSP_LEVEL_COUNT,
-  COLOR_1, COLOR_5, COLOR_UNUSED,
 };

@@ -7,8 +7,10 @@
 //     PLAY/STOP/PAUSE非アクティブと同じ値)で描く。
 //   - VOLUME DOWN / PGM NUMBER(ラベル+下線+三角): 元データが無い
 //     (docs/right-pane-data.md §8参照)。同じくCOLOR_UNAVAILABLE。
-//   - レベルメーターPANPOT: ミュート中の列は色5(COLOR_5、
-//     upstream buf_panpot_5_d相当)、非ミュートは色1のまま。
+//   - レベルメーターPANPOT: 2026-08-17に方式を差し替え(fmdsp/dim-tier.js参照)。
+//     色番号は常にCOLOR_1固定で、ミュート中の列はvram.tiers平面がTIER_MUTEDに
+//     なることで暗くなる(色を差し替えない。色相を保つのが目的)。この検査でも
+//     色番号ではなく段階(tiers)を実測する。
 //
 // 一方、FRAMES PER SECOND(今回実装、実測値)は暗色にしてはいけない
 // (せっかく実装した値が見えなくなるため)。数字スプライトS_NUMは元々
@@ -24,6 +26,7 @@
 
 import { Vram, PC98_W, PC98_H } from '../fmdsp/vram.js';
 import * as rightpane from '../fmdsp/rightpane.js';
+import { TIER_NORMAL, TIER_MUTED } from '../fmdsp/dim-tier.js';
 
 let failCount = 0;
 let passCount = 0;
@@ -45,10 +48,24 @@ function colorsInRect(vram, x0, y0, w, h) {
   return colors;
 }
 
+// colorsInRectと同じ矩形・同じ「何か描かれた(色0以外)ピクセルだけ」条件で、
+// 色番号の代わりに段階(vram.tiers、fmdsp/dim-tier.js)を集める。背景(色0、
+// 何も描かれていない)を含めると常にTIER_NORMALが混じってしまい判定できなく
+// なるため、colorsInRectと同じく色0は除外する。
+function tiersInRect(vram, x0, y0, w, h) {
+  const tiers = new Set();
+  for (let y = y0; y < y0 + h; ++y) {
+    for (let x = x0; x < x0 + w; ++x) {
+      const i = y * vram.width + x;
+      if (vram.pixels[i] !== 0) tiers.add(vram.tiers[i]);
+    }
+  }
+  return tiers;
+}
+
 const COLOR_UNAVAILABLE = 3;
 const COLOR_2 = 2;
 const COLOR_1 = 1;
-const COLOR_5 = 5;
 
 console.log('=== 右ペイン「出せない項目は暗色」検証 ===\n');
 
@@ -118,7 +135,7 @@ console.log('=== 右ペイン「出せない項目は暗色」検証 ===\n');
     `colors=${[...passedTimeColors]}`);
 }
 
-// --- レベルメーターPANPOT: ミュート列は色5 ---
+// --- レベルメーターPANPOT: 2026-08-17〜、色番号は常にCOLOR_1固定、段階(tiers)で暗さを表現 ---
 {
   const vram = new Vram(PC98_W, PC98_H);
   vram.clear(0);
@@ -128,15 +145,28 @@ console.log('=== 右ペイン「出せない項目は暗色」検証 ===\n');
   rightpane.drawLevelMeters(vram, levels, peakState, mutedColumns);
 
   const mutedPanColors = colorsInRect(vram, rightpane.LEVEL_X + rightpane.LEVEL_W * 9 - 1, rightpane.PANPOT_Y, 15, 6);
-  console.log(`ミュート列(9=RHYTHM)PANPOT色集合: ${[...mutedPanColors].join(',')}`);
-  check('ミュート中の列のPANPOTは色5(COLOR_5、upstream buf_panpot_5_d相当)',
-    [...mutedPanColors].every((c) => c === COLOR_5) && mutedPanColors.size > 0,
+  const mutedPanTiers = tiersInRect(vram, rightpane.LEVEL_X + rightpane.LEVEL_W * 9 - 1, rightpane.PANPOT_Y, 15, 6);
+  console.log(`ミュート列(9=RHYTHM)PANPOT色集合: ${[...mutedPanColors].join(',')} 段階集合: ${[...mutedPanTiers].join(',')}`);
+  check('[本体] ミュート中の列のPANPOTも色番号はCOLOR_1のまま(色相を保つ。色を差し替えない)',
+    [...mutedPanColors].every((c) => c === COLOR_1) && mutedPanColors.size > 0,
     `colors=${[...mutedPanColors]}`);
+  check('[本体] ミュート中の列のPANPOTの段階はTIER_MUTED(暗さはここで表現する)',
+    [...mutedPanTiers].every((t) => t === TIER_MUTED) && mutedPanTiers.size > 0,
+    `tiers=${[...mutedPanTiers]}`);
 
   const normalPanColors = colorsInRect(vram, rightpane.LEVEL_X + rightpane.LEVEL_W * 0 - 1, rightpane.PANPOT_Y, 15, 6);
-  console.log(`非ミュート列(0=FM1)PANPOT色集合: ${[...normalPanColors].join(',')}`);
+  const normalPanTiers = tiersInRect(vram, rightpane.LEVEL_X + rightpane.LEVEL_W * 0 - 1, rightpane.PANPOT_Y, 15, 6);
+  console.log(`非ミュート列(0=FM1)PANPOT色集合: ${[...normalPanColors].join(',')} 段階集合: ${[...normalPanTiers].join(',')}`);
   check('非ミュート列のPANPOTは色1のまま', [...normalPanColors].every((c) => c === COLOR_1) && normalPanColors.size > 0,
     `colors=${[...normalPanColors]}`);
+  check('非ミュート列のPANPOTの段階はTIER_NORMAL', [...normalPanTiers].every((t) => t === TIER_NORMAL) && normalPanTiers.size > 0,
+    `tiers=${[...normalPanTiers]}`);
+
+  // 故障注入: 「ミュートしても段階を切り替えない」壊れた実装を模擬し、
+  // この検査が実際にFAILを検出できることを確認する。
+  const fakeMutedButNormalTier = TIER_NORMAL;
+  check('[故障注入] 「ミュート列のPANPOTの段階がTIER_NORMALのまま」という壊れた値はTIER_MUTEDとの比較でFAILになる(検査が効いている確認)',
+    fakeMutedButNormalTier !== TIER_MUTED);
 }
 
 // 故障注入: 「暗色化を忘れてCPUも通常色で描く」旧実装を模擬し、この検査が

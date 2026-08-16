@@ -889,6 +889,13 @@ export async function init(ctx) {
 
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
+      // 段階的暗色表示(fmdsp/dim-tier.js)のtiers平面もpixelsと同時にリセットする。
+      // 静的装飾(右ペイン)はTIER_NORMALのまま描かれているため、pixelsだけを
+      // スナップショットへ戻してtiersを残すと、前フレームでミュート/未使用だった
+      // 行の段階がstaleに残り得る(このフレームで再描画されなかったピクセルは
+      // 背景色=index0のためtoImageData上は無害だが、前提を色0固定に依存させない
+      // ためここで明示的に揃える)。
+      vram.tiers.fill(0);
       drawTrackRows(vram, fmdspFont, entryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(mucomUsedChannels));
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
 
@@ -959,6 +966,13 @@ export async function init(ctx) {
           idleDrawnSongName = currentSongName;
           idleDrawnHoverKey = hoverKeyOf(hoverTarget);
           vram.pixels.set(staticVramSnapshot);
+          // 段階的暗色表示(fmdsp/dim-tier.js)のtiers平面もpixelsと同時にリセットする。
+          // 静的装飾(右ペイン)はTIER_NORMALのまま描かれているため、pixelsだけを
+          // スナップショットへ戻してtiersを残すと、前フレームでミュート/未使用だった
+          // 行の段階がstaleに残り得る(このフレームで再描画されなかったピクセルは
+          // 背景色=index0のためtoImageData上は無害だが、前提を色0固定に依存させない
+          // ためここで明示的に揃える)。
+          vram.tiers.fill(0);
           drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRowsFromChannels(mutedChannels), unusedRowsFromChannels(mucomUsedChannels));
           drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
           rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;

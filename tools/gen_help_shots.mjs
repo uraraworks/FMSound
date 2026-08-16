@@ -15,6 +15,10 @@
 // 生成物: html/help/<name>.<lang>.png (ja/en × overview/open-menu/editor/settings)
 // + html/help/fmdsp.png (言語に依らず1枚。2026-08-16、下記「3. fmdsp」のコメント参照:
 //   FMDSP自体の表示が元々すべて英字で、ja/en間で見た目が変わらないため統合した)。
+// + html/help/fmdsp-mute.png (2026-08-17追加、下記「6. fmdsp-mute」参照。fmdsp.pngは
+//   曲を読み込んでいないアイドル状態なので、通常/ミュート/未使用の3段階の暗さの
+//   違いが画像に写っていない。実際に曲を再生して1パートをミュートした状態を
+//   別途撮る。こちらもFMDSP自体の表示が英字のみなのでja版1枚だけで足りる)。
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
@@ -538,6 +542,105 @@ async function main() {
         await checkJaLeak('settings');
         await shoot('settings');
         await cdp.evaluate(clickSettings);
+
+        // 6. fmdsp-mute: 2026-08-17追加。前回撮影(fmdsp.png)は曲を読み込んでおらず
+        //    アイドル状態のFMDSP枠だけだったため、通常/ミュート/未使用の3段階の
+        //    見た目の違いが画像に写っていない、という指摘への対応。実際に曲を
+        //    (編集欄経由で)再生し、1パートをミュートしてから撮る。
+        //    ja版でのみ撮る(fmdsp自体が言語非依存。既存のfmdsp.pngと同じ方針)。
+        if (lang === 'ja') {
+          try {
+            // 直前の手順(4.editor)でエディタモードへ入ったままなので、プレイヤー
+            // モードへ戻す(canvas領域がエディタ欄と横並びで狭くならないよう、
+            // fmdsp.pngと同じ幅で撮るため)。
+            await cdp.evaluate(`
+              (() => {
+                const b = [...document.querySelectorAll('button')]
+                  .find((x) => x.getAttribute('aria-label') === 'プレイヤーモードへ切替');
+                if (b) b.click();
+              })()
+            `);
+
+            // 2チャンネル(FM1=A, FM2=B)だけ鳴らすMML。他の8行(FM3-6,SSG1-3,ADPCM)は
+            // コンパイルログ上「使われていない」と判定される(fmdsp/channel-mask.js
+            // usedChannelsFromMucomCompileLog参照)ため、何もしなくても「未使用」段階に
+            // なる。この後Bだけミュートして、FM1(通常)/FM2(ミュート)/その他8行(未使用)
+            // の3段階を1枚に収める。
+            const demoMml = 'A @78 T120 o5 l4 v10 cdefgab>c<\nB @78 T120 o4 l4 v10 cdefgab>c<\n';
+            await cdp.evaluate(`
+              (() => {
+                const ta = document.getElementById('mml');
+                ta.value = ${JSON.stringify(demoMml)};
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+              })()
+            `);
+
+            // Play(コンパイル&再生)ボタンをCDPの実マウスイベント(Input.dispatchMouseEvent)
+            // で押す。audioContext.resume()はブラウザのautoplayポリシー上「本物の
+            // ユーザー操作」由来のイベントでないと効かないため、このスクリプトの他の
+            // 箇所で使っているRuntime.evaluate経由の合成.click()では音声パイプラインが
+            // 動かない(=スナップショットリングが埋まらずFMDSPに実データが出ない)。
+            const playRect = await cdp.evaluate(`
+              (() => {
+                const b = [...document.querySelectorAll('button')]
+                  .find((x) => (x.getAttribute('aria-label') || '').includes('コンパイル&再生'));
+                if (!b) return null;
+                const r = b.getBoundingClientRect();
+                return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+              })()
+            `);
+            if (!playRect) throw new Error('Play(コンパイル&再生)ボタンが見つからなかった');
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: playRect.x, y: playRect.y, button: 'left', clickCount: 1 });
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: playRect.x, y: playRect.y, button: 'left', clickCount: 1 });
+
+            // 実際にAudioWorkletが音声フレームを描画し始めた(=スナップショットリングに
+            // データが流れ始めた)ことを実測で待つ(固定sleepにしない)。
+            await pollUntil(cdp, `
+              Boolean(window.mucomAudioState && window.mucomAudioState.playback &&
+                !window.mucomAudioState.paused && window.mucomAudioState.stats &&
+                window.mucomAudioState.stats.renderedFrames > 0)
+            `, { timeoutMs: 8000, label: 'mucom playback rendering frames' });
+
+            // 数フレーム描画させ、FMDSPが実際のトラック状態を表示するまで待つ
+            // (rAFカウンタで実測。固定sleepにしない)。
+            const rafBeforePlay = await cdp.evaluate('window.__rafCount');
+            await pollUntil(cdp, `window.__rafCount > ${rafBeforePlay} + 10`, { timeoutMs: 4000, label: 'fmdsp redraw after play' });
+
+            // FM2(トラック行index1)をクリックしてミュートする。canvas内部座標
+            // (fmdsp/trackrow.js TRACK_H=32、fmdsp/track-click.js trackRowIndexAt)の
+            // 行1の中心(y=48)を、canvasの表示サイズへ変換してクリックする。
+            const muteClickPoint = await cdp.evaluate(`
+              (() => {
+                const cv = document.getElementById('fmdsp-canvas');
+                const r = cv.getBoundingClientRect();
+                const canvasX = 160, canvasY = 48; // TRACK_H*1+16 = 行index1(FM2)の中心
+                return {
+                  x: r.left + canvasX * (r.width / cv.width),
+                  y: r.top + canvasY * (r.height / cv.height),
+                };
+              })()
+            `);
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: muteClickPoint.x, y: muteClickPoint.y, button: 'left', clickCount: 1 });
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: muteClickPoint.x, y: muteClickPoint.y, button: 'left', clickCount: 1 });
+
+            // ミュートの反映(vram.setTier→再描画)を数フレーム待つ。
+            const rafBeforeMute = await cdp.evaluate('window.__rafCount');
+            await pollUntil(cdp, `window.__rafCount > ${rafBeforeMute} + 5`, { timeoutMs: 4000, label: 'fmdsp redraw after mute click' });
+
+            const muteStageBox = await cdp.evaluate(`
+              (() => {
+                const el = document.getElementById('stage');
+                const r = el.getBoundingClientRect();
+                return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+              })()
+            `);
+            await checkJaLeak('fmdsp-mute');
+            const { colorCount: muteColorCount } = await shoot('fmdsp-mute', muteStageBox, 'fmdsp-mute.png');
+            notes.push(`[INFO] fmdsp-mute.png colorCount=${muteColorCount}(FM1=通常/FM2=ミュート/他8行=未使用が同時に写っているはず)`);
+          } catch (e) {
+            notes.push(`[WARN] fmdsp-mute.png の生成に失敗した(理由: ${e.message})。この画像は追加できなかった。`);
+          }
+        }
       } finally {
         try { await cdp.send('Page.close'); } catch {}
         try { ws.close(); } catch {}

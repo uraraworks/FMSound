@@ -131,10 +131,13 @@
       <div class="help-shot">
         <img src="./help/fmdsp.png" alt="FMDSP風のパート表示画面。左にパートごとの音色・音程等の一覧、右にスペクトラムアナライザとレベルメーター">
       </div>
-      <p>パートの行をクリックするとそのパートだけミュートできます。もう一度クリックすると解除します(ソロ再生機能はありません)。ミュート中の行は、PLAY/STOP表示などで使っている「非アクティブ」の暗い色になり、一目で分かります。ミュート中はパート行の鍵盤ハイライトも暗くなります。曲を読み込み直すとミュートは全て解除されます。マウス操作のみに対応しており、キーボードからの操作には未対応です。</p>
-      <p>リズムパートはパート行を持たないため、右側のレベルメーター(FM1〜PPZ、RHYの列)をクリックしてミュートします。FM1〜SSG3・ADPCMの列はパート行のミュートと同じ状態を指しており、どちらから操作しても表示・音とも連動します(PPZの列はミュート非対応です)。ミュート中の列はPANPOT表示が暗い色に変わります。</p>
+      <p>パートの行をクリックするとそのパートだけミュートできます。もう一度クリックすると解除します(ソロ再生機能はありません)。ミュート中の行は元の色そのままの暗い版になるので(色は変わらず暗さだけが変わります)、一目で分かります。ミュート中はパート行の鍵盤ハイライトも同じ調子で暗くなります。曲を読み込み直すとミュートは全て解除されます。マウス操作のみに対応しており、キーボードからの操作には未対応です。</p>
+      <p>リズムパートはパート行を持たないため、右側のレベルメーター(FM1〜PPZ、RHYの列)をクリックしてミュートします。FM1〜SSG3・ADPCMの列はパート行のミュートと同じ状態を指しており、どちらから操作しても表示・音とも連動します(PPZの列はミュート非対応です)。ミュート中の列はPANPOT表示も同じ調子で暗くなります。</p>
       <p>マウスカーソルをミュートできる場所(パート行・レベルメーターの列)に重ねると、そこだけ枠が表示され、クリックすると何が消えるかを押す前に確認できます。ミュートできない場所(PPZの列など)には枠が出ません。</p>
-      <p>パート表示は「通常(明るい)」「ミュート中(暗い)」「曲が使っていない(さらに暗い)」の3段階で色分けされます。「曲が使っていない」は、利用者が消したのではなく曲データ自体にそのパートの演奏内容が無いことを表します。MUCOM88はMMLをコンパイルした時点で常にこの判定ができます。PMDはこのアプリでMMLを直接コンパイルして再生した場合のみ判定できます(あらかじめコンパイル済みの.M/.mファイルを「曲を開く」で読み込んだ場合は、曲データから使用状況を調べる手段が無いため、この段階は使われず通常の2段階(通常/ミュート)のままになります)。</p>
+      <p>パート表示は「通常(明るい)」「ミュート中(半分の明るさ)」「曲が使っていない(4分の1の明るさ)」の3段階で色分けされます。色そのものは変えず明るさだけを落とす方式なので、暗くなっても元と同じ色(緑は暗い緑、青は暗い青)に見えます。「曲が使っていない」は、利用者が消したのではなく曲データ自体にそのパートの演奏内容が無いことを表します。MUCOM88はMMLをコンパイルした時点で常にこの判定ができます。PMDはこのアプリでMMLを直接コンパイルして再生した場合のみ判定できます(あらかじめコンパイル済みの.M/.mファイルを「曲を開く」で読み込んだ場合は、曲データから使用状況を調べる手段が無いため、この段階は使われず通常の2段階(通常/ミュート)のままになります)。</p>
+      <div class="help-shot">
+        <img src="./help/fmdsp-mute.png" alt="曲を再生しながら1パートをミュートしたFMDSP画面。ミュートしていないFM1の行は明るく、クリックでミュートしたFM2の行は半分の明るさ、曲が使っていない残り8行はさらに暗い4分の1の明るさになっている">
+      </div>
     </div>
     <div data-lang="en" data-help-section="screen">
       <h2>Reading the screen</h2>
@@ -142,10 +145,13 @@
       <div class="help-shot">
         <img src="./help/fmdsp.png" alt="The FMDSP-style part display: a per-part list of voice/pitch/etc. on the left, spectrum analyzer and level meters on the right">
       </div>
-      <p>Click a part's row to mute just that part; click it again to unmute (there's no solo function). A muted row switches to the same dim "inactive" color used elsewhere on screen (e.g. the PLAY/STOP indicators), so it's easy to spot at a glance. The row's keyboard highlight dims too while muted. Reloading a song clears all mutes. This only works with mouse/touch clicks — keyboard control isn't supported yet.</p>
-      <p>The rhythm part has no row of its own, so mute it by clicking its column in the level meters on the right (the RHY column). The FM1–SSG3/ADPCM columns share the same mute state as their part rows — muting from either side updates both the display and the sound (the PPZ columns don't support muting). A muted column's PANPOT indicator switches to the dim color too.</p>
+      <p>Click a part's row to mute just that part; click it again to unmute (there's no solo function). A muted row keeps its original colors but dims them (the hue stays the same, only the brightness drops), so it's easy to spot at a glance that the same part just went dark. The row's keyboard highlight dims the same way while muted. Reloading a song clears all mutes. This only works with mouse/touch clicks — keyboard control isn't supported yet.</p>
+      <p>The rhythm part has no row of its own, so mute it by clicking its column in the level meters on the right (the RHY column). The FM1–SSG3/ADPCM columns share the same mute state as their part rows — muting from either side updates both the display and the sound (the PPZ columns don't support muting). A muted column's PANPOT indicator dims the same way.</p>
       <p>Hovering the mouse over anything you can mute (a part row or a level-meter column) draws an outline around it, so you can see what will go silent before you click. Spots that can't be muted (like the PPZ columns) never get an outline.</p>
-      <p>Parts are shown in three brightness levels: normal (bright), muted (dim), and "unused by this song" (dimmer still). "Unused" means the song data itself never plays that part — it's not something you muted. MUCOM88 can always tell this once the MML is compiled. PMD can only tell when you compile and play MML directly in this app; if you "Open song" on an already-compiled .M/.m file, there's no way to inspect what the song data actually uses, so that file falls back to the plain two-level display (normal/muted).</p>
+      <p>Parts are shown in three brightness levels: normal (full brightness), muted (half brightness), and "unused by this song" (quarter brightness). The colors themselves never change — only the brightness does — so a dimmed part still looks like the same color (a dim green stays green, a dim blue stays blue), just darker. "Unused" means the song data itself never plays that part — it's not something you muted. MUCOM88 can always tell this once the MML is compiled. PMD can only tell when you compile and play MML directly in this app; if you "Open song" on an already-compiled .M/.m file, there's no way to inspect what the song data actually uses, so that file falls back to the plain two-level display (normal/muted).</p>
+      <div class="help-shot">
+        <img src="./help/fmdsp-mute.png" alt="The FMDSP screen while a song plays with one part muted. The unmuted FM1 row is at full brightness, the FM2 row (muted by clicking it) is at half brightness, and the remaining 8 rows the song doesn't use are dimmer still, at quarter brightness">
+      </div>
     </div>
   </section>
 
