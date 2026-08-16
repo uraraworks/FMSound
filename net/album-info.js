@@ -36,6 +36,12 @@ export function albumGroupPathFor(entryPath) {
  * アルバムの表示ラベルを決める。d88単位のアルバムは `MML_` 接頭辞と `.d88` 拡張子を
  * 落として素のラベル(例: "BOSCONIAN")にする。groupPathが無い(=書庫全体が1アルバム)
  * 場合は書庫自体の表示名(archiveLabel、通常はURL末尾のファイル名)をそのまま使う。
+ *
+ * `MML_<ラベル>.d88` の命名規則に乗らないd88(例: システムディスクの
+ * `MUCOM88_V1.7_BOSCONIAN.d88`)は、規則付きのアルバムと見た目を揃えるため
+ * 少なくとも拡張子 `.d88` だけは落とす(利用者指示、2026-08-16: 「実害は無いが
+ * 一覧で不揃い」。それ以上は加工しない。中身はドライバ付属のサンプル曲そのものなので、
+ * 生名のまま区別がつくほうが親切という判断)。
  * @param {string[] | null} groupPath
  * @param {string} archiveLabel
  */
@@ -43,7 +49,8 @@ export function albumLabelFor(groupPath, archiveLabel) {
   if (!groupPath || groupPath.length === 0) return archiveLabel;
   const seg = groupPath[groupPath.length - 1];
   const m = /^MML_(.+)\.d88$/i.exec(seg);
-  return m ? m[1] : seg;
+  if (m) return m[1];
+  return seg.replace(/\.d88$/i, '');
 }
 
 /** 正規表現の特殊文字をエスケープする(ディスクラベルをそのままRegExpへ埋め込むため)。 @param {string} s */

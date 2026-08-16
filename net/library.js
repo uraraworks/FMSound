@@ -11,6 +11,9 @@
 // FMSound内部専用の符号化に閉じず、素直な構造(ドライバ種別・曲名・出所・生バイト列)
 // のままにしてある。`schemaVersion` を持たせ、将来のマイグレーションに備える。
 
+import { albumGroupPathFor, resolveTrackInfo } from './album-info.js';
+import { decodeMmlBytes } from './charset.js';
+
 const DB_NAME = 'fmsound-library';
 const DB_VERSION = 1;
 const STORE_NAME = 'fmsound-songs';
@@ -106,15 +109,57 @@ export function hashBytes(bytes) {
  * @returns {Promise<string>} 保存したレコードのid
  */
 export async function saveSong(db, input) {
-  const id = computeSongId(input.origin, input.fileName);
-  const contentHash = hashBytes(input.bytes);
   const tx = db.transaction(STORE_NAME, 'readwrite');
   const store = tx.objectStore(STORE_NAME);
+  const { id } = await upsertOne(store, input, Date.now());
+  return id;
+}
+
+/**
+ * 曲をまとめて保存する(1トランザクションで書く)。書庫を開いた時点でその中の全曲を
+ * 一括取り込みする用途(利用者指示: 「再生した曲だけ」では2度目以降にアルバムを開いても
+ * 1曲しか出ない不備があったため、書庫を開いた時点で全曲を入れる仕様に変更した)。
+ *
+ * 55曲程度でもUIを固めないため、1件ずつ新しいトランザクションを開かず(saveSong()を
+ * 55回呼ぶと55個のトランザクションが立つ)、1つのトランザクション内で
+ * get→(必要なら)put を曲数ぶん直列に行う。IndexedDBのリクエストは非同期
+ * (完了はイベントループに戻ってから通知される)なので、直列にawaitしてもメインスレッドの
+ * 描画をブロックしない。
+ *
+ * 重複判定・上書き規則はsaveSong()と同じ(computeSongId()による同一性判定 + 内容ハッシュ
+ * が変わっていなければ書き込み自体を省略)。
+ * @param {IDBDatabase} db @param {object[]} inputs saveSong()と同じ形の入力の配列
+ * @returns {Promise<{ ids: string[], addedCount: number, unchangedCount: number }>}
+ */
+export async function saveSongs(db, inputs) {
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const store = tx.objectStore(STORE_NAME);
+  const now = Date.now();
+  const ids = [];
+  let addedCount = 0;
+  let unchangedCount = 0;
+  for (const input of inputs) {
+    const { id, wasWritten } = await upsertOne(store, input, now);
+    ids.push(id);
+    if (wasWritten) addedCount++;
+    else unchangedCount++;
+  }
+  return { ids, addedCount, unchangedCount };
+}
+
+/**
+ * saveSong()/saveSongs()共通の1件分の更新処理。同じstore(=同じトランザクション)を
+ * 使い回せるよう、トランザクションの開始はここでは行わない(呼び出し側の責務)。
+ * @param {IDBObjectStore} store @param {object} input @param {number} now
+ * @returns {Promise<{ id: string, wasWritten: boolean }>}
+ */
+async function upsertOne(store, input, now) {
+  const id = computeSongId(input.origin, input.fileName);
+  const contentHash = hashBytes(input.bytes);
   const existing = await promisifyRequest(store.get(id));
   if (existing && existing.contentHash === contentHash) {
-    return existing.id; // 内容が変わっていない再取り込みは書き込みを省略する
+    return { id: existing.id, wasWritten: false }; // 内容が変わっていない再取り込みは書き込みを省略する
   }
-  const now = Date.now();
   const record = {
     schemaVersion: RECORD_SCHEMA_VERSION,
     id,
@@ -130,7 +175,73 @@ export async function saveSong(db, input) {
     updatedAt: now,
   };
   await promisifyRequest(store.put(record));
-  return id;
+  return { id, wasWritten: true };
+}
+
+/**
+ * MMLテキストの `#<field>` 行(大文字小文字無視。MUCOM88の`#title`/PMDテキストの
+ * `#Title`等どちらも拾える)から値を取り出す。html/net-load.jsの同名ヘルパーと同じ規則
+ * (小さいので重複を許容し、net/をDOM非依存・html/への依存無しに保つ)。
+ * @param {Uint8Array} bytes @param {string} field
+ */
+function mmlHeaderField(bytes, field) {
+  let text;
+  try {
+    ({ text } = decodeMmlBytes(bytes));
+  } catch {
+    return null;
+  }
+  const re = new RegExp(`^[ \\t]*#${field}[ \\t]+(.+?)[ \\t]*$`, 'im');
+  const m = re.exec(text);
+  return m ? m[1].trim() || null : null;
+}
+
+/**
+ * 書庫を開いた時点で、その中の(指定ドライバの)曲を全部まとめて保存する。
+ *
+ * 利用者指示(2026-08-16): 以前は「実際に再生した1曲だけ」を保存していたため、
+ * 一度も再生していない曲がライブラリに出てこず、「2度目以降にアルバムから曲を選ぶ」
+ * という目的を果たせていなかった。書庫を開いた時点(=候補一覧が出た時点、実際に
+ * どれを再生するか選ぶ前)で、その書庫内の全曲をまとめて取り込む。
+ *
+ * 55曲程度でもUIを固めないよう、saveSongs()で1トランザクションにまとめて書く。
+ * 重複判定(computeSongId()+内容ハッシュ)はsaveSong()/saveSongs()と共通なので、
+ * 同じ書庫を2回取り込んでも件数は増えない。
+ *
+ * DOM非依存(net/album-info.js・net/charset.jsのみに依存)なので、tools/verify_library.mjs
+ * から直接検証できる。html/net-load.js側は「dbが省略されたらブラウザ既定のIndexedDBを
+ * 使う」薄いラッパー(importArchiveSongsToLibrary())を持つだけにしてある。
+ * @param {IDBDatabase | null} db nullなら何もせず{total, added:0, unchanged:0}を返す
+ *   (IndexedDBが使えない環境向け。ui/mml-draft.jsのlocalStorage同様、保存できないだけで
+ *   再生自体は継続する)。
+ * @param {{ driver: 'mucom'|'pmd', url: string,
+ *   entries: import('./archive-util.js').ArchiveEntry[], archiveLabel: string,
+ *   candidates: import('./song-select.js').SongCandidate[] }} input
+ * @returns {Promise<{ total: number, added: number, unchanged: number }>}
+ */
+export async function importArchiveSongs(db, input) {
+  const { driver, url, entries, archiveLabel, candidates } = input;
+  const total = candidates.length;
+  if (!db) return { total, added: 0, unchanged: 0 };
+  const inputs = candidates.map((c) => {
+    const groupPath = albumGroupPathFor(c.entry.name);
+    const trackInfo = resolveTrackInfo(entries, c.entry.name);
+    // 曲名の優先順位: MMLヘッダ(#title/#Title、読み込んだ生バイト列から直接判定) >
+    // trackInfo(LIST_*.txt由来) > null(呼び出し側はファイル名を表示する)。
+    const title = mmlHeaderField(c.entry.data, 'title') ?? trackInfo.trackTitle ?? null;
+    const composer = mmlHeaderField(c.entry.data, 'composer') ?? trackInfo.composer ?? null;
+    return {
+      driver,
+      fileName: c.displayName,
+      title,
+      composer,
+      trackNumber: trackInfo.trackNumber ?? null,
+      origin: { kind: 'url', url, archiveName: archiveLabel, groupPath, entryPath: c.entry.name },
+      bytes: c.entry.data,
+    };
+  });
+  const { addedCount, unchangedCount } = await saveSongs(db, inputs);
+  return { total, added: addedCount, unchanged: unchangedCount };
 }
 
 /** @param {IDBDatabase} db @returns {Promise<object[]>} 保存済みの全曲(未加工) */

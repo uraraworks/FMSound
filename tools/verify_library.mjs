@@ -26,6 +26,15 @@
 //       実際にzipを展開してアルバム分割・トラック名解決の結果を報告する
 //       (tools/verify_d88.mjs / verify_mucom_voice_name.mjs と同じ作法で、未設定なら
 //       明示的にスキップする)。
+//   (i) 利用者指示(2026-08-16): 書庫を開いた時点で(1曲も再生せずに)中の全曲が
+//       ライブラリへ入ること(net/library.js importArchiveSongs())。
+//       修正前の実装(「実際に選ばれた1曲だけ」保存)を模した壊れた版を先に用意し、
+//       それがこの検査で実際にFAILすることを確認してから(陽性対照)、
+//       現在の実装(全曲を1トランザクションで一括保存)がPASSすることを確認する。
+//       同じ書庫を2回取り込んでも重複しないこと、55曲程度でも同期的に固まらず
+//       完了することも合わせて確認する。
+//   (j) net/album-info.js albumLabelFor(): `MML_<ラベル>.d88` の命名規則に乗らない
+//       d88(システムディスク等)でも、少なくとも拡張子`.d88`は落ちること。
 //
 // 実行: node tools/verify_library.mjs
 //       MCM_SAMPLE_ZIP=/path/to/mcm.zip node tools/verify_library.mjs (実データ検証込み)
@@ -34,7 +43,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   openLibraryDb, saveSong, listSongs, deleteSong, clearAllSongs,
-  computeSongId, hashBytes, groupSongsIntoAlbums,
+  computeSongId, hashBytes, groupSongsIntoAlbums, importArchiveSongs,
 } from '../net/library.js';
 import { parseTrackList, albumGroupPathFor, albumLabelFor, resolveTrackInfo } from '../net/album-info.js';
 
@@ -389,6 +398,105 @@ async function testRealArchiveIfAvailable() {
     resolvedCount === 46, `拾えた=${resolvedCount}`);
   check('実データ: MUCOM88_V1.7_*.d88由来の9曲はLIST_*.txtが無いためファイル名にフォールバックする(無理に当てない)',
     fallbackCount === 9, `フォールバック=${fallbackCount}`);
+  // 利用者指示(2026-08-16): 規則に乗らないアルバム(MUCOM88_V1.7_*.d88由来)でも
+  // 見た目を揃えるため、少なくとも拡張子は落ちていること(ラベルに".d88"が残っていないこと)。
+  const labelsWithD88Ext = albums.map((a) => a.label).filter((label) => /\.d88$/i.test(label));
+  check('実データ: どのアルバムラベルにも".d88"拡張子が残っていない', labelsWithD88Ext.length === 0, JSON.stringify(labelsWithD88Ext));
+}
+
+// --- (j) albumLabelFor(): 命名規則に乗らないd88でも拡張子だけは落ちること -----------------
+
+function testAlbumLabelExtensionStrip() {
+  check('albumLabelFor(): MML_接頭辞規則に乗る場合は従来どおり(回帰確認)',
+    albumLabelFor(['MML_BOSCONIAN.d88'], 'archive.zip') === 'BOSCONIAN');
+  check('albumLabelFor(): 規則に乗らないd88(システムディスク等)でも".d88"拡張子は落ちる',
+    albumLabelFor(['MUCOM88_V1.7_BOSCONIAN.d88'], 'archive.zip') === 'MUCOM88_V1.7_BOSCONIAN');
+  check('albumLabelFor(): 大文字小文字を問わず拡張子を落とす', albumLabelFor(['FOO.D88'], 'archive.zip') === 'FOO');
+}
+
+// --- (i) 書庫を開いた時点で全曲がライブラリへ入ること(net/library.js importArchiveSongs()) ---
+//
+// 修正前(利用者報告、2026-08-16実測): 「?mml=で書庫を開いて55曲の一覧が出た時点では
+// 保存件数0、そこから1曲選ぶと1件だけ入る」という不備があった。これを再現した
+// 「選ばれた曲だけを保存する」壊れた実装を先に用意し、それがこの検査で実際にFAILする
+// ことを確認してから(陽性対照)、現在の実装(候補全部を1トランザクションで一括保存)が
+// PASSすることを確認する。
+
+/** 修正前の挙動を模した「選ばれた1曲だけ保存する」実装(陽性対照専用、意図的に壊れている)。 */
+async function brokenImportOnlyFirstCandidate({ driver, url, entries, archiveLabel, candidates }, db) {
+  const first = candidates[0];
+  const trackInfo = resolveTrackInfo(entries, first.entry.name);
+  await saveSong(db, {
+    driver,
+    fileName: first.displayName,
+    title: trackInfo.trackTitle,
+    composer: trackInfo.composer,
+    trackNumber: trackInfo.trackNumber,
+    origin: { kind: 'url', url, archiveName: archiveLabel, groupPath: albumGroupPathFor(first.entry.name), entryPath: first.entry.name },
+    bytes: first.entry.data,
+  });
+  return { total: candidates.length, added: 1, unchanged: 0 };
+}
+
+function makeSyntheticArchiveCandidates(count) {
+  const candidates = [];
+  for (let i = 1; i <= count; i++) {
+    const fileName = `song${String(i).padStart(2, '0')}.muc`;
+    candidates.push({
+      driver: 'mucom',
+      displayName: fileName,
+      entry: { name: `MML_SYNTH.d88/${fileName}`, data: new TextEncoder().encode(`A T120 o5 l4 v${i} cdefg`) },
+    });
+  }
+  return candidates;
+}
+
+async function testBulkArchiveImport() {
+  const candidates = makeSyntheticArchiveCandidates(55); // 実データ(MCM_sample_20190124.zip)と同じ規模で確認する
+  const archiveInput = { driver: 'mucom', url: 'https://example.com/synth.zip', entries: [], archiveLabel: 'synth.zip', candidates };
+
+  // 陽性対照: 修正前の実装(選ばれた1曲だけ保存)を通すと、この検査は実際にFAILすること。
+  {
+    const fakeIdb = new FakeIDBFactory();
+    const db = await openLibraryDb(fakeIdb);
+    await brokenImportOnlyFirstCandidate(archiveInput, db);
+    const songs = await listSongs(db);
+    check('陽性対照: 修正前の実装(選ばれた1曲だけ保存)ではこの検査は失敗する(55曲中1曲しか入らない)',
+      songs.length !== candidates.length, `件数=${songs.length}(期待は${candidates.length}との不一致)`);
+  }
+
+  // 本題: 現在の実装(importArchiveSongs())は書庫を開いた時点で全曲を保存する。
+  const fakeIdb = new FakeIDBFactory();
+  const db = await openLibraryDb(fakeIdb);
+  const beforeImport = await listSongs(db);
+  check('陽性対照(前半): 取り込み前は0件', beforeImport.length === 0);
+
+  const started = Date.now();
+  const result1 = await importArchiveSongs(db, archiveInput);
+  const elapsedMs = Date.now() - started;
+  const afterImport = await listSongs(db);
+  check('書庫を開いた時点で(1曲も選ばずに)全曲がライブラリへ入る',
+    afterImport.length === candidates.length, `件数=${afterImport.length}/${candidates.length}`);
+  check('importArchiveSongs()の戻り値のtotal/addedが一致する',
+    result1.total === candidates.length && result1.added === candidates.length,
+    JSON.stringify(result1));
+  console.log(`[INFO] 55曲一括取り込みの所要時間: ${elapsedMs}ms(フェイクIndexedDB、参考値)`);
+
+  // 重複判定は既存のまま効く: 同じ書庫をもう一度開いても件数が増えない。
+  const result2 = await importArchiveSongs(db, archiveInput);
+  const afterSecondImport = await listSongs(db);
+  check('同じ書庫を2回取り込んでも件数が増えない(重複判定が効いている)',
+    afterSecondImport.length === candidates.length, `件数=${afterSecondImport.length}`);
+  check('2回目の取り込みはaddedが0(既に同一内容のため書き込みを省略)', result2.added === 0 && result2.unchanged === candidates.length,
+    JSON.stringify(result2));
+
+  // アルバムに組み立てても全曲が1アルバムにまとまっていること(2度目以降にアルバムを
+  // 開けば全曲選べる、という当初の目的が満たされていることの確認)。
+  const albums = groupSongsIntoAlbums(afterImport);
+  const synthAlbum = albums.find((a) => a.label === 'SYNTH');
+  check('取り込んだ全曲が1つのアルバム(SYNTH)にまとまっている',
+    Boolean(synthAlbum) && synthAlbum.songs.length === candidates.length,
+    `${synthAlbum?.songs.length ?? 0}/${candidates.length}`);
 }
 
 // --- 実行 --------------------------------------------------------------------------
@@ -398,6 +506,8 @@ testComputeSongId();
 testHashBytes();
 testGroupSongsIntoAlbums();
 testParseTrackListSynthetic();
+testAlbumLabelExtensionStrip();
+await testBulkArchiveImport();
 await testRealArchiveIfAvailable();
 
 console.log('---');

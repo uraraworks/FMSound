@@ -27,7 +27,7 @@ import { createDownloadMenu } from './ui/download-menu.js';
 import { setupPopover } from './ui/shell.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
-  describeArchiveSongOrigin, persistSongToLibrary, getLibraryDb, urlBaseName,
+  persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
@@ -1099,6 +1099,22 @@ export async function init(ctx) {
         );
         return;
       }
+      // 自動取り込み(利用者指示、2026-08-16): 「実際に再生した曲だけ」では2度目以降に
+      // アルバムを開いても1曲しか出ない不備があったため、書庫を開いた時点(=候補一覧が
+      // 出た時点、どれを再生するか選ぶ前)でこの書庫内の全曲をライブラリへ一括取り込みする。
+      // 55曲程度でもUIを固めないよう1トランザクションで書く(net/library.js saveSongs())。
+      // 重複判定は既存のまま(computeSongId()+内容ハッシュ)なので、同じ書庫を2回開いても
+      // 増えない。取り込み件数はネット状態表示(下のpickSongCandidate()モーダルの裏に
+      // 見えたままになる)で利用者に伝える。
+      const importResult = await importArchiveSongsToLibrary({
+        driver: 'mucom', url, entries: resolved.entries, archiveLabel: resolved.archiveLabel, candidates: mucomCandidates,
+      });
+      if (importResult.added > 0) {
+        setNetStatus(`${importResult.total}曲をライブラリに追加しました`, false);
+      } else if (importResult.total > 0) {
+        setNetStatus(`${importResult.total}曲は既にライブラリにあります`, false);
+      }
+
       let chosen = mucomCandidates[0];
       if (mucomCandidates.length > 1) {
         chosen = await pickSongCandidate(mucomCandidates);
@@ -1109,10 +1125,6 @@ export async function init(ctx) {
       }
       applyMmlBytes(chosen.entry.data, { name: chosen.displayName });
       setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
-      // 自動取り込み: 書庫からの曲選択もそのままライブラリへ残す。アルバム(d88単位)/
-      // トラック名(LIST_*.txt由来)の解決はdescribeArchiveSongOrigin()に委ねる。
-      const { origin, trackInfo } = describeArchiveSongOrigin(url, resolved.entries, resolved.archiveLabel, chosen.entry.name);
-      persistSongToLibrary({ driver: 'mucom', bytes: chosen.entry.data, fileName: chosen.displayName, origin, trackInfo });
       return;
     }
 
