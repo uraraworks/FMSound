@@ -23,13 +23,31 @@
 //   (e) 陽性対照: トラックオフセット表を潰す/FATを0埋めする、をそれぞれ与えて
 //       検証(readD88Directory/readD88FileBytes)が異常を検出できることを確認する
 //       (常にPASSする検査になっていないことの証明。これは必須項目)
+//   (f) ファイル名復元: "VOICE.1"(空白トリム後ドット連結)・"sq1_103"(名前の続きとして
+//       ドット無し連結)が正しい形で出る
+//   (g) net/archive.js への配線: zipを1つ渡すとd88の入れ子展開が効いて46曲並ぶこと、
+//       d88のマジック(構造)判定が効くこと、zip/lzhをd88と誤判定しないこと
+//   (h) 曲の選り分け: システムディスクのドライバ/DOSファイル(VOICE.n、muc88等)が
+//       曲一覧に入らないこと。陽性対照として、実際にVOICE.nのバイナリを故意に
+//       decodeBasicMmlText相当のゆるい判定に通すとMMLと誤判定されていた実測の
+//       回帰(修正前バグの再現)も残す
 //
 // 実行: MCM_SAMPLE_ZIP=/path/to/mcm.zip node tools/verify_d88.mjs
 
 import { readFileSync } from 'node:fs';
 
-import { extractArchive } from '../net/archive.js';
-import { readTrackOffsets, readD88Directory, readD88Fat, followFatChain, readD88MmlText } from '../net/d88.js';
+import { extractArchive, isArchive, sniffArchiveExtension } from '../net/archive.js';
+import { extractZip } from '../net/zip.js';
+import { findSongCandidates } from '../net/song-select.js';
+import {
+  readTrackOffsets,
+  readD88Directory,
+  readD88Fat,
+  followFatChain,
+  readD88MmlText,
+  looksLikeD88,
+  looksLikeMucomMmlText,
+} from '../net/d88.js';
 
 let failed = 0;
 let passed = 0;
@@ -50,7 +68,10 @@ if (!zipPath) {
 }
 
 const zipBytes = new Uint8Array(readFileSync(zipPath));
-const zipEntries = await extractArchive(/\.zip$/i.test(zipPath) ? zipPath : `${zipPath}.zip`, zipBytes);
+// (a)〜(f)はd88ファイル単体の中身を直接扱う検証なので、展開は1段だけ(zip直下のd88を
+// エントリとしてそのまま持つ)のextractZip()を使う。入れ子展開込みのextractArchive()の
+// 結果は(g)以降の「archive.jsへの配線」自体を検証するために別途使う(下記nestedEntries)。
+const zipEntries = await extractZip(zipBytes);
 console.log(`zipエントリ数: ${zipEntries.length}`);
 
 /** @param {string} suffix */
@@ -76,14 +97,12 @@ function parseListNames(text) {
 // LIST_Etrian_Odyssey.txt側の既知の表記ゆれ(l/1混同)を吸収するための正規化。
 // ディスク上の実ファイル名側・LIST側の双方に対して対称に適用するので、
 // どちらか一方だけを都合よく書き換えて一致させているわけではない。
-// N88-BASICディレクトリのファイル名は「名前6バイト+拡張子3バイト」の固定長フィールドで、
-// 実際のバイト列には区切り文字(.)は存在しない(readD88Directory()が表示用に補っているだけ)。
-// 6文字を超える曲名(例: "sq1_103")は名前フィールドに収まらず拡張子フィールドへあふれるため、
-// 本来ドットの無い名前でも "sq1_10.3" のように見えてしまう。これは抽出結果の誤りではなく
-// 固定長フィールドの表示上の曖昧さなので、比較時はドットも取り除いて正規化する。
+// ドットの正規化は不要(readD88Directory()が名前フィールドの空白有無を見て
+// 正しくドット有り/無しを復元するようになったため。tools/verify_d88.mjsの
+// 「ファイル名復元」検査参照)。
 /** @param {string} name */
 function normalizeName(name) {
-  return name.toLowerCase().replace(/l/g, '1').replace(/\./g, '');
+  return name.toLowerCase().replace(/l/g, '1');
 }
 
 const mmlDisks = zipEntries
@@ -91,6 +110,25 @@ const mmlDisks = zipEntries
   .map((e) => ({ name: e.name, diskLabel: e.name.match(/MML_(.+)\.d88$/i)[1] }));
 
 check('MML_*.d88が見つかる', mmlDisks.length > 0, `${mmlDisks.length}枚`);
+
+// --- ファイル名復元: 固定長フィールドの空白トリム/ドット連結規則 ---------------------
+// VOICE.1 … 名前フィールドに空白の余りがあるので拡張子は本来の拡張子(ドットで連結)。
+// sq1_103 … 名前フィールド6バイトを空白無しで使い切っているので拡張子は名前の続き
+//           (実データにドットは無い。ドット無しで連結)。
+{
+  const sysEntry = zipEntries.find((e) => /MUCOM88_V1\.5_ACTRAISER\.d88$/i.test(e.name));
+  check('ファイル名復元: システムディスクが見つかる(ACTRAISER)', Boolean(sysEntry));
+  if (sysEntry) {
+    const names = readD88Directory(sysEntry.data, readTrackOffsets(sysEntry.data)).map((e) => e.fileName);
+    check('ファイル名復元: "VOICE.1" が正しい形で出る(空白トリム後ドット連結)', names.includes('VOICE.1'), JSON.stringify(names.filter((n) => n.toLowerCase().startsWith('voice'))));
+  }
+  const etrianEntry = zipEntries.find((e) => /MML_Etrian_Odyssey\.d88$/i.test(e.name));
+  check('ファイル名復元: Etrian Odysseyディスクが見つかる', Boolean(etrianEntry));
+  if (etrianEntry) {
+    const names = readD88Directory(etrianEntry.data, readTrackOffsets(etrianEntry.data)).map((e) => e.fileName);
+    check('ファイル名復元: "sq1_103" が正しい形で出る(ドット無しで名前の続きとして連結)', names.includes('sq1_103'), JSON.stringify(names));
+  }
+}
 
 let totalSongs = 0;
 let totalListSongs = 0;
@@ -264,6 +302,137 @@ check(`合計曲数が46と一致 (LIST側)`, totalListSongs === 46, `実測=${t
   // 破壊していない元バイト列でもう一度確認(壊れていない状態で正常にPASSすることの再確認)。
   const reconfirmedText = readD88MmlText(goodBytes, 'bare12');
   check('陽性対照後の再確認: 正常なバイト列ではbare12が引き続き10行で読める', reconfirmedText.split('\n').length === 10);
+}
+
+// --- (g) net/archive.js への配線: isArchive/sniffArchiveExtension/extractArchive ----
+
+check('isArchive: .d88 を書庫として認識する', isArchive('foo.d88') && isArchive('FOO.D88'));
+
+// extractArchive(zipPath, zipBytes) は入れ子展開込み(zip -> d88 -> 曲)の結果を返す。
+// (a)〜(f)で使ったzipEntries(extractZipのみ、d88は未展開)とは別に、ここでは
+// archive.js自体の配線(isArchive/sniffArchiveExtension/extractArchiveの入れ子展開)を
+// 検証するため、extractArchive()経由の結果をnestedEntriesとして取得する。
+const nestedEntries = await extractArchive(/\.zip$/i.test(zipPath) ? zipPath : `${zipPath}.zip`, zipBytes);
+console.log(`入れ子展開後のエントリ数: ${nestedEntries.length}`);
+
+{
+  const nestedNames = nestedEntries.filter((e) => /\.d88\//i.test(e.name));
+  check(
+    '入れ子展開: エントリ名がd88のパスを含む形になっている(例 MML_BOSCONIAN.d88/xxxx)',
+    nestedNames.length > 0,
+    nestedNames[0] && nestedNames[0].name,
+  );
+  // 入れ子展開後の一覧には、もはや展開前のd88そのもの(拡張子.d88のエントリ)は残らない
+  // (2段までの入れ子上限内で全て展開し尽くされているはず)。
+  const rawD88Left = nestedEntries.filter((e) => /\.d88$/i.test(e.name));
+  check('入れ子展開: 展開済みのd88自体は一覧に残らない(2段の入れ子で辿りきれている)', rawD88Left.length === 0, JSON.stringify(rawD88Left.map((e) => e.name)));
+
+  // zipを1つ渡したら46曲(MMLディスク側の曲)が並ぶこと。システムディスク同梱のsampl1〜3も
+  // 内容的に正しいMMLなので曲として並ぶ(46 + システムディスク3枚分のsampl1〜3=9 で55件)。
+  const nestedSongs = findSongCandidates(nestedEntries);
+  const mmlDiskSongs = nestedSongs.filter((s) => /\/MML_.*\.d88\//i.test(s.entry.name));
+  check('zipから46曲(MML_*.d88由来)が並ぶ', mmlDiskSongs.length === 46, `実測=${mmlDiskSongs.length}`);
+}
+
+{
+  // d88のマジック(構造)判定: zip全体の生バイト列そのものから直接d88を切り出して確認する。
+  const rawEntries = await extractZip(zipBytes);
+  const bosconianD88 = rawEntries.find((e) => /MML_BOSCONIAN\.d88$/i.test(e.name));
+  check('マジック判定: サンプルd88が見つかる(BOSCONIAN)', Boolean(bosconianD88));
+  if (bosconianD88) {
+    check('マジック判定: 生のd88バイト列を.d88と判定する', sniffArchiveExtension(bosconianD88.data) === '.d88');
+    check('マジック判定(直接): looksLikeD88()が生のd88バイト列に対しtrueを返す', looksLikeD88(bosconianD88.data));
+
+    // 陽性対照: ディスクサイズフィールド(0x1C)を書き換えると、実ファイル長と食い違うので
+    // d88と判定されなくなることを確認する(常にtrueを返すだけの判定になっていないことの証明)。
+    const corrupted = bosconianD88.data.slice();
+    corrupted[0x1c] ^= 0xff;
+    check(
+      '陽性対照: ディスクサイズフィールドを壊すとd88と判定されなくなる',
+      sniffArchiveExtension(corrupted) === null && !looksLikeD88(corrupted),
+    );
+  }
+
+  // ZIP/LZH自体をd88と誤判定しないこと。
+  check('マジック判定: zip全体のバイト列は.zipと判定される(d88と誤判定しない)', sniffArchiveExtension(zipBytes) === '.zip');
+  const listEntry = rawEntries.find((e) => /LIST_BOSCONIAN\.txt$/i.test(e.name));
+  check(
+    'マジック判定: LIST_*.txt(アーカイブでも d88 でもない生テキスト)は何にも判定されない',
+    Boolean(listEntry) && sniffArchiveExtension(listEntry.data) === null,
+  );
+}
+
+// --- (h) 曲の選り分け: システムディスクのドライバ/DOSファイルが曲一覧に入らない ------
+
+{
+  const KNOWN_NON_SONG_NAMES = [
+    'DATA', 'dbyte', 'errmsg', 'expand', 'gef1', 'kbd', 'mlf88', 'msub', 'muc88',
+    'music', 'music2', 'pcmldr', 'setup', 'smon', 'ssgdat', 'swfile', 'time', 'voice.dat',
+  ];
+
+  const songs = findSongCandidates(nestedEntries);
+  check('曲の選り分け: findSongCandidatesが何らかの曲を返す', songs.length > 0, `${songs.length}件`);
+
+  const songBaseNames = songs.map((s) => s.entry.name.split('/').pop());
+  const leakedDriverFiles = songBaseNames.filter((n) =>
+    KNOWN_NON_SONG_NAMES.some((bad) => n.toLowerCase() === `${bad.toLowerCase()}.muc` || n.toLowerCase() === bad.toLowerCase()),
+  );
+  const leakedVoiceFiles = songBaseNames.filter((n) => /^voice\.?\s*\d+/i.test(n));
+  check(
+    '曲の選り分け: ドライバ/DOSファイル(DATA・dbyte・muc88等)が曲一覧に入っていない',
+    leakedDriverFiles.length === 0,
+    JSON.stringify(leakedDriverFiles),
+  );
+  check(
+    '曲の選り分け: VOICE.n(音色バンク)が曲一覧に入っていない',
+    leakedVoiceFiles.length === 0,
+    JSON.stringify(leakedVoiceFiles),
+  );
+
+  // 判定から漏れたファイルも捨てずに取得できる状態か(nestedEntries自体には残っているはず)。
+  const sysDisk = nestedEntries.find((e) => /MUCOM88_V1\.5_ACTRAISER\.d88\/VOICE\.1$/i.test(e.name));
+  check('曲の選り分け: 曲でないVOICE.1も生バイト列としてはentriesに残っている(捨てていない)', Boolean(sysDisk) && sysDisk.data.length > 0);
+
+  // 陽性対照: VOICE.nのバイナリ本体を、修正前と同じ「REM行以外もそのまま読み進める」
+  // ゆるいデコード(decodeBasicMmlTextの挙動)に通すと、実データで実際にMMLと誤判定されて
+  // いたことを再現する。これはtryDecodeTokenizedBasicMmlText()で弾かれているはずで、
+  // ここではその弾かれ方が「常にfalseを返すだけの検査」になっていないこと
+  // (=本物のMML(bare12)には正しくtrueを返すこと)もあわせて確認する。
+  // VOICE.21(実測でゆるいデコードだと偶然MMLらしく見えてしまっていたファイル)を対象にする。
+  const actraiserSys = nestedEntries.find((e) => /MUCOM88_V1\.5_ACTRAISER\.d88\/VOICE\.21$/i.test(e.name));
+  check('陽性対照(h): システムディスクにVOICE.21の生データが見つかる(検査対象がある)', Boolean(actraiserSys));
+  if (actraiserSys) {
+    // 修正前と同じ「REM行以外も無条件でテキスト化してしまう」ゆるいデコードを直接再現する。
+    function lenientDecodeForRegressionCheck(bytes) {
+      const lines = [];
+      let pos = 0;
+      while (pos + 4 <= bytes.length) {
+        const link = bytes[pos] | (bytes[pos + 1] << 8);
+        if (link === 0) break;
+        const bodyStart = pos + 4;
+        let zero = -1;
+        for (let i = bodyStart; i < bytes.length; i++) {
+          if (bytes[i] === 0) { zero = i; break; }
+        }
+        if (zero === -1) break;
+        const body = bytes.subarray(bodyStart, zero);
+        lines.push(Buffer.from(body).toString('latin1')); // マーカー有無を見ずそのまま採用
+        pos = zero + 1;
+      }
+      return lines.join('\n');
+    }
+    const lenientText = lenientDecodeForRegressionCheck(actraiserSys.data);
+    const lenientLooksLikeMml = looksLikeMucomMmlText(lenientText);
+    check(
+      '陽性対照(h): ゆるいデコード(修正前相当)ではVOICE.1のバイナリがMMLと誤判定されていた(回帰の再現)',
+      lenientLooksLikeMml,
+    );
+  }
+  const bareKnuckle2 = nestedEntries.find((e) => /MML_BARE_KNUCKLE2\.d88\/bare12\.muc$/i.test(e.name));
+  check(
+    '陽性対照(h)再確認: 本物のMML(bare12)は曲一覧に正しく入っている(検査が常にfalseを返すだけになっていない証拠)',
+    Boolean(bareKnuckle2),
+  );
 }
 
 console.log('---');

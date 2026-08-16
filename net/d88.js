@@ -88,7 +88,7 @@ function readTrackBytes(bytes, trackOffset) {
  * @param {Uint8Array} bytes
  */
 function decodeTrimmedCp932(bytes) {
-  return decodeMmlBytesAs(bytes, 'shift_jis').replace(/[\x00 ]+$/, '');
+  return decodeMmlBytesAs(bytes, 'shift_jis').replace(/^[\x00 ]+|[\x00 ]+$/g, '');
 }
 
 /**
@@ -105,12 +105,20 @@ export function readD88Directory(bytes, trackOffsets) {
     const first = dirBytes[pos];
     if (first === 0x00) break; // ディレクトリ終端
     if (first === 0xff) continue; // 欠番エントリ
-    const name = decodeTrimmedCp932(dirBytes.subarray(pos, pos + 6));
+    const nameRawBytes = dirBytes.subarray(pos, pos + 6);
+    const name = decodeTrimmedCp932(nameRawBytes);
     const ext = decodeTrimmedCp932(dirBytes.subarray(pos + 6, pos + 9));
     const attr = dirBytes[pos + 9];
     const startCluster = dirBytes[pos + 10];
     if (!name) continue; // 名前が空(実質無効エントリ)は無視
-    entries.push({ name, ext, fileName: ext ? `${name}.${ext}` : name, attr, startCluster });
+    // 名前(6バイト)+拡張子(3バイト)は固定長フィールドで、バイト列に区切り文字(.)は
+    // 存在しない。名前フィールドが空白無しで6バイト使い切られている場合は、拡張子
+    // フィールドは「名前の続き」(6文字を超えた分の溢れ)なのでドット無しで連結する。
+    // 名前フィールドに空白の余りがある場合のみ、拡張子は本来の拡張子でありドットで連結する。
+    // (実測: VOICE+" 1 " -> "VOICE.1"、sq1_10+"3  " -> "sq1_103"。tools/verify_d88.mjs参照)
+    const nameFieldFull = !nameRawBytes.includes(0x20) && !nameRawBytes.includes(0x00);
+    const fileName = !ext ? name : nameFieldFull ? `${name}${ext}` : `${name}.${ext}`;
+    entries.push({ name, ext, fileName, attr, startCluster });
   }
   return entries;
 }
@@ -274,4 +282,126 @@ export function decodeBasicMmlText(bytes) {
  */
 export function readD88MmlText(bytes, fileName) {
   return decodeBasicMmlText(readD88FileBytes(bytes, fileName));
+}
+
+// --- net/archive.js への配線: 書庫展開結果(ArchiveEntry[])としてのd88扱い ------------
+
+const PART_LINE_RE = /^[A-K]\s/;
+
+/**
+ * decodeBasicMmlText()の厳格版。VOICE.n等のバイナリ音色データは「トークン化BASICの
+ * プログラムではない」ため、1行でもREMマーカー(`:` + 0x8F 0xE9)で始まっていない
+ * 行が現れた時点でnullを返して打ち切る(decodeBasicMmlText()はここでも構わず
+ * デコードを続けて情報を残す方針だが、それは既知のMMLファイルを読む用途向けであり、
+ * 「これはMMLかどうか」を自動判定する用途にはゆるすぎる。実際、VOICE.n等の
+ * バイナリを素通しでデコードすると、たまたまバイト列がリンク値や0終端の形に
+ * 一致して「行」が生成されてしまい、その中にA〜Kどれかで始まる行が偶然含まれる
+ * ケースが実データで確認された)。
+ * @param {Uint8Array} bytes
+ * @returns {string | null}
+ */
+export function tryDecodeTokenizedBasicMmlText(bytes) {
+  const lines = [];
+  let pos = 0;
+  while (pos + 4 <= bytes.length) {
+    const link = readU16(bytes, pos);
+    if (link === 0) break;
+    const bodyStart = pos + 4;
+    let zero = -1;
+    for (let i = bodyStart; i < bytes.length; i++) {
+      if (bytes[i] === 0) {
+        zero = i;
+        break;
+      }
+    }
+    if (zero === -1) break;
+    const body = bytes.subarray(bodyStart, zero);
+    if (
+      body.length < 3 ||
+      body[0] !== BASIC_REM_MARKER[0] ||
+      body[1] !== BASIC_REM_MARKER[1] ||
+      body[2] !== BASIC_REM_MARKER[2]
+    ) {
+      return null; // REM行でない = トークン化されたMUCOM88 MMLプログラムではない
+    }
+    lines.push(decodeMmlBytesAs(body.subarray(3), 'shift_jis'));
+    pos = zero + 1;
+  }
+  if (lines.length === 0) return null;
+  return lines.join('\n');
+}
+
+/**
+ * 復元したテキストがMUCOM88のMMLらしいかどうかを、中身を見て判定する。
+ * ファイル名の決め打ちはしない(システムディスクとサンプルディスクで収録ファイルの構成が
+ * 全く異なり、ファイル名リストはディスクが変われば必ず破綻するため)。
+ * 判定基準: 先頭行(タイトルREM等)を除いた行の中に、行頭パート文字A〜Kで始まる行が
+ * 1行以上現れること。
+ * @param {string | null} text
+ */
+export function looksLikeMucomMmlText(text) {
+  if (!text) return false;
+  const lines = text.split('\n').slice(1);
+  return lines.some((line) => PART_LINE_RE.test(line));
+}
+
+/**
+ * d88ディスクの全ディレクトリエントリを、net/archive.js の ArchiveEntry[] 形式で返す。
+ * MMLと判定できたファイルは、復元したテキストをUTF-8バイト列にした上で `.muc` 拡張子を
+ * 付けて返す(net/song-select.js の拡張子ベース判定にそのまま乗せるため)。
+ * MMLと判定できなかったファイル(VOICE.n、ドライバ本体等)は、捨てずに元のファイル名・
+ * 生バイト列のまま返す(曲一覧には並ばないが、後続タスクで音色バンクとして参照できる
+ * 状態を保つ)。
+ * @param {Uint8Array} bytes
+ * @returns {import('./archive-util.js').ArchiveEntry[]}
+ */
+export function extractD88(bytes) {
+  const trackOffsets = readTrackOffsets(bytes);
+  const dirEntries = readD88Directory(bytes, trackOffsets);
+  const fat = readD88Fat(bytes, trackOffsets);
+  const out = [];
+  for (const e of dirEntries) {
+    const raw = readD88FileBytesByCluster(bytes, trackOffsets, fat, e.startCluster);
+    const decoded = tryDecodeTokenizedBasicMmlText(raw);
+    if (looksLikeMucomMmlText(decoded)) {
+      out.push({ name: `${e.fileName}.muc`, data: new TextEncoder().encode(decoded) });
+    } else {
+      out.push({ name: e.fileName, data: raw });
+    }
+  }
+  return out;
+}
+
+const D88_TRACK_OFFSET_TABLE_START = TRACK_OFFSET_TABLE_OFFSET + TRACK_OFFSET_COUNT * 4; // 0x20 + 164*4
+const D88_MAX_SECTORS_PER_TRACK = 26; // 2HD(8セクタ/2048B/クラスタ換算)を大きく超える値は実在しない
+const D88_MAX_SECTOR_DATA_LENGTH = 1024; // 実測(256B/セクタ)の余裕を見た上限
+
+/**
+ * d88コンテナかどうかを、ファイル先頭のマジックバイトではなく構造から判定する。
+ * d88はヘッダ先頭16バイトがディスク名(任意文字列、マジックとして弱い)なので、
+ * 代わりに (a) 0x1C..0x1Fのディスクサイズ(u32LE)が実際のファイル長と一致すること、
+ * (b) 0x20以降のトラックオフセット表(164個のu32LE)が、0以外の値については
+ *     ファイル範囲内かつセクタヘッダとして妥当な値(セクタ数・データ長が現実的範囲)を
+ *     指していること、を確認する。ゆるい判定はZIP/LZHの誤検出につながるため、
+ *     オフセット表に有効なトラックが1つも無い場合や、1つでも範囲外/非現実的な値が
+ *     あれば非d88と判定する。
+ * @param {Uint8Array} bytes
+ */
+export function looksLikeD88(bytes) {
+  if (bytes.length < D88_TRACK_OFFSET_TABLE_START) return false;
+  const declaredSize = readU32(bytes, 0x1c);
+  if (declaredSize !== bytes.length) return false;
+
+  let validTrackCount = 0;
+  for (let i = 0; i < TRACK_OFFSET_COUNT; i++) {
+    const off = readU32(bytes, TRACK_OFFSET_TABLE_OFFSET + i * 4);
+    if (off === 0) continue; // トラック無し
+    if (off < D88_TRACK_OFFSET_TABLE_START || off + DIRECTORY_ENTRY_SIZE > bytes.length) return false;
+    const sectorCount = readU16(bytes, off + 4);
+    if (sectorCount === 0 || sectorCount > D88_MAX_SECTORS_PER_TRACK) return false;
+    const dataLength = readU16(bytes, off + 14);
+    if (dataLength === 0 || dataLength > D88_MAX_SECTOR_DATA_LENGTH) return false;
+    validTrackCount++;
+  }
+  return validTrackCount > 0;
 }
