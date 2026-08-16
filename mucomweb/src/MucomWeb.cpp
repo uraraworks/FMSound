@@ -456,6 +456,16 @@ std::string CompileMML(const std::string& mml, int sampleRate)
 	CMucom mucomCompiler;
 	mucomCompiler.Init();
 	mucomCompiler.Reset(2);
+	// #voice(外部音色バンク)を機能させるための呼び出し(mucomweb/patches/
+	// 0004-compilemml-processheader.patch、docs/voice-external-bank-experiment.md参照)。
+	// CMucom::Compile()内のGetInfoBufferByName("voice")(cmucom.cpp:1246)はinfobufを
+	// 見るが、そのinfobufはProcessHeader()(cmucom.cpp:1140-1172)がMMLを1行ずつ走査して
+	// `#`始まりの行を溜め込むまで空(NULL)のまま。呼ばないと`#voice`タグは常に無視される。
+	// CMucom::CompileFile()(cmucom.cpp:1356-1358)が使っている呼び出し順序
+	// (ProcessHeader(mml); Compile(mml, ...);)をそのまま踏襲する。
+	// この行は上記パッチをファイルへ直接コミットしたもの(mucomweb/CMakeLists.txtの
+	// 冪等適用ブロックは「既に当たっている」を検出してスキップする、通常運用では無変更)。
+	mucomCompiler.ProcessHeader(const_cast<char *>(mml.c_str()));
 	if (mucomCompiler.Compile(const_cast<char *>(mml.c_str()), mubPath) >= 0)
 	{
 		// maxcountはこのコンパイル専用インスタンス側にしか確定しない(上のコメント参照)。

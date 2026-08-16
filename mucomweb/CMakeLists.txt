@@ -85,6 +85,39 @@ if (NOT RHYTHM_PATH_PATCH_ALREADY_APPLIED EQUAL 0)
     endif()
 endif()
 
+# #voice(外部音色バンク)対応。CompileMML()がProcessHeader()を呼ばないと
+# CMucom::Compile()のGetInfoBufferByName("voice")が常に空を見て#voiceタグが
+# 無視される(詳細はpatches/0004-compilemml-processheader.patchのコメントと
+# docs/voice-external-bank-experiment.md参照)。
+#
+# 0001-0003と違い、このパッチの対象(mucomweb/src/MucomWeb.cpp)は upstream/ 配下の
+# 無改変クローンではなく、FMSound本体が直接git管理しているファイルなので、
+# 冪等適用の基準にする対象は MUCOM88_DIR ではなくリポジトリルート(このファイルの
+# 1つ上、mucomweb/../)。ProcessHeader()呼び出し自体は既にMucomWeb.cppへ直接
+# コミット済みなので、通常のビルドでは「reverse --check」が成功(=既に当たっている)
+# して何もしない。ここでの適用ステップは、万一その行だけが取り除かれた場合に
+# 気付かず古い挙動(#voice無視)へ戻ってしまうことを防ぐ保険(0001-0003と同じ
+# 「警告でなく失敗させる」考え方)。
+set(VOICE_HEADER_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/0004-compilemml-processheader.patch")
+set(FMSOUND_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+execute_process(
+    COMMAND git apply --reverse --check "${VOICE_HEADER_PATCH}"
+    WORKING_DIRECTORY "${FMSOUND_REPO_ROOT}"
+    RESULT_VARIABLE VOICE_HEADER_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET)
+if (NOT VOICE_HEADER_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND git apply "${VOICE_HEADER_PATCH}"
+        WORKING_DIRECTORY "${FMSOUND_REPO_ROOT}"
+        RESULT_VARIABLE VOICE_HEADER_PATCH_APPLY_RESULT)
+    if (NOT VOICE_HEADER_PATCH_APPLY_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "0004-compilemml-processheader.patch を ${FMSOUND_REPO_ROOT} に適用できませんでした。"
+            "mucomweb/src/MucomWeb.cpp が想定と異なる可能性があります。"
+            "手動確認してください（警告で済ませず失敗させています）。")
+    endif()
+endif()
+
 file(GLOB SOURCES
         ${MUCOM88_DIR}/src/*.c
         ${MUCOM88_DIR}/src/*.cpp
