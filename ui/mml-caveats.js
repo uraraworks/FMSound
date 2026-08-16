@@ -6,8 +6,22 @@
 // rhythmpath未指定」参照)が、mucomweb/patches/0003-mucomvm-rhythm-path.patchで
 // 修正済み。ただし実際に鳴るのはYM2608実チップのPCMではなく代替サンプル
 // (html/rhythm/2608_*.WAV、NOTICE.md参照。作者本人が「本物のYM2608のリズム音とは
-// 根本的に波形が異なる」と明言している独自制作品)なので、その事実を隠さず利用者に
-// 伝えるために検出は引き続き行う(文言だけ「鳴らない」から「代替音で鳴る」へ変更)。
+// 根本的に波形が異なる」と明言している独自制作品)。
+//
+// 【2026-08-16、利用者判断: リズムの画面表示だけ取りやめた】
+// detectMmlCaveats()自体は#voice/#pcmと同じ扱いでusesRhythmを検出し続けているが、
+// formatMmlCaveatMessage()は#voice/#pcmの一文だけを返しリズムの一文を含めない。
+// 「消し忘れ」ではなく意図的な差(理由は下記)。誤解防止のためここに明記する:
+//   - #voice/#pcm: 今も実害がある(音色が既定のものになりADPCMは無音のまま鳴る、
+//     曲が本来と違って聞こえる)ため、画面表示を維持する。
+//   - リズム: 重みが変わった。以前は「(パッチ前は)鳴らない」だったので告知が
+//     要ったが、今は「鳴るが波形が違う」。エミュレータの音が実機と完全一致しない
+//     のと同程度の差であり、リズム曲を開いている間ずっと画面に出し続けるほどでは
+//     ない、という利用者判断による。制約自体は消えていないため、README.ja.md/
+//     README.md の「できないこと」相当の節と NOTICE.md には引き続き明記してある
+//     (NOTICE.mdは出所表記のため今回変更していない)。
+// usesRhythmの検出自体を残しているのは、将来また画面表示や別用途(統計等)で
+// 使う可能性を潰さないため。他に参照が無くなった場合は削除して構わない。
 //
 // 【スコープ】検出のみ。「読み込む」機能そのものは作らない(要求どおり)。
 // MML本文をテキストとして走査するだけで済むため、ここは net/ 層(取得・書庫展開)にも
@@ -52,6 +66,11 @@ export function detectMmlCaveats(mmlText) {
 /**
  * detectMmlCaveats() の結果を利用者向けの1行メッセージに整形する。
  * 何も検出しなければ null を返す(呼び出し側はnullなら表示領域を隠す)。
+ *
+ * 【2026-08-16】caveats.usesRhythm はここでは意図的に文言化しない(ファイル冒頭の
+ * コメント参照)。#voice/#pcmは今も実害があるため引き続き表示するが、リズムは
+ * 「鳴らない」から「鳴るが波形が違う」へ実害が下がったため画面表示は取りやめた
+ * (制約自体はREADME/NOTICE.mdに残してある)。
  * @param {{ missingRefs: { tag: string, file: string }[], usesRhythm: boolean }} caveats
  * @returns {string | null}
  */
@@ -60,9 +79,6 @@ export function formatMmlCaveatMessage(caveats) {
   if (caveats.missingRefs.length > 0) {
     const files = [...new Set(caveats.missingRefs.map((r) => r.file))].join(', ');
     parts.push(`この曲は ${files} を参照していますが読み込めません。音色とドラムが本来と異なります。`);
-  }
-  if (caveats.usesRhythm) {
-    parts.push('リズム音源は代替サンプルで再生されます(本物のYM2608とは波形が異なります)。');
   }
   return parts.length > 0 ? parts.join(' ') : null;
 }

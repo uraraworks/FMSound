@@ -50,8 +50,11 @@ The player currently has a few honest limitations worth stating up front.
   (`html/rhythm/2608_*.WAV`; see `NOTICE.md` for the source). The author of
   the original driver has stated plainly that these substitutes are
   "fundamentally different in waveform from the real YM2608's rhythm sound,"
-  and this project inherits that same caveat. When a loaded song uses the
-  rhythm part, the UI shows a notice about this.
+  and this project inherits that same caveat. (The UI used to show a notice
+  about this, same as it does for `#voice`/`#pcm`, but as of 2026-08-16 it no
+  longer does: rhythm went from "silent" to "audible but different," which
+  is a smaller gap than a completely missing part, so it's no longer called
+  out on every screen. The limitation itself is unchanged.)
 - **The PMD compiler (this project's own MML→binary converter) only
   supports the v1 basic command set** — PPZ8, LFO, portamento, and similar
   are out of scope. See `docs/pmd-compiler-spec.md` for details.
