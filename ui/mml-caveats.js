@@ -1,7 +1,13 @@
 // MUCOM88 MML が「読み込めるが本来どおりには鳴らない」ケースを利用者に伝えるための
 // 検出層。課題D(公開前の仕上げ): #voice/#pcm で指定される外部ファイル(このプレイヤーは
-// 同梱以外のファイルを一切読み込まない)と、リズム(G)パートの使用(現状鳴らない。
-// docs/right-pane-data.md「OPNA::Init()のrhythmpath未指定」参照)を検出する。
+// 同梱以外のファイルを一切読み込まない)と、リズム(G)パートの使用を検出する。
+//
+// リズム(G)パートは以前は無音だった(docs/right-pane-data.md「OPNA::Init()の
+// rhythmpath未指定」参照)が、mucomweb/patches/0003-mucomvm-rhythm-path.patchで
+// 修正済み。ただし実際に鳴るのはYM2608実チップのPCMではなく代替サンプル
+// (html/rhythm/2608_*.WAV、NOTICE.md参照。作者本人が「本物のYM2608のリズム音とは
+// 根本的に波形が異なる」と明言している独自制作品)なので、その事実を隠さず利用者に
+// 伝えるために検出は引き続き行う(文言だけ「鳴らない」から「代替音で鳴る」へ変更)。
 //
 // 【スコープ】検出のみ。「読み込む」機能そのものは作らない(要求どおり)。
 // MML本文をテキストとして走査するだけで済むため、ここは net/ 層(取得・書庫展開)にも
@@ -56,7 +62,7 @@ export function formatMmlCaveatMessage(caveats) {
     parts.push(`この曲は ${files} を参照していますが読み込めません。音色とドラムが本来と異なります。`);
   }
   if (caveats.usesRhythm) {
-    parts.push('リズム音源は現在鳴りません。');
+    parts.push('リズム音源は代替サンプルで再生されます(本物のYM2608とは波形が異なります)。');
   }
   return parts.length > 0 ? parts.join(' ') : null;
 }

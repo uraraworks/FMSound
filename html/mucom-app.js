@@ -72,6 +72,47 @@ const MUCOM_NEW_MML_TEMPLATE = `; 新規作成ひな形(MUCOM88): そのまま�
 A @78 T120 o5 l4 v10 cdefgab>c<
 `;
 
+// リズム(G)パート用のPCMサンプル6本(html/rhythm/2608_*.WAV)をMEMFSへ書き込む。
+//
+// upstream側(mucomweb/patches/0003-mucomvm-rhythm-path.patch)がOPNA::Init()に
+// rhythmpath="/rhythm/"を渡すよう固定しているため、ここではその固定パスへ
+// Module.FS.writeFile()で置くだけでよい(fopen("/rhythm/2608_BD.WAV",...)がそのまま
+// 見つける)。emscriptenの既定ビルド(MEMFSが"/"へ自動マウントされる。素の
+// FILESYSTEM=0指定はmucomweb/CMakeLists.txtに無い)で動くことをtools/verify_mucom_rhythm.mjs
+// で実測確認済み(docs/rhythm-feasibility.md 1.5節の「未検証」を解消)。
+//
+// ファイル名は大文字固定("2608_BD.WAV"等)。opna.cpp LoadRhythmSample()はこの表記を
+// そのまま文字列連結して開こうとするため、MEMFS(大文字小文字を区別する)側も
+// 同じ大文字表記で置く必要がある(小文字で置くと無言で見つからず、従来どおり
+// 無音のまま気づけない)。
+//
+// 波形データの出典・権利はNOTICE.md参照(YM2608実チップROM由来ではなく、
+// 作者が独自制作した代替音色。フリー再配布条件で入手)。
+//
+// fetchに失敗しても(オフライン/ホスティング事情等)エンジン自体は今までどおり
+// 動く(リズムだけ無音に戻るだけ)ため、例外を投げずコンソールに警告するだけに
+// とどめる。
+const RHYTHM_SAMPLE_NAMES = ['BD', 'SD', 'TOP', 'HH', 'TOM', 'RIM'];
+
+async function loadRhythmSamples(Module) {
+  try {
+    Module.FS.mkdir('/rhythm');
+  } catch (e) {
+    // 既に存在する場合(このinit()が二度呼ばれることは無いはずだが念のため)は無視。
+  }
+  await Promise.all(RHYTHM_SAMPLE_NAMES.map(async (name) => {
+    const fileName = `2608_${name}.WAV`;
+    try {
+      const response = await fetch(`./rhythm/${fileName}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      Module.FS.writeFile(`/rhythm/${fileName}`, new Uint8Array(buffer));
+    } catch (e) {
+      console.warn(`[mucom-app] リズムサンプル ${fileName} の読み込みに失敗しました。リズムパートは無音のままになります。`, e);
+    }
+  }));
+}
+
 export async function init(ctx) {
   const {
     canvas, consoleCard, toolbar,
@@ -308,6 +349,7 @@ export async function init(ctx) {
   requestAnimationFrame(rescale);
 
   const Module = await createMucomWeb();
+  await loadRhythmSamples(Module);
   moduleReady = true;
   updateTransportButtonUI();
 

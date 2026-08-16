@@ -62,6 +62,29 @@ if (NOT FMGEN_LEVELDATA_PATCH_ALREADY_APPLIED EQUAL 0)
     endif()
 endif()
 
+# リズム(G)パートを鳴らすため、mucomvm::InitSoundSystem()のOPNA::Init呼び出しに
+# rhythmpath("/rhythm/"固定、html/mucom-app.jsがコンパイル前にMEMFSへ6本のWAVを
+# 書き込む)を渡す。理由の詳細はmucomweb/patches/0003-mucomvm-rhythm-path.patchの
+# コメントとdocs/rhythm-feasibility.md参照。0001/0002と同じ冪等適用の仕組み。
+set(RHYTHM_PATH_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/0003-mucomvm-rhythm-path.patch")
+execute_process(
+    COMMAND git apply --reverse --check "${RHYTHM_PATH_PATCH}"
+    WORKING_DIRECTORY "${MUCOM88_DIR}"
+    RESULT_VARIABLE RHYTHM_PATH_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET)
+if (NOT RHYTHM_PATH_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND git apply "${RHYTHM_PATH_PATCH}"
+        WORKING_DIRECTORY "${MUCOM88_DIR}"
+        RESULT_VARIABLE RHYTHM_PATH_PATCH_APPLY_RESULT)
+    if (NOT RHYTHM_PATH_PATCH_APPLY_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "0003-mucomvm-rhythm-path.patch を ${MUCOM88_DIR} に適用できませんでした。"
+            "upstream/MucomWeb/mucom88/src/mucomvm.cpp が想定と異なる可能性があります。"
+            "手動確認してください（警告で済ませず失敗させています）。")
+    endif()
+endif()
+
 file(GLOB SOURCES
         ${MUCOM88_DIR}/src/*.c
         ${MUCOM88_DIR}/src/*.cpp

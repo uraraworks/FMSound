@@ -1,0 +1,56 @@
+# FMSound patch: pass rhythmpath into OPNA::Init() so the rhythm (G) part
+# actually makes sound.
+#
+# Why: OPNA::Init() (upstream/MucomWeb/mucom88/src/fmgen/opna.h:286) takes an
+# optional 4th argument `rhythmpath` (default nullptr) that it forwards to
+# LoadRhythmSample() (opna.cpp), which looks for 6 files named
+# "<rhythmpath>2608_BD.WAV" / "_SD" / "_TOP" / "_HH" / "_TOM" / "_RIM" (falls
+# back to "2608_RYM.WAV", but note that fallback path has an upstream bug:
+# it silently drops the `path` prefix, so it only works when the process CWD
+# already is `path` -- this is why FMSound ships a `2608_RIM.WAV`, not
+# `2608_RYM.WAV`, to avoid ever hitting that fallback). The only call site,
+# mucomvm::InitSoundSystem() (mucomvm.cpp:192), called `opn->Init(baseclock,
+# 8000, 0)` with only 3 arguments, so `rhythmpath` stayed nullptr and
+# LoadRhythmSample() always failed to find any file. OPNA::Init() ignores
+# LoadRhythmSample()'s return value, so this failure was silent: Init()
+# "succeeded", and only the mix step (OPNA::RhythmMix(), guarded on
+# `rhythm[0].sample != nullptr`) silently produced no rhythm audio. See
+# docs/rhythm-feasibility.md for the full investigation.
+#
+# This patch hardcodes the path to "/rhythm/" rather than threading a
+# setting through from the JS/wasm boundary, because there is no existing
+# config plumbing from html/mucom-app.js down to mucomvm::InitSoundSystem()
+# and adding one for a single fixed asset set would be more machinery than
+# the problem needs. html/mucom-app.js writes the 6 rhythm WAV files
+# (html/rhythm/2608_*.WAV, see NOTICE.md for their provenance) into the
+# wasm module's MEMFS at exactly this path (via Module.FS.writeFile) before
+# the first compile, so plain `fopen("/rhythm/2608_BD.WAV", ...)` inside
+# LoadRhythmSample() finds them with no further changes needed there.
+#
+# Applied automatically by mucomweb/CMakeLists.txt at build time (same
+# idempotent apply-if-not-applied mechanism as 0001/0002).
+#
+# Apply against upstream/MucomWeb/mucom88 (nested submodule at
+# upstream/MucomWeb/mucom88), e.g.:
+#   git -C upstream/MucomWeb/mucom88 apply mucomweb/patches/0003-mucomvm-rhythm-path.patch
+diff --git a/src/mucomvm.cpp b/src/mucomvm.cpp
+index 5014d1a..70361d0 100644
+--- a/src/mucomvm.cpp
++++ b/src/mucomvm.cpp
+@@ -189,7 +189,15 @@ void mucomvm::InitSoundSystem(int rate)
+
+ 	opn = new FM::OPNA;
+ 	if (opn) {
+-		opn->Init(baseclock, 8000, 0);
++		// FMSound patch (mucomweb/patches/0003-mucomvm-rhythm-path.patch):
++		// Pass rhythmpath so OPNA::LoadRhythmSample() (opna.cpp) actually looks
++		// for 2608_BD.WAV etc. instead of silently defaulting to nullptr (=CWD),
++		// which is why the rhythm part was always silent before this patch.
++		// Fixed path (not user-configurable) because there is no existing config
++		// plumbing from the JS/wasm boundary down to here; the wasm-side host
++		// (html/mucom-app.js) writes the 6 WAV files into this exact MEMFS path
++		// before compiling, see docs and NOTICE.md for the sample provenance.
++		opn->Init(baseclock, 8000, 0, "/rhythm/");
+ #if 0
+ 		// PSG TEST
+ 		opn->SetReg(0x07, 8 + 16 + 32);

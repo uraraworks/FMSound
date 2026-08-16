@@ -97,6 +97,31 @@ MUCOM88由来のデータ。CC BY-NC-SA 4.0。
   `upstream/MucomWeb/mucom88/src/voiceformat.h` の `MUCOM88_VOICEFORMAT.name[6]` と対応)
 - 生成器: `tools/gen_mucom_voice_names.py`
 
+## `html/rhythm/2608_BD.WAV` ほか5本(MUCOM88リズム(G)パート用の代替波形)
+
+MUCOM88のリズム(G)パートを鳴らすために同梱している6本のPCMサンプル
+(`2608_BD.WAV` / `2608_SD.WAV` / `2608_TOP.WAV` / `2608_HH.WAV` / `2608_TOM.WAV` /
+`2608_RIM.WAV`)。
+
+- 原題: 「YM2608風リズム音源音色データ Ver.2.0」
+- 作者: メモル (Takanori YOSHIMURA)
+- 配布元: `http://sound.jp/jaime/fmp_top.html`
+- **YM2608実チップのROMから吸い出したデータではない。** 同梱テキスト
+  (`2608modoki2.txt`)に作者自身が明記しているとおり、「手持ちの音源から音色を
+  集め、YM2608のリズム音に似せてエディットし」た独自制作の代替音であり、
+  「本物のYM2608のリズム音とは根本的に波形が異なる」ことも作者本人が明言している。
+  この事実を隠さず、利用者向け表示(`ui/mml-caveats.js`)にも同旨を明記している。
+- 配布条件(原文引用): 「配布・転載・ソフトへの組み込み等、有償無償にかかわらず
+  ご自由にどうぞ。」
+- 本リポジトリでは元のファイル名(`2608_bd.wav`等、小文字)を、読み込み側
+  (`upstream/MucomWeb/mucom88/src/fmgen/opna.cpp` `OPNA::LoadRhythmSample()`)が
+  要求する大文字表記(`2608_BD.WAV`等)へリネームしただけで、データ自体は無改変。
+  `2608_RYM.WAV`(RIMのフォールバック名、upstream側のパス連結バグにより
+  `rhythmpath`が効かない)は使わず、常に一次候補の`2608_RIM.WAV`名で配置している
+  (詳細は`mucomweb/patches/0003-mucomvm-rhythm-path.patch`のコメント参照)。
+- 上記「含まないもの」(ROM/市販ソフトウェアのデータを含まない)という既存方針と
+  矛盾しない(ROM由来ではなく作者独自制作のため)。
+
 ## 含まないもの
 
 ROM イメージ(PC-98 本体 BIOS 等)や市販ソフトウェアのデータは、
