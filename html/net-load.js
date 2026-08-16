@@ -10,6 +10,7 @@ import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
 import { openLibraryDb, saveSong, importArchiveSongs } from './net/library.js';
+import { describeSongCandidate } from './net/album-info.js';
 
 // FILEBAR(FMDSP MUSIC FILEバー)専用の固定ラベル。「読み込み元がファイルでない」
 // 経路(下書き復元)向け(課題B追補、2026-08-15、利用者報告)。曲を読み込む経路が
@@ -292,11 +293,48 @@ export function reflectLoadedUrlInAddressBar(url) {
 }
 
 /**
+ * reflectLoadedUrlInAddressBar() の対になる関数: URLではない経路(新規作成/
+ * ファイルから開く/曲ライブラリからの選択)で編集欄・再生対象を差し替えたとき、
+ * アドレスバーに残った `?mml=<旧URL>` を取り除く。
+ *
+ * 【不具合修正・2026-08-16、利用者報告】新規作成ボタンは編集欄・下書き・
+ * コンパイル状態・注意書きまで消していたが、アドレスバーの `?mml=` には
+ * 触れていなかった。そのためリロードすると「編集欄は新規作成の雛形なのに、
+ * 消したはずの書庫を再度読みに行って書庫選択モーダル/ライブラリが開いてしまう」
+ * (アドレスバーの内容と実際に開いているものが食い違う)状態になっていた。
+ * ファイルから開く/曲ライブラリ選択も同じ構造の食い違いを起こしうるため、
+ * それらの経路でも呼ぶ(html/mucom-app.js・html/pmd-app.js参照)。
+ *
+ * reflectLoadedUrlInAddressBar()と同じく `history.replaceState` のみを使い、
+ * ページの再読み込みは起こさない。既存の `?driver=` 等、他のクエリパラメータは
+ * 保持する(searchParams.delete()は対象キーだけを取り除くため、他のパラメータへは
+ * 触れない)。`location`/`history` が使えない環境では何もしない。
+ */
+export function clearLoadedUrlFromAddressBar() {
+  if (typeof location === 'undefined' || typeof history === 'undefined') return;
+  try {
+    const next = new URL(location.href);
+    if (!next.searchParams.has('mml')) return;
+    next.searchParams.delete('mml');
+    history.replaceState(history.state, '', next.toString());
+  } catch {
+    // location.hrefが不正/historyが使えない環境向けの保険。反映できなくても
+    // 曲自体の切り替えは既に成功しているため、例外は投げない。
+  }
+}
+
+/**
  * 書庫内の再生候補一覧から利用者に1つ選ばせるモーダルを表示する。
+ *
+ * 【修正3・2026-08-16、利用者報告】各候補の表示文字列はDOM非依存の
+ * `net/album-info.js` の `describeSongCandidate()` に切り出してある(そちらの
+ * コメント参照。曲ライブラリと同じ`resolveTrackInfo()`/`albumGroupPathFor()`/
+ * `albumLabelFor()`を再利用し、Node(tools/verify_song_picker_display.mjs)から
+ * 単体で検証できるようにするため)。
  * 候補が1件のときは呼び出し側で picker を出さずそのまま使ってよい(ここでは
  * 「選ばせる」ことだけを担当し、0/1件の早期リターン判断は呼び出し側に委ねる)。
  * @param {import('./net/song-select.js').SongCandidate[]} candidates
- * @param {{ title?: string }} [opts]
+ * @param {{ title?: string, entries?: import('./net/archive-util.js').ArchiveEntry[], archiveLabel?: string }} [opts]
  * @returns {Promise<import('./net/song-select.js').SongCandidate | null>} null はキャンセル
  */
 // 「いま開いているこの書庫選択モーダルを閉じる」ための取消関数(無ければnull)。
@@ -335,8 +373,7 @@ export function pickSongCandidate(candidates, opts = {}) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'song-picker-item-btn';
-      const driverLabel = candidate.driver === 'mucom' ? 'MUCOM88' : 'PMD';
-      btn.textContent = `${candidate.displayName} (${driverLabel})`;
+      btn.textContent = describeSongCandidate(candidate, opts);
       btn.addEventListener('click', () => {
         cleanup();
         resolve(candidate);

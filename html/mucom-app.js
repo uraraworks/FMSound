@@ -29,7 +29,7 @@ import { setupPopover } from './ui/shell.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
-  closeActiveSongPicker, reflectLoadedUrlInAddressBar,
+  closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
@@ -198,6 +198,9 @@ export async function init(ctx) {
     driver: 'mucom',
     getDb: getLibraryDb,
     onSelect: (song) => {
+      // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
+      // `?mml=` はここで取り除く(new-load.js clearLoadedUrlFromAddressBar()参照)。
+      clearLoadedUrlFromAddressBar();
       applyMmlBytes(song.bytes, { name: song.fileName });
       compileAndPlay();
     },
@@ -965,6 +968,10 @@ export async function init(ctx) {
     clearCompileStatus();
     // 課題D: 新規作成の雛形には#voice/#pcm/リズムが無いため、告知も消す。
     updateMmlCaveat('');
+    // 【不具合修正・2026-08-16】新規作成しても`?mml=<URL>`がアドレスバーに残ったままだと、
+    // リロード時に「編集欄は新規の雛形なのに消したはずの書庫を読みに行ってしまう」
+    // (net-load.js clearLoadedUrlFromAddressBar()冒頭コメント参照。利用者報告)。
+    clearLoadedUrlFromAddressBar();
   });
 
   // 課題(net配線): 文字コードは決め打ちしない(以前はshift_jis固定だった)。
@@ -1030,6 +1037,9 @@ export async function init(ctx) {
   function openMmlFile(file) {
     if (!file) return;
     file.arrayBuffer().then((buffer) => {
+      // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
+      // 残っている`?mml=`はここで取り除く。
+      clearLoadedUrlFromAddressBar();
       applyMmlBytes(buffer, { name: file.name });
       compileAndPlay();
       // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
@@ -1162,7 +1172,10 @@ export async function init(ctx) {
         // 背景越しに透けて重なって見える不具合そのものなので、同じ「後から
         // 開く方を優先する」考え方をここでも揃える。
         libraryPopover.close();
-        chosen = await pickSongCandidate(mucomCandidates);
+        // 修正3: 選択画面にも曲ライブラリと同じ曲名/アルバム名を出す(net-load.js
+        // describeSongCandidate()参照)。entries/archiveLabelを渡さないとファイル名の
+        // ままになる。
+        chosen = await pickSongCandidate(mucomCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
         if (!chosen) {
           setNetStatus('曲の選択をキャンセルしました', false);
           return;

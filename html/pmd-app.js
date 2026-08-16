@@ -46,7 +46,7 @@ import { setupPopover } from './ui/shell.js';
 import {
   resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
-  closeActiveSongPicker, reflectLoadedUrlInAddressBar,
+  closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 
@@ -180,6 +180,9 @@ export async function init(ctx) {
     driver: 'pmd',
     getDb: getLibraryDb,
     onSelect: (song) => {
+      // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
+      // `?mml=` はここで取り除く(net-load.js clearLoadedUrlFromAddressBar()参照)。
+      clearLoadedUrlFromAddressBar();
       playBytes(song.bytes, song.fileName);
     },
   });
@@ -385,6 +388,10 @@ export async function init(ctx) {
     mmlEditorApi.render();
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
     clearCompileStatus();
+    // 【不具合修正・2026-08-16】新規作成しても`?mml=<URL>`がアドレスバーに残ったままだと、
+    // リロード時に「編集欄は新規の雛形なのに消したはずの書庫を読みに行ってしまう」
+    // (net-load.js clearLoadedUrlFromAddressBar()冒頭コメント参照。利用者報告)。
+    clearLoadedUrlFromAddressBar();
   });
 
   rescale();
@@ -1007,6 +1014,8 @@ export async function init(ctx) {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
+    // 修正1: 「ファイルから開く」もURL由来ではないので、残っている`?mml=`はここで取り除く。
+    clearLoadedUrlFromAddressBar();
     await playBytes(bytes, file.name);
     persistLocalPmdSong(bytes, file.name);
   });
@@ -1023,6 +1032,8 @@ export async function init(ctx) {
     const file = files[0];
     if (!file) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
+    // 修正1: ドラッグ&ドロップもURL由来ではないので、残っている`?mml=`はここで取り除く。
+    clearLoadedUrlFromAddressBar();
     await playBytes(bytes, file.name);
     persistLocalPmdSong(bytes, file.name);
   };
@@ -1103,7 +1114,11 @@ export async function init(ctx) {
         // 背景越しに透けて重なって見える不具合そのものなので、同じ「後から
         // 開く方を優先する」考え方をここでも揃える。
         libraryPopover.close();
-        chosen = await pickSongCandidate(pmdCandidates);
+        // 修正3: 選択画面にも曲ライブラリと同じ曲名/アルバム名を出す(net-load.js
+        // describeSongCandidate()参照)。entries/archiveLabelを渡さないとファイル名の
+        // ままになる(PMDの書庫はLIST_*.txtを持たないのが普通なので、その場合は
+        // ファイル名のままで正常)。
+        chosen = await pickSongCandidate(pmdCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
         if (!chosen) {
           setNetStatus('曲の選択をキャンセルしました', false);
           return;
