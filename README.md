@@ -65,6 +65,15 @@ PMD と MUCOM88 で、**`t` と `T` の意味が逆**です。開発中に2回�
 
 ## ライセンスと出典
 
+**FMSound は [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja)
+（表示 - 非営利 - 継承 4.0 国際）で提供します。** 全文は [`LICENSE`](./LICENSE) を参照してください。
+
+これは自ら選んだ条件ではなく、**同梱している MUCOM88 が CC BY-NC-SA 4.0 で
+継承（ShareAlike）が付く**ため、それを取り込んだ FMSound 全体が同じ条件に
+揃うことによります。PMD 側の実装の由来（98fmplayer）は BSD 2-Clause なので、
+**PMD 部分だけを自由な条件で使いたい場合は、FMSound ではなく 98fmplayer や
+本家 PMD を直接参照してください。**
+
 音源ドライバの実装は、以下の上流プロジェクトを wasm へ移植・利用しています。
 第三者の著作物に由来する生成物の出所・ライセンス全文は
 **[`NOTICE.md`](./NOTICE.md)** にまとめています。
