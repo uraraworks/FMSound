@@ -102,8 +102,9 @@ async function main() {
   console.log(after.log);
   console.log('------------------------------------------------');
   check('D. コンパイルログに#errorを含まない(バンク書き込み後)', !/#error/i.test(after.log));
-  check('B. [本体] バンクをMEMFSへ書き込むとabsSumが明確に非0(鳴っている)',
-    after.absSum > 0, `absSum=${after.absSum}`);
+  check('B. [本体] バンクをMEMFSへ書き込むとabsSumが陰性対照の閾値を明確に上回る(鳴っている)',
+    after.absSum > SILENCE_ABS_SUM_THRESHOLD,
+    `absSum=${after.absSum} (閾値=${SILENCE_ABS_SUM_THRESHOLD})`);
   check('C0. バンク未書き込み(0)と書き込み後(非0)でabsSumが異なる(MEMFS経由でfopen()が実際に読めている証拠)',
     before.absSum !== after.absSum, `before=${before.absSum} after=${after.absSum}`);
 
