@@ -36,6 +36,7 @@ import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
 import { detectMmlCaveats, formatMmlCaveatMessage } from './ui/mml-caveats.js';
 import { encodeCp932 } from './ui/cp932-encode.js';
 import { resolveMucomVoiceNameRefs } from './ui/mucom-voice-resolve.js';
+import { findPairedVoiceBank } from './net/voice-bank.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 //
@@ -201,7 +202,11 @@ export async function init(ctx) {
       // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
       // `?mml=` はここで取り除く(new-load.js clearLoadedUrlFromAddressBar()参照)。
       clearLoadedUrlFromAddressBar();
-      applyMmlBytes(song.bytes, { name: song.fileName });
+      // #voice対応: ライブラリに保存された外部音色バンク(net/library.js voiceBank、
+      // 対になるシステムディスクが見つかった曲だけ非null)をそのまま引き継ぐ。
+      // 引き継がないと「初回は鳴っていたのに、ライブラリから開き直すと既定バンクの
+      // 音に変わる」という退行になる。
+      applyMmlBytes(song.bytes, { name: song.fileName, voiceBank: song.voiceBank ?? null, voiceBankSource: song.voiceBankSource ?? null });
       compileAndPlay();
     },
   });
@@ -597,6 +602,14 @@ export async function init(ctx) {
   // 課題(net配線): 直近に読み込んだMMLの文字コード判定結果('utf-8'|'shift_jis'|null)。
   // 手動切替ボタン(encodingBadgeEl)の表示・再デコードに使う。
   let lastLoadedEncoding = null;
+  // #voice(外部音色バンク)対応: 現在の曲に対になるシステムディスクのvoice.datが
+  // 見つかっている場合、そのバイト列(8192byte)とディスク名をここに持つ。
+  // applyMmlBytes()が唯一の書き込み窓口(opts.voiceBank省略時は必ずnullへ戻す設計に
+  // することで、曲を切り替えるたびに前の曲のバンクが漏れ残らないようにしている。
+  // 例外はbtnNewMml(新規作成)ハンドラで、applyMmlBytes()を経由しないため個別にnullへ
+  // 戻している)。実際に#voiceタグとしてコンパイルへ渡す箇所はcompileAndPlay()。
+  let currentVoiceBank = null;
+  let currentVoiceBankSource = null;
 
   // --- URL指定読み込み時の状態表示(常時表示。enginePaneEl内はplayerモードで丸ごと
   // 隠れるため、その外側に置く)。 ---
@@ -895,6 +908,16 @@ export async function init(ctx) {
   const MUB_PATH = '/mucom.mub';
   let lastCompiledBytes = null;
 
+  // #voice(外部音色バンク)対応: 対になるシステムディスクのvoice.datが見つかっている
+  // 曲(currentVoiceBank、applyMmlBytes()参照)をコンパイルするとき、この固定パスへ
+  // MEMFS書き込みして`#voice <path>`をコンパイル専用テキストの先頭に足す
+  // (rhythmパートのWAV書き込み、html/mucom-app.js冒頭のMEMFS書き込み箇所と同じ
+  // 「html/mucom-app.jsがコンパイル前にMEMFSへ書く」作法)。
+  const VOICE_BANK_MEMFS_PATH = '/voicebank_ext.dat';
+  // MMLが既に`#voice`ヘッダを持っている場合はそちらを尊重し、上書きしない
+  // (利用者指示)。net-load.js mmlHeaderField()と同じ「行頭の#<field>」規則。
+  const EXPLICIT_VOICE_TAG_RE = /^[ \t]*#voice\b/im;
+
   function compileAndPlay() {
     if (!moduleReady) return;
     const mml = document.getElementById('mml').value;
@@ -911,11 +934,30 @@ export async function init(ctx) {
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;
+    // #voice注入の可否を先に決める(元のmml、名前解決前のテキストで判定する。
+    // `@"名前"`置換は`#voice`行に触れないため、先に判定しても後に判定しても結果は
+    // 同じだが、名前解決に使う表を選ぶ材料として先に必要になる)。
+    // currentVoiceBankがあり、かつMML側が既に`#voice`を持っていない場合だけ外部
+    // バンクを使う(利用者指示: 既に`#voice`がある場合はそちらを尊重して上書きしない)。
+    const voiceBankApplied = Boolean(currentVoiceBank) && !EXPLICIT_VOICE_TAG_RE.test(mml);
     // 課題(音色名解決): `@"名前"` はMUCOM88のZ80コンパイラが非ASCII名で必ず落ちる
     // (ui/mucom-voice-resolve.js冒頭コメント参照)。コンパイルに渡すテキストだけを
     // `@番号` へ事前置換し、利用者が編集しているMML本文(mml変数・textarea)自体は
     // 一切書き換えない(表示は常に原文のまま)。
-    const { text: mmlForCompile, unresolvedNames } = resolveMucomVoiceNameRefs(mml);
+    // 【最重要・外部音色バンク対応】名前解決の表も外部バンク側へ切り替える: 外部
+    // バンクを使う曲(voiceBankApplied)では、そのバンクのバイト列自身から作った
+    // 名前表で解決しないと、既定バンクの表のまま`@番号`へ置換した結果が外部バンク
+    // 側では別の音色を指してしまう(ui/mucom-voice-resolve.js冒頭コメント参照)。
+    const { text: mmlNameResolved, unresolvedNames } =
+      resolveMucomVoiceNameRefs(mml, voiceBankApplied ? currentVoiceBank : undefined);
+    // #voice注入: コンパイル専用テキストの先頭へ`#voice <MEMFSパス>`を足す。
+    // 利用者が編集しているMML本文(mml変数・textarea)には一切触れない
+    // (音色名解決と同じ方針)。
+    let mmlForCompile = mmlNameResolved;
+    if (voiceBankApplied) {
+      Module.FS.writeFile(VOICE_BANK_MEMFS_PATH, currentVoiceBank);
+      mmlForCompile = `#voice ${VOICE_BANK_MEMFS_PATH}\n${mmlNameResolved}`;
+    }
     Module.compileMML(mmlForCompile, selectedRate());
     const msgPtr = Module.getCompileMessagePointer();
     const msgLen = Module.getCompileMessageLength();
@@ -923,6 +965,9 @@ export async function init(ctx) {
     let compileMessage = cp932MessageDecoder.decode(msgBytes);
     if (unresolvedNames.length > 0) {
       compileMessage += `\n[注意] 一部の音色名を解決できませんでした: ${unresolvedNames.join(', ')}`;
+    }
+    if (voiceBankApplied) {
+      compileMessage += `\n[情報] このディスクの音色バンク(${currentVoiceBankSource ?? '外部バンク'})を使用しています`;
     }
     renderCompileResult(compileMessage);
     const audioStateAfter = globalThis.mucomAudioState;
@@ -964,6 +1009,11 @@ export async function init(ctx) {
     }
     mmlEditorApi.render();
     lastLoadedRawBytes = null;
+    // #voice対応: このハンドラはapplyMmlBytes()を経由しないため、外部音色バンクの
+    // 状態もここで個別にリセットする(でないと直前の曲のバンクが新規作成の雛形に
+    // 残ってしまう)。
+    currentVoiceBank = null;
+    currentVoiceBankSource = null;
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
     clearCompileStatus();
     // 課題D: 新規作成の雛形には#voice/#pcm/リズムが無いため、告知も消す。
@@ -1006,6 +1056,13 @@ export async function init(ctx) {
     if (opts.name !== undefined) {
       currentSongName = opts.name;
     }
+    // #voice(外部音色バンク)対応: opts.voiceBankが渡されなければ必ずnullに戻す
+    // (unconditionalな代入。曲を切り替えるたびに前の曲のバンクが残らないようにする
+    // ための唯一の窓口。対になるシステムディスクを持つ書庫由来の曲だけが
+    // opts.voiceBankを渡してくる。単体ファイル/D&D/曲ライブラリ選択(バンク無し)/
+    // サンプル読み込みはすべてここでnullへ戻る)。
+    currentVoiceBank = opts.voiceBank ?? null;
+    currentVoiceBankSource = opts.voiceBankSource ?? null;
   }
 
   function downloadMML(url) {
@@ -1181,8 +1238,23 @@ export async function init(ctx) {
           return;
         }
       }
-      applyMmlBytes(chosen.entry.data, { name: chosen.displayName });
-      setNetStatus(`読み込みました: ${chosen.displayName}(再生ボタンを押してください)`, false);
+      // #voice対応: 選んだ曲のディスク(MML_<X>.d88由来)に対になるシステムディスク
+      // (MUCOM88_V<バージョン>_<X>.d88)のvoice.datが同じ書庫内に見つかれば、それを
+      // コンパイル時に使う(net/voice-bank.js参照)。見つからない場合(ALGARNA/
+      // SLAP_FIGHT_MDのように対になるシステムディスクが無い、または単体ファイル/
+      // zip直下の.muc等d88経由でない曲)はnullのまま=従来どおり既定バンクで鳴る。
+      const voicePair = findPairedVoiceBank(resolved.entries, chosen.entry.name);
+      applyMmlBytes(chosen.entry.data, {
+        name: chosen.displayName,
+        voiceBank: voicePair ? voicePair.bytes : null,
+        voiceBankSource: voicePair ? voicePair.sysDiskName : null,
+      });
+      setNetStatus(
+        voicePair
+          ? `読み込みました: ${chosen.displayName}(音色バンク: ${voicePair.sysDiskName}、再生ボタンを押してください)`
+          : `読み込みました: ${chosen.displayName}(再生ボタンを押してください)`,
+        false,
+      );
       reflectLoadedUrlInAddressBar(url);
       return;
     }

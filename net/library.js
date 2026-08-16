@@ -13,6 +13,7 @@
 
 import { albumGroupPathFor, resolveTrackInfo } from './album-info.js';
 import { decodeMmlBytes } from './charset.js';
+import { findPairedVoiceBank } from './voice-bank.js';
 
 const DB_NAME = 'fmsound-library';
 const DB_VERSION = 1;
@@ -170,6 +171,15 @@ async function upsertOne(store, input, now) {
     trackNumber: input.trackNumber ?? null,
     origin: input.origin,
     bytes: input.bytes,
+    // #voice(外部音色バンク)対応: 対になるシステムディスクのvoice.datが見つかった曲は
+    // ここにそのバイト列(8192byte)を一緒に保存する(net/voice-bank.js参照)。
+    // 保存しないと「次回ライブラリから開いたときだけ音が既定バンクに戻ってしまう」
+    // 退行になるため、曲本体と同じレコードへ含める判断にした(サイズは1曲あたり
+    // 約8KBで許容範囲、archiveを取り直さなくても再生時の音が再現できる)。
+    // 対が無い曲(既定バンクのまま)はnull。schemaVersion=1のまま(新規フィールドの
+    // 追加のみでマイグレーション不要、既存レコードは読み出し時に`?? null`で扱う)。
+    voiceBank: input.voiceBank ?? null,
+    voiceBankSource: input.voiceBankSource ?? null,
     contentHash,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
@@ -230,6 +240,10 @@ export async function importArchiveSongs(db, input) {
     // trackInfo(LIST_*.txt由来) > null(呼び出し側はファイル名を表示する)。
     const title = mmlHeaderField(c.entry.data, 'title') ?? trackInfo.trackTitle ?? null;
     const composer = mmlHeaderField(c.entry.data, 'composer') ?? trackInfo.composer ?? null;
+    // #voice(外部音色バンク)はMUCOM88固有の仕組み(PMDには存在しない)。driverが
+    // 'pmd'の場合は対になるシステムディスクを探しにいかない(PMD側には一切影響
+    // させない、という要求を型で保証する)。
+    const pair = driver === 'mucom' ? findPairedVoiceBank(entries, c.entry.name) : null;
     return {
       driver,
       fileName: c.displayName,
@@ -238,6 +252,8 @@ export async function importArchiveSongs(db, input) {
       trackNumber: trackInfo.trackNumber ?? null,
       origin: { kind: 'url', url, archiveName: archiveLabel, groupPath, entryPath: c.entry.name },
       bytes: c.entry.data,
+      voiceBank: pair ? pair.bytes : null,
+      voiceBankSource: pair ? pair.sysDiskName : null,
     };
   });
   const { addedCount, unchangedCount } = await saveSongs(db, inputs);
