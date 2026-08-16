@@ -28,7 +28,10 @@ real driver's output.
 3. The toolbar icons let you "Open a song" (a local `.M`/`.m`/`.muc` file, or
    drag & drop), "Switch to editor mode" (write and play MML directly), and
    "Download" (MML source / compiled binary / asm `db` array — three
-   formats).
+   formats). Opening a file or dropping one also accepts a ZIP/LZH archive
+   (including one holding a `.d88` disk image) — the contents are extracted
+   so you can pick a song from inside, same as loading an archive by URL
+   below.
 4. Adding `?mml=<URL>` opens the page with the MML/song file at that URL
    already loaded. Pointing it at a ZIP/LZH archive extracts the contents so
    you can pick a song from inside (loading only — it won't autoplay, since
@@ -36,9 +39,24 @@ real driver's output.
    yourself).
 5. Keyboard shortcuts: `⌘/Ctrl+Enter` to compile & play, `Esc` to stop.
 6. Click a part's row on the FMDSP screen to mute just that part (click again
-   to unmute — there's no solo function). A muted row is shown in a dim
-   color. Reloading a song clears all mutes. This only works with
-   mouse/touch clicks; keyboard control isn't supported yet.
+   to unmute — there's no solo function). A muted row keeps its original
+   color but dims it, and its keyboard highlight dims the same way. The
+   rhythm part has no row of its own, so mute it by clicking the RHY column
+   in the level meters on the right; the FM1–SSG3/ADPCM columns there mirror
+   the same mute state as their part rows (the PPZ columns don't support
+   muting). Hovering anything mutable (a part row or a level-meter column)
+   draws an outline around it before you click. Parts are shown in three
+   brightness levels — normal, muted (half brightness), and "unused by this
+   song" (quarter brightness, only available when the MML was compiled in
+   this app rather than loaded as an already-compiled `.M`/`.m` file).
+   Reloading a song clears all mutes. This only works with mouse/touch
+   clicks; keyboard control isn't supported yet.
+7. The "language" button in the header switches the UI between Japanese and
+   English (its label shows the language it will switch *to*). The choice is
+   remembered in the browser and takes priority over `?lang=ja`/`?lang=en`;
+   without either, it falls back to the browser's language.
+8. The header's help icon opens `html/help.html`, a step-by-step usage guide
+   with screenshots (also available in Japanese/English).
 
 ## What it can't do (important)
 
@@ -63,9 +81,22 @@ The player currently has a few honest limitations worth stating up front.
   longer does: rhythm went from "silent" to "audible but different," which
   is a smaller gap than a completely missing part, so it's no longer called
   out on every screen. The limitation itself is unchanged.)
+- **MUCOM88 compile error messages are always in Japanese, regardless of the
+  page's language setting.** They come from a Japanese error table built
+  into the wasm module, so even with the UI set to English, the error text
+  itself stays in Japanese.
 - **The PMD compiler (this project's own MML→binary converter) only
   supports the v1 basic command set** — PPZ8, LFO, portamento, and similar
   are out of scope. See `docs/pmd-compiler-spec.md` for details.
+- **The right-pane FMDSP counters CPU POWER COUNT, VOLUME DOWN, and PGM
+  NUMBER can't show a value** (shown dimmed instead of a live number).
+  CPU POWER COUNT is permanently unobtainable — browsers have no API for a
+  process/tab's CPU usage. VOLUME DOWN and PGM NUMBER aren't a wasm-export
+  gap: the upstream FMDSP drawing code never had logic to render a value for
+  them, and no data field for either exists in the shared driver interface
+  it reads from. FRAMES PER SECOND, by contrast, *is* implemented — it just
+  counts the host draw loop's own frequency, no driver data needed. See
+  `docs/right-pane-data.md` §8 for the source-level detail.
 - **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
 
 ## ⚠ MML differences between drivers (`t`/`T`/`C` are swapped)
@@ -166,6 +197,19 @@ tools/build_dist.sh
 `dist/` is the assembled distribution directory (GitHub Pages is expected to
 serve this). To check it locally, serve `dist/` with a static server and
 open it in a browser (e.g. `python3 -m http.server 8000 --directory dist`).
+
+The screenshots on the usage page (`html/help.html`) are generated
+reproducibly by `tools/gen_help_shots.mjs` (macOS only — it drives a local
+Google Chrome headlessly over the DevTools Protocol, no npm dependency
+added). Run it after `tools/build_dist.sh` so `dist/` is current:
+
+```bash
+node tools/gen_help_shots.mjs
+```
+
+It serves `dist/` on port 8790 and writes `html/help/<name>.<lang>.png`.
+There's no need to re-run this unless the screens it captures actually
+changed.
 
 When `mucomweb` is configured, patches under `mucomweb/patches/` (three of
 them: exposing accessors, level meters, and the rhythm part's `rhythmpath`)

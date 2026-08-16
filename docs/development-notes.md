@@ -193,6 +193,36 @@ FMSound/
   MUCOM88側の `samplja.muc`（日本語コメント表示の確認用テストファイル）は
   利用者向けサンプルではないため、`?debug=1` のときだけリンクを表示する。
 
+### 公開前の仕上げ（2026-08-16〜17 完了）
+
+- **ADPCM(Kパート)対応。** MUCOM88標準PCMバンク `html/mucompcm.bin` を同梱し、
+  曲コンパイル成功のたびに `LoadPCM()` を呼ぶようにした。解決できない `#pcm` は
+  無音にならず標準バンクで鳴る（旧記述「無音になる」は誤りだったため
+  README/NOTICE.md/help.html を訂正済み）。46曲での実測は
+  `docs/mucom-adpcm-corpus-measurement.md`、検出層は `ui/mml-caveats.js`
+  （`STANDARD_PCM_BANK_NAME` 判定）。
+- **UIの日英対応。** 辞書方式（`ui/i18n.js`）。決定順は
+  記憶(localStorage、明示操作時のみ書込) > `?lang=` > `navigator.language`。
+  切替は1ボタン（押すと切り替わる先の言語名を表示）。検証: `tools/verify_i18n.mjs` /
+  `tools/verify_lang_pref.mjs` / `tools/verify_lang_toggle_label.mjs`。
+- **使い方ページ** `html/help.html`（日英、`data-lang` 2ブロック方式）と
+  ヘッダーのヘルプボタン。節の集合一致を `tools/verify_help_page.mjs` が検査。
+- **スクリーンショット生成** `tools/gen_help_shots.mjs`。npm依存を足さず、
+  macOSのChromeをheadlessで起動しCDPをNode組み込みWebSocketで直叩きする方式。
+- **ファイル選択/D&Dでの書庫(zip/lzh/d88)対応。** URL読み込みと同じ展開経路を
+  共有（`tools/verify_open_file_archive.mjs`）。
+- **FMDSPのミュート機能。** トラック行クリック/レベルメータークリック
+  （リズムはRHY列）でパート単位ミュート。ホバー枠、3段階の暗色表示
+  （通常/ミュート/曲が使っていない、色相を変えず係数乗算で明度のみ落とす）。
+  「曲が使っていない」判定はMUCOM88は常時、PMDはこのアプリでコンパイルした
+  場合のみ可能（済コンパイル済み`.M`/`.m`読込では不可）。検証:
+  `tools/verify_track_click_hit.mjs` ほか `verify_*mute*.mjs`/`verify_*hover*.mjs`
+  一式。
+- **右ペイン。** FRAMES PER SECOND を実装（ホスト描画ループの実測、ドライバ
+  データ不要）。CPU POWER COUNT/VOLUME DOWN/PGM NUMBER は出せない値として
+  暗色化（理由の詳細は `docs/right-pane-data.md` §8）。検証:
+  `tools/verify_fps_counter.mjs` / `tools/verify_right_pane_unavailable_colors.mjs`。
+
 ### 検証環境の注意
 
 ブラウザプレビュー環境の `ctx.outputLatency` は **168ms**（仮想オーディオデバイス）。
