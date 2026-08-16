@@ -122,6 +122,17 @@ MUCOM88のリズム(G)パートを鳴らすために同梱している6本のPCM
 - 上記「含まないもの」(ROM/市販ソフトウェアのデータを含まない)という既存方針と
   矛盾しない(ROM由来ではなく作者独自制作のため)。
 
+## `html/mucompcm.bin`(MUCOM88 Kパート(ADPCM)用の標準PCMバンク)
+
+MUCOM88パッケージ同梱の標準PCMバンク(`upstream/MucomWeb/mucom88/package/mucompcm.bin`)を
+無改変でコピーしたもの。サイズ63,640バイト、md5 `db66206edef7a3cbff79a72576d23aa6`。
+
+- ライセンス: `upstream/MucomWeb/mucom88/package/license.txt` により CC BY-NC-SA 4.0
+  (Copyright 1987-2019 Yuzo Koshiro ほか。adpcm converter は gasshi 2018)。
+- FMSoundはMUCOM88同梱コード・データを既に含んでいることを理由にプロジェクト全体を
+  CC BY-NC-SA 4.0としている(このファイルも同じ配布元・同じライセンスのため、新たな
+  制約を追加するものではない)。
+
 ## 含まないもの
 
 ROM イメージ(PC-98 本体 BIOS 等)や市販ソフトウェアのデータは、

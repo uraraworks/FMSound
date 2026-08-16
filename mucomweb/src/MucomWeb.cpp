@@ -481,6 +481,17 @@ std::string CompileMML(const std::string& mml, int sampleRate)
 		g_mucom = std::make_unique<CMucom>();
 		g_mucom->Init(nullptr, MUCOM_CMPOPT_STEP, sampleRate);
 		g_mucom->Reset(0);
+		// Kパート(ADPCM)用の標準PCMバンクを読み込む。ADPCM RAM(fmgen opna.cpp:1253、
+		// 256KB)はCMucom/OPNAインスタンスごとに持つため、g_mucomを作り直すたびに
+		// 読み直しが要る(使い回しはできない)。
+		// 必ずLoadMusic()/Play()より前に呼ぶこと: LoadPcmFromMem()(mucomvm.cpp)は
+		// VMメモリ0xd000を情報テーブル展開の一時領域に使う一方、Play()は曲データを
+		// 0xc200へSendMemする。順序が逆だと曲データを破壊する。
+		// バンク実体はhtml/mucompcm.bin(html/mucom-app.jsがMEMFSの/mucompcm.binへ
+		// 事前に書き込む。NOTICE.md参照)。ファイルが無い場合はLoadPCM()が
+		// "#PCM file not found"をメッセージバッファへ出して-1を返すだけで、
+		// 以降の再生自体は継続する(従来どおりKパートだけ無音に戻る)。
+		g_mucom->LoadPCM("/mucompcm.bin");
 		if (g_mucom->LoadMusic(mubPath) >= 0 &&
 			g_mucom->Play(0) >= 0)
 		{

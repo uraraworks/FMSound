@@ -102,6 +102,28 @@ A @78 T120 o5 l4 v10 cdefgab>c<
 // とどめる。
 const RHYTHM_SAMPLE_NAMES = ['BD', 'SD', 'TOP', 'HH', 'TOM', 'RIM'];
 
+// Kパート(ADPCM)用の標準PCMバンク(html/mucompcm.bin)をMEMFSへ書き込む。
+//
+// wasm側(mucomweb/src/MucomWeb.cpp CompileMML())が曲コンパイル成功のたびに
+// g_mucom->LoadPCM("/mucompcm.bin") を呼んでこの固定パスを読みに行くため、
+// ここではその場所へ事前に置いておくだけでよい(loadRhythmSamples()と同じ作法)。
+//
+// バンク実体の出典・ライセンス(MUCOM88パッケージ同梱、CC BY-NC-SA 4.0)は
+// NOTICE.md参照。
+//
+// fetchに失敗しても(オフライン/ホスティング事情等)例外は投げず、コンソールに
+// 警告するだけにとどめる(Kパートだけ従来どおり無音に戻る。他のパートは影響なし)。
+async function loadPcmBank(Module) {
+  try {
+    const response = await fetch('./mucompcm.bin');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    Module.FS.writeFile('/mucompcm.bin', new Uint8Array(buffer));
+  } catch (e) {
+    console.warn('[mucom-app] 標準PCMバンク(mucompcm.bin)の読み込みに失敗しました。Kパート(ADPCM)は無音のままになります。', e);
+  }
+}
+
 async function loadRhythmSamples(Module) {
   try {
     Module.FS.mkdir('/rhythm');
@@ -393,6 +415,7 @@ export async function init(ctx) {
 
   const Module = await createMucomWeb();
   await loadRhythmSamples(Module);
+  await loadPcmBank(Module);
   moduleReady = true;
   updateTransportButtonUI();
 
