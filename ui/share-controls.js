@@ -156,18 +156,26 @@ export function createShareControls(opts) {
   buttonEl.id = `btnShare-${driverKey}`;
 
   // --- カウンタ(数字+ゲージ、常時表示。ツールバー内、ボタンの隣に置く) ---
+  // 課題(テスト容易性・2026-08-17): innerHTML+querySelector()ではなく
+  // document.createElement()の積み上げで組み立てる。DOM操作(このrenderCounter()/
+  // resetShareResult()等)を、innerHTMLのHTMLパーサに依存しない最小限のDOMスタブ
+  // (tools/verify_share_controls_dom.mjs参照)でも実行できるようにするため
+  // (innerHTML代入はJSDOM等の本格的なDOM実装が無いと再現できず、Node単体では
+  // 検証できない。createElement()の積み上げだけならスタブで足りる)。
   const counterEl = document.createElement('div');
   counterEl.className = 'share-counter';
   counterEl.id = `shareCounter-${driverKey}`;
-  counterEl.innerHTML = `
-    <span class="share-counter-label"></span>
-    <span class="share-counter-text"></span>
-    <span class="share-counter-gauge"><span class="share-counter-gauge-fill"></span></span>
-  `;
-  const labelEl = counterEl.querySelector('.share-counter-label');
-  const textEl = counterEl.querySelector('.share-counter-text');
-  const gaugeFillEl = counterEl.querySelector('.share-counter-gauge-fill');
+  const labelEl = document.createElement('span');
+  labelEl.className = 'share-counter-label';
   labelEl.textContent = t('share.counterLabel');
+  const textEl = document.createElement('span');
+  textEl.className = 'share-counter-text';
+  const gaugeEl = document.createElement('span');
+  gaugeEl.className = 'share-counter-gauge';
+  const gaugeFillEl = document.createElement('span');
+  gaugeFillEl.className = 'share-counter-gauge-fill';
+  gaugeEl.append(gaugeFillEl);
+  counterEl.append(labelEl, textEl, gaugeEl);
 
   // --- コピー結果表示(成功メッセージ/警告)+ コピー失敗時のみ出すフォールバック欄 ---
   // 普段は両方非表示。toolbar.insertAdjacentElement('afterend', ...)で
@@ -175,19 +183,46 @@ export function createShareControls(opts) {
   const resultWrapEl = document.createElement('div');
   resultWrapEl.className = 'share-result hidden';
   resultWrapEl.id = `shareResult-${driverKey}`;
-  resultWrapEl.innerHTML = `
-    <p class="share-result-message" id="shareResultMessage-${driverKey}"></p>
-    <p class="share-result-warning hidden" id="shareResultWarning-${driverKey}"></p>
-    <input type="text" class="share-fallback-input hidden" id="shareFallbackInput-${driverKey}" readonly>
-  `;
-  const messageEl = resultWrapEl.querySelector(`#shareResultMessage-${driverKey}`);
-  const warningEl = resultWrapEl.querySelector(`#shareResultWarning-${driverKey}`);
-  const fallbackInputEl = resultWrapEl.querySelector(`#shareFallbackInput-${driverKey}`);
+  const messageEl = document.createElement('p');
+  messageEl.className = 'share-result-message';
+  messageEl.id = `shareResultMessage-${driverKey}`;
+  const warningEl = document.createElement('p');
+  warningEl.className = 'share-result-warning hidden';
+  warningEl.id = `shareResultWarning-${driverKey}`;
+  const fallbackInputEl = document.createElement('input');
+  fallbackInputEl.type = 'text';
+  fallbackInputEl.className = 'share-fallback-input hidden';
+  fallbackInputEl.id = `shareFallbackInput-${driverKey}`;
+  fallbackInputEl.readOnly = true;
+  resultWrapEl.append(messageEl, warningEl, fallbackInputEl);
   fallbackInputEl.setAttribute('aria-label', t('share.fallbackInputAriaLabel'));
   // 読み取り専用の1行欄: フォーカスで全選択(利用者指示、コピーの近道として機能させる)。
   fallbackInputEl.addEventListener('focus', () => fallbackInputEl.select());
 
+  // 課題(実機報告・2026-08-17): 「コピーしました」表示/コピー失敗時のURLテキスト欄が、
+  // 曲を切り替えても前の曲の内容のまま残っていた。クリップボードには前の曲のURLが
+  // 入ったままなので、利用者が「新しい曲のリンクだ」と誤解して貼ってしまう実害がある。
+  // 対策: カウンタ(数字/ゲージ)・コピー結果メッセージ・音色バンク警告・フォールバック
+  // URL欄の4つを、同じ入力源(renderCounter。setPending()/recompute()どちらのonUpdateも
+  // 必ずここを通る)から一括で無効化する。ここ1箇所に集約することで、
+  // 「読み込み経路のどれか1つだけ配線し忘れる」(e64ea91で実際に起きた不具合と同じ形)を
+  // 構造的に防ぐ(呼び出し側=mucom-app.js/pmd-app.jsに新しいフックを追加する必要はない。
+  // 既存のmarkDirty()/markCompiled()呼び出しが全経路をこの関数へ運んでくる)。
+  function resetShareResult() {
+    resultWrapEl.classList.add('hidden');
+    messageEl.textContent = '';
+    warningEl.textContent = '';
+    warningEl.classList.add('hidden');
+    fallbackInputEl.classList.add('hidden');
+    fallbackInputEl.value = '';
+  }
+
   function renderCounter(state) {
+    // 状態が変わる(=集計対象のMMLが変わった)たびに必ず先へ進む前に消す。
+    // handleShareClick()自身のrecompute()もここを通るため、共有ボタンを押した瞬間
+    // 一旦消えてから、コピー結果に応じて改めて表示される(=「前の曲の結果が
+    // 一瞬でも新しい曲の結果と誤認される」余地が無い)。
+    resetShareResult();
     if (state.kind !== 'ready') {
       textEl.textContent = t('share.counterPending');
       counterEl.title = t('share.counterPendingAriaLabel');
@@ -222,7 +257,10 @@ export function createShareControls(opts) {
 
   /** コンパイル(再生)成功時に呼ぶ。集計だけ行い、コピーはしない。 */
   function markCompiled(mmlText) {
-    recomputer.recompute(mmlText).catch((err) => {
+    // Promiseを返す(呼び出し側のhtml/mucom-app.js・html/pmd-app.jsはawaitせず
+    // fire-and-forgetのまま使う想定だが、返り値自体は無害。tools/verify_share_controls_dom.mjs
+    // が完了を確実に待つために利用する)。
+    return recomputer.recompute(mmlText).catch((err) => {
       // 集計(URL生成)自体の失敗はUIを壊さない程度に留める(共有ボタン押下時に
       // 改めて再計算されるため、ここでは黙って未集計のままにする)。
       console.error('[share-controls] recompute failed:', err);

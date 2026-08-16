@@ -1142,6 +1142,12 @@ export async function init(ctx) {
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
     clearCompileStatus();
+    // 実機報告(2026-08-17): 「曲を開く」で別の曲(バイナリ)を読み込んでも、直前に
+    // コピーした共有リンク/カウンタがそのまま残っていた。この経路はmmlTextareaを
+    // 触らない(MMLソースを経由しないバイナリ直接再生)ため他のmarkDirty()呼び出しの
+    // 対象に自然には入らないが、「別の曲を開いた」という事実自体がクリップボードの
+    // 内容を古くするので、この唯一の窓口(playBytes())でも明示的に無効化する。
+    shareControls.markDirty();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     currentSongName = fileNameForBar;
     Module.FS.writeFile('/' + name, bytes);
