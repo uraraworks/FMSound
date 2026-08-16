@@ -101,9 +101,32 @@ export function setupFullscreen(cardEl, btnEl, labels = {}, onChange) {
 export function setupPopover(btnEl, popoverEl) {
   function place() {
     const rect = btnEl.getBoundingClientRect();
-    popoverEl.style.top = `${Math.round(rect.bottom + 6)}px`;
-    const left = Math.min(rect.left, window.innerWidth - popoverEl.offsetWidth - 8);
-    popoverEl.style.left = `${Math.max(8, Math.round(left))}px`;
+    const margin = 8;
+    let top = Math.round(rect.bottom + 6);
+    const left = Math.min(rect.left, window.innerWidth - popoverEl.offsetWidth - margin);
+    popoverEl.style.left = `${Math.max(margin, Math.round(left))}px`;
+
+    // 課題(2026-08-16、利用者報告): 曲ライブラリのように内容が伸縮するポップオーバーは、
+    // ビューポート下端を超える高さになると画面外へはみ出し、下側の内容に一切到達できなく
+    // なる(position: fixedなのでページ自体がスクロールできても救えない)。
+    // ボタン直下の残り高さで頭打ちにし、ポップオーバー自身の中でスクロールできるようにする
+    // (popoverEl側は.settings-popoverのoverflow-y:auto、ui/styles.css参照)。
+    //
+    // 【追補】ボタン自体がビューポート下端に近い(画面高が小さい等)場合、単純に
+    // 「ボタン直下の残り高さ」だけで頭打ちにすると最低限のスクロール領域すら確保できず
+    // (実測: 画面高600pxでmaxHeightが数十pxまで潰れ、なお8px程度はみ出す組み合わせが
+    // あった)、依然として一部の内容に到達できなくなる。その場合は下ではなく可能な範囲で
+    // 上へ寄せてでも、ビューポート内に完全に収まる最低限の高さ(minUsableHeight)を確保する
+    // (固定pxを決め打ちにすると別の画面高で同じ問題が再発するため、呼び出し元ごとに
+    // 書くのではなくここ1箇所(全ポップオーバー共通)で計算する)。
+    const minUsableHeight = Math.min(160, window.innerHeight - margin * 2);
+    let maxHeight = window.innerHeight - top - margin;
+    if (maxHeight < minUsableHeight) {
+      maxHeight = minUsableHeight;
+      top = Math.max(margin, window.innerHeight - maxHeight - margin);
+    }
+    popoverEl.style.top = `${top}px`;
+    popoverEl.style.maxHeight = `${Math.max(40, Math.round(maxHeight))}px`;
   }
 
   function close() {

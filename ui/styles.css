@@ -320,6 +320,15 @@ header.app-header .app-tagline {
   flex-direction: column;
   gap: 10px;
   font-size: 13px;
+  /* 課題(2026-08-16、利用者報告): 曲ライブラリのように内容が伸縮するポップオーバーが
+     ビューポート下端を超えて画面外へはみ出し、下側に一切到達できなくなっていた
+     (ページ自体はスクロールしないため、ページスクロールでも救えなかった)。
+     ui/shell.js setupPopover() の place() が呼び出し元ごとの決め打ちpxではなく
+     ボタン位置を踏まえた残り高さでmax-heightを都度設定するので、ここでは
+     「はみ出した分をポップオーバー自身の中でスクロールする」ことだけを宣言する
+     (全ポップオーバー共通。settings/download/library等どれも同じ恩恵を受ける)。 */
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .settings-popover.hidden {
@@ -923,7 +932,9 @@ body.pseudo-fullscreen .console-card {
 /* 曲ライブラリ(.settings-popoverの構造を共有し、中身だけ違う。アルバム→トラックの2段)。 */
 .library-popover {
   max-width: min(360px, 92vw);
-  max-height: 70vh;
+  /* max-heightは.settings-popover側のui/shell.js place()が実際のボタン位置から
+     動的に設定する(ここでの決め打ちは書かない。固定vhだと「ボタンの直下から」という
+     前提とズレて、画面高によっては依然はみ出す)。 */
 }
 
 .library-empty {
@@ -940,8 +951,9 @@ body.pseudo-fullscreen .console-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  overflow-y: auto;
-  max-height: 50vh;
+  /* スクロールは外側の.settings-popover(overflow-y:auto)1箇所に一本化する
+     (以前はここにも overflow-y:auto; max-height:50vh; があり、外側と二重にスクロール
+     領域ができてタイトル/削除ボタンが視界の外に置き去りになっていた)。 */
 }
 
 .library-album-btn {
