@@ -42,8 +42,10 @@ The player currently has a few honest limitations worth stating up front.
 
 - **It can't load external files referenced by `#voice`, or by `#pcm` other
   than the bundled default bank.** `#pcm mucompcm.bin` (the standard ADPCM
-  bank) is bundled and plays normally; any other `#voice`/`#pcm` filename
-  falls back to default voices and silent ADPCM. If a loaded MML references
+  bank) is bundled and plays normally; any other `#voice` filename falls
+  back to default voices. An unresolved `#pcm` doesn't go silent, though —
+  the standard ADPCM bank stays loaded and plays instead, so the drums
+  (ADPCM) sound different from the original. If a loaded MML references
   a file that can't be resolved this way, the UI shows a notice (that the
   voices and drums differ from the original).
 - **The rhythm part plays through substitute samples that differ from a real

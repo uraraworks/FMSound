@@ -15,6 +15,12 @@
 //      (808openhihat)をレンダリングし、absSumが互いに異なること
 //      (=PCM番号の違いが出力に出ることの確認。これが取れて初めてAの「0」を
 //      意味のある否定として読める)。
+//   D. `#pcm nosuch_bank.bin`のように解決できないファイルを指す曲のKパートが
+//      本当に無音になるのかを実測する。CMucom::Compile()(cmucom.cpp:1453)が
+//      vm->LoadAlloc(pcmname,...)失敗時にhed.pcmdataを0のまま保存するため、
+//      CMucom::Play()(cmucom.cpp:309)のif(hedmusic->pcmdata)分岐に入らず、
+//      CompileMML()が先に読み込んだ標準バンクがADPCM RAMに残ったまま使われる
+//      (=無音ではなく標準バンクの音で鳴る)という仮説を検証する。
 //
 // PCM番号の対応(upstream/MucomWeb/mucom88/package/mucompcm.bin 情報テーブル、
 // オフセット0-15の名前を実測で確認): @1=index0=kick, @11=index10=808openhihat。
@@ -39,6 +45,13 @@ const SAMPLE_RATE = 55467;
 const K_MML_KICK = 'K T120 o1 v50 @1c8@1c8@1c8@1c8\n';
 // 陽性対照用: 808openhihat(@11)版。@1版と同じ長さ・音程・音量で楽器番号だけ違う。
 const K_MML_OPENHAT = 'K T120 o1 v50 @11c8@11c8@11c8@11c8\n';
+// D. 解決できない#pcmを持つ曲(kick=@1)。標準バンク以外を指すfnameは存在しないので
+// CMucom::Compile()内のvm->LoadAlloc(pcmname,&pcmsize)(cmucom.cpp:1453)が失敗し、
+// hed.pcmdataは0のまま保存される。CMucom::Play()(cmucom.cpp:309)は
+// `if (hedmusic->pcmdata)`が偽になるため埋め込みPCM再読み込み分岐へ入らず、
+// CompileMML()が事前に読み込んだ標準バンク(g_mucom->LoadPCM("/mucompcm.bin"))が
+// ADPCM RAMに残ったまま使われる、という仮説をここで実測する。
+const K_MML_UNRESOLVED_PCM = '#pcm nosuch_bank.bin\nK T120 o1 v50 @1c8@1c8@1c8@1c8\n';
 
 // [陰性対照]の許容閾値。バンク未書き込みでもLoadPCM()が呼ばれず#PCM data not
 // foundのままADPCM RAMが未初期化の状態でrenderするため、厳密に0にはならず数千程度の
@@ -118,6 +131,22 @@ async function main() {
   check('E. コンパイルログに#errorを含まない(808openhihat)', !/#error/i.test(openhat.log));
   check('C. [陽性対照] @1(kick)と@11(808openhihat)でabsSumが異なる(PCM番号の違いが出力に出る証拠)',
     after.absSum !== openhat.absSum, `kick=${after.absSum} openhihat=${openhat.absSum}`);
+
+  // --- D. 解決できない#pcmを持つ曲は無音になるのか、標準バンクのまま鳴るのか ---
+  console.log('--- 検証用MML(#pcm nosuch_bank.bin, kick) ---');
+  console.log(K_MML_UNRESOLVED_PCM);
+  const unresolved = await measureAbsSum(Module, K_MML_UNRESOLVED_PCM);
+  console.log('--- コンパイルログ(解決できない#pcm) ---');
+  console.log(unresolved.log);
+  console.log('------------------------------------------------------');
+  check('F. コンパイルログに#errorを含まない(解決できない#pcmでもコンパイル自体は成功する)',
+    !/#error/i.test(unresolved.log));
+  check('D. [本体] 解決できない#pcmを持つ曲のKパートは無音ではなく、閾値を明確に上回る(=鳴っている)',
+    unresolved.absSum > SILENCE_ABS_SUM_THRESHOLD,
+    `absSum=${unresolved.absSum} (閾値=${SILENCE_ABS_SUM_THRESHOLD})`);
+  check('D2. 解決できない#pcmのabsSumが、#pcm無しの同じMML(標準バンクのみ)のabsSumと一致する(=標準バンクがそのまま使われている証拠)',
+    unresolved.absSum === after.absSum,
+    `unresolved(#pcm nosuch)=${unresolved.absSum} after(#pcmなし)=${after.absSum}`);
 
   console.log(`\n${passCount} PASS, ${failCount} FAIL`);
   process.exit(failCount === 0 ? 0 : 1);

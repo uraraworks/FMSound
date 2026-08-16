@@ -162,7 +162,7 @@
     <div data-lang="ja" data-help-section="caveats">
       <h2>制約と注意</h2>
       <ul>
-        <li><strong>#voice、および同梱の標準バンク以外を指す#pcmで指定される外部ファイルは読み込めません。</strong> <code>#pcm mucompcm.bin</code>(標準ADPCMバンク)は同梱済みで通常どおり鳴りますが、それ以外のファイル名を指す<code>#voice</code>/<code>#pcm</code>は音色が既定のものに、ADPCMが無音になります。読み込んだ曲がこの形で解決できないファイルを参照している場合は、画面上にその旨が表示されます。</li>
+        <li><strong>#voice、および同梱の標準バンク以外を指す#pcmで指定される外部ファイルは読み込めません。</strong> <code>#pcm mucompcm.bin</code>(標準ADPCMバンク)は同梱済みで通常どおり鳴りますが、それ以外のファイル名を指す<code>#voice</code>は音色が既定のものになります。<code>#pcm</code>の方は解決できなくても無音にはならず、標準ADPCMバンクがそのまま使われるため、ドラム(ADPCM)が本来と異なる音で鳴ります。読み込んだ曲がこの形で解決できないファイルを参照している場合は、画面上にその旨が表示されます。</li>
         <li><strong>リズム(G)パートは、実チップYM2608のROM由来PCMではなく、代替のPCMサンプルで鳴ります。</strong> 同梱している音源コアは実チップのROMを持たないため、フリー素材の代替ドラムサンプルを読み込んで再生しています(出典はNOTICE.md参照)。作者本人が本物のYM2608のリズム音とは波形が根本的に異なると明言している代替品です。</li>
         <li><strong>MUCOM88のコンパイルエラーメッセージは、このページの表示言語設定に関わらず常に日本語で出ます。</strong> wasm内に組み込まれた日本語のエラーテーブル由来のため、UIを英語にしていてもエラー本文だけは日本語のままです。</li>
         <li>PPZ8・LFO・ポルタメント等、PMDコンパイラ(自作のMML→バイナリ変換)が対応する範囲はv1の基本コマンドまでです。</li>
@@ -172,7 +172,7 @@
     <div data-lang="en" data-help-section="caveats">
       <h2>Limitations and caveats</h2>
       <ul>
-        <li><strong>It can't load external files referenced by #voice, or by #pcm other than the bundled default bank.</strong> <code>#pcm mucompcm.bin</code> (the standard ADPCM bank) is bundled and plays normally; any other <code>#voice</code>/<code>#pcm</code> filename falls back to default voices and silent ADPCM. If a loaded song references a file that can't be resolved this way, the UI shows a notice.</li>
+        <li><strong>It can't load external files referenced by #voice, or by #pcm other than the bundled default bank.</strong> <code>#pcm mucompcm.bin</code> (the standard ADPCM bank) is bundled and plays normally; any other <code>#voice</code> filename falls back to default voices. An unresolved <code>#pcm</code> doesn't go silent, though — the standard ADPCM bank stays loaded and plays instead, so the drums (ADPCM) sound different from the original. If a loaded song references a file that can't be resolved this way, the UI shows a notice.</li>
         <li><strong>The rhythm (G) part plays through substitute PCM samples, not the real YM2608 chip's ROM-derived PCM.</strong> The bundled sound core doesn't carry the real chip's ROM, so it plays free substitute drum samples instead (see NOTICE.md for the source). The author of those samples has stated plainly that they're fundamentally different in waveform from the real YM2608's rhythm sound.</li>
         <li><strong>MUCOM88 compile error messages are always in Japanese, regardless of this page's language setting.</strong> They come from a Japanese error table built into the wasm module, so even with the UI set to English, the error text itself stays in Japanese.</li>
         <li>The PMD compiler (this project's own MML→binary converter) supports PPZ8, LFO, portamento, etc. only up to the v1 basic commands.</li>
