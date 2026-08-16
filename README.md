@@ -35,6 +35,10 @@ real driver's output.
    browsers require a user gesture before audio can play, so press play
    yourself).
 5. Keyboard shortcuts: `⌘/Ctrl+Enter` to compile & play, `Esc` to stop.
+6. Click a part's row on the FMDSP screen to mute just that part (click again
+   to unmute — there's no solo function). A muted row is shown in a dim
+   color. Reloading a song clears all mutes. This only works with
+   mouse/touch clicks; keyboard control isn't supported yet.
 
 ## What it can't do (important)
 

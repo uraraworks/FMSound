@@ -10,7 +10,9 @@
 import createMucomWeb from './mucom88.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
-import { drawTrackRows, createIdleEntryTracks } from './fmdsp/trackrow.js';
+import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } from './fmdsp/trackrow.js';
+import { buildMucomChannelMask, channelForRow } from './fmdsp/channel-mask.js';
+import { canvasPointFromClientClick, trackRowIndexAt } from './fmdsp/track-click.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment } from './fmdsp/comment.js';
@@ -566,6 +568,31 @@ export async function init(ctx) {
   const vram = new Vram(PC98_W, PC98_H);
   const canvasCtx = canvas.getContext('2d');
 
+  // トラック行クリックミュート機能(利用者指示: クリックでミュート、もう一度で解除。
+  // ソロ機能は無し)。mutedRows: ミュート中の行index(0-9、fmdsp/trackrow.jsの
+  // TRACK_DISP_TABLE_OPNA順=FM1-6,SSG1-3,ADPCM)。
+  // マスク値の組み立ては fmdsp/channel-mask.js の buildMucomChannelMask() に
+  // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
+  // 作って両方へ渡すような真似は絶対にしない)。
+  const mutedRows = new Set();
+  function applyChannelMask() {
+    if (typeof Module.setChannelMask === 'function') {
+      const mutedChannels = new Set([...mutedRows].map((row) => channelForRow(row)));
+      Module.setChannelMask(buildMucomChannelMask(mutedChannels));
+    }
+  }
+  canvas.addEventListener('click', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const point = canvasPointFromClientClick(event.clientX, event.clientY, rect, PC98_W, PC98_H);
+    if (!point) return;
+    const row = trackRowIndexAt(point.x, point.y, {
+      trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
+    });
+    if (row < 0) return;
+    if (mutedRows.has(row)) mutedRows.delete(row); else mutedRows.add(row);
+    applyChannelMask();
+  });
+
   const palette = PALETTES[0];
 
   rightpane.drawStaticDecorations(vram, FMSOUND_VERSION_FIELDS, 'MUCOM88');
@@ -788,7 +815,7 @@ export async function init(ctx) {
 
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks);
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRows);
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
 
       const audioState = globalThis.mucomAudioState;
@@ -849,7 +876,7 @@ export async function init(ctx) {
           stoppedFrameDrawn = true;
           idleDrawnSongName = currentSongName;
           vram.pixels.set(staticVramSnapshot);
-          drawTrackRows(vram, fmdspFont, idleEntryTracks);
+          drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRows);
           drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, false, 0);
           rightPaneFrameCounter = (rightPaneFrameCounter + 1) & 0xffffffff;
           rightpane.drawCircle(vram, { playing: false, paused: false, timerbCnt: 0, frameCnt: rightPaneFrameCounter });
@@ -961,6 +988,10 @@ export async function init(ctx) {
     // 要求どおりの箇所として明示的に置く)。
     clearCompileStatus();
     adapter.reset();
+    // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
+    // 次の曲へ持ち越さない)。
+    mutedRows.clear();
+    applyChannelMask();
     setCommentFromMml(mml);
     const audioStateBefore = globalThis.mucomAudioState;
     const generationBefore = audioStateBefore ? audioStateBefore.generation : null;

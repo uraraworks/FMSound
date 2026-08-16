@@ -22,10 +22,14 @@ uint32_t pmdweb_get_snapshot_level_offset(void);
 int pmdweb_get_fft_bin_count(void);
 int pmdweb_get_level_count(void);
 int pmdweb_get_level_field_count(void);
+void pmdweb_set_channel_mask(unsigned mask);
+int pmdweb_test_load_ppc_file(const char *path);
 }
 
 namespace {
 std::string PlayMusic(const std::string &path) { return pmdweb_play_music(path.c_str()); }
+// 検証専用(tools/verify_pmd_channel_mute.mjs)。PmdCore.c のコメント参照。
+bool TestLoadPpcFile(const std::string &path) { return pmdweb_test_load_ppc_file(path.c_str()) != 0; }
 }
 
 int main() { return 0; }
@@ -57,4 +61,8 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("getFftBinCount", &pmdweb_get_fft_bin_count);
   emscripten::function("getLevelCount", &pmdweb_get_level_count);
   emscripten::function("getLevelFieldCount", &pmdweb_get_level_field_count);
+  // FMDSPトラック行クリックミュート機能(fmdsp/trackrow.js、fmdsp/channel-mask.js参照)。
+  emscripten::function("setChannelMask", &pmdweb_set_channel_mask);
+  // 検証専用(tools/verify_pmd_channel_mute.mjs)。製品UIからは呼ばれない。
+  emscripten::function("testLoadPpcFile", &TestLoadPpcFile);
 }

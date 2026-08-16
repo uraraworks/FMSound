@@ -28,7 +28,9 @@
 import createPmdWeb from './pmdweb.js';
 import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
-import { drawTrackRows, createIdleEntryTracks } from './fmdsp/trackrow.js';
+import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA } from './fmdsp/trackrow.js';
+import { buildPmdChannelMask, channelForRow } from './fmdsp/channel-mask.js';
+import { canvasPointFromClientClick, trackRowIndexAt } from './fmdsp/track-click.js';
 import { PALETTES } from './fmdsp/palette.js';
 import { FONT_SMALL } from './fmdsp/font_small.js';
 import { drawComment, commentScroll } from './fmdsp/comment.js';
@@ -447,6 +449,20 @@ export async function init(ctx) {
   const canvasCtx = canvas.getContext('2d');
   const palette = PALETTES[0];
 
+  // トラック行クリックミュート機能(利用者指示: クリックでミュート、もう一度で解除。
+  // ソロ機能は無し)。mutedRows: ミュート中の行index(0-9、fmdsp/trackrow.jsの
+  // TRACK_DISP_TABLE_OPNA順=FM1-6,SSG1-3,ADPCM)。
+  // マスク値の組み立ては fmdsp/channel-mask.js の buildPmdChannelMask() に
+  // 一元化してある(MUCOM88とPMDでビット割り当てが違うので、ここで共通マスクを
+  // 作って両方へ渡すような真似は絶対にしない)。
+  const mutedRows = new Set();
+  function applyChannelMask() {
+    if (typeof Module.setChannelMask === 'function') {
+      const mutedChannels = new Set([...mutedRows].map((row) => channelForRow(row)));
+      Module.setChannelMask(buildPmdChannelMask(mutedChannels));
+    }
+  }
+
   // バージョン文字列: FMPLAYER_VERSION_0/1/2相当の値はwasm側に対応exportが無く、
   // でっち上げないため固定のプレースホルダ('-','-','-')にする(旧pmdweb/html/index.html
   // と同じ方針)。
@@ -490,14 +506,13 @@ export async function init(ctx) {
   const TRI_HIT_PAD_X = 20;
   const TRI_HIT_PAD_Y = 8;
   canvas.addEventListener('click', (event) => {
-    if (lastTriangles.length === 0) return; // 三角が1つも描かれていない=反応しない
     const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
     // 表示上のクリック座標(CSS px、rescale()でcanvas.style.width/heightが可変)を
     // キャンバスの内部解像度(640x400、PC98_W/PC98_H)へ変換する。ここを素通しすると
-    // 縮小・拡大時にクリック位置がずれて三角に当たらなくなる(実測で確認)。
-    const x = (event.clientX - rect.left) * (PC98_W / rect.width);
-    const y = (event.clientY - rect.top) * (PC98_H / rect.height);
+    // 縮小・拡大時にクリック位置がずれる(実測で確認)。
+    const point = canvasPointFromClientClick(event.clientX, event.clientY, rect, PC98_W, PC98_H);
+    if (!point) return;
+    const { x, y } = point;
     for (const tri of lastTriangles) {
       // 中段(row===1、COMPOSER/ARRANGERの2本)は↑/↓のどちらとも決め難いため無反応にする。
       if (tri.row === 1) continue;
@@ -507,6 +522,13 @@ export async function init(ctx) {
       commentOffset = commentScroll(commentOffset, down, modePmd, commentBytesFor);
       return;
     }
+    // 三角に当たらなかった場合、トラック行クリックミュートの判定へフォールバック。
+    const row = trackRowIndexAt(x, y, {
+      trackH: TRACK_H, rowCount: TRACK_DISP_TABLE_OPNA.length, panelWidth: PC98_W / 2,
+    });
+    if (row < 0) return;
+    if (mutedRows.has(row)) mutedRows.delete(row); else mutedRows.add(row);
+    applyChannelMask();
   });
 
   const ringSize = 2048;
@@ -609,7 +631,7 @@ export async function init(ctx) {
     }
     if (fmdspFont) {
       vram.pixels.set(staticVramSnapshot);
-      drawTrackRows(vram, fmdspFont, entryTracks);
+      drawTrackRows(vram, fmdspFont, entryTracks, mutedRows);
       const modePmd = Module.getCommentModePmd() !== 0;
       const triangles = [];
       drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -790,6 +812,10 @@ export async function init(ctx) {
     }
     Module.FS.writeFile('/edited.M', file);
     const error = Module.playMusic('/edited.M');
+    // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
+    // 次の曲へ持ち越さない)。
+    mutedRows.clear();
+    applyChannelMask();
     if (error) {
       renderCompileErrors([{ line: null, message: t('mml.playbackError', { error }) }]);
       updateTransportButtonUI();
@@ -876,7 +902,7 @@ export async function init(ctx) {
         stoppedFrameDrawn = true;
         idleDrawnSongName = currentSongName;
         vram.pixels.set(staticVramSnapshot);
-        drawTrackRows(vram, fmdspFont, idleEntryTracks);
+        drawTrackRows(vram, fmdspFont, idleEntryTracks, mutedRows);
         const modePmd = Module.getCommentModePmd() !== 0;
         const triangles = [];
         drawComment(vram, commentSmallFont, fmdspFont, commentBytesFor, modePmd, commentOffset, 1,
@@ -967,6 +993,10 @@ export async function init(ctx) {
     currentSongName = fileNameForBar;
     Module.FS.writeFile('/' + name, bytes);
     const error = Module.playMusic('/' + name);
+    // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
+    // 次の曲へ持ち越さない)。
+    mutedRows.clear();
+    applyChannelMask();
     if (error) {
       alert(error);
     } else {

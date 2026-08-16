@@ -70,6 +70,17 @@ const COLOR_BAR_REST = 7;
 const COLOR_KEY_HILITE = 6;
 const COLOR_KEY_HILITE_SUB = 8;
 
+// ミュート中の行に使う色。2026-08-16 トラック行クリックミュート機能追加時、
+// 新しい色や記号は作らず「FMDSPが既に持っている暗い側の色」を流用する方針とした。
+// COLOR_BAR_BG(=3)は本モジュールで元々「未再生(playing=false)時のゲージバー
+// 背景色」として使われている値であり、fmdsp/rightpane.js の
+// drawTransportIcons()(PLAY/STOP/PAUSEアイコン)でも同じ値COLOR_3を
+// 「非アクティブ状態」の色として使っている(rightpane.js:496,499-501の
+// コメント「状態に応じて色2(アクティブ)/3(非アクティブ)を切替」参照)。
+// この2箇所の先例から、色3=FMDSP内の「暗い/非アクティブ」語彙だと判断し、
+// ミュート表示にもそのまま流用する(新色は追加しない)。
+const COLOR_MUTED = COLOR_BAR_BG;
+
 // fmdriver.h の enum FMDRIVER_TRACKTYPE_* / FMDRIVER_TRACK_INFO_* を
 // このモジュール内だけの整数定数として再掲(値は upstream ヘッダと一致させる)。
 const TRACKTYPE_FM = 0;
@@ -133,9 +144,11 @@ function statusString(data) {
 // font 引数は未使用(呼び出し側との互換のため残すだけ)。パート行は本家と同じ
 // font_fmdsp_small (SMALL_FONT) 固定で描く。曲名/コメント欄は別モジュールで
 // shinonome ROM を使う想定(このモジュールのスコープ外)。
-export function drawTrackRow(vram, font, x, y, slotIndex, data) {
+export function drawTrackRow(vram, font, x, y, slotIndex, data, muted = false) {
   const smallFont = SMALL_FONT;
   const [type, num] = TRACK_TYPE_TABLE[slotIndex];
+  const typeColor = muted ? COLOR_MUTED : COLOR_TYPE;
+  const labelColor = muted ? COLOR_MUTED : COLOR_LABEL;
   const playing = data[FIELD.PLAYING] !== 0;
   const info = data[FIELD.INFO];
   const key = data[FIELD.KEY];
@@ -148,15 +161,22 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data) {
   const ticksLeft = data[FIELD.TICKS_LEFT];
 
   // --- 行0: トラック番号(数字スプライト) + 種別ラベル + TINFO(EX/EFF等) ---
-  // fmdsp-pacc.c:472-485 (update_track_without_key)。マスク(ミュート)UIは
-  // このWeb版に存在しないため num1/num2 を常に実値で描く(fp->masked[t]相当は未実装)。
-  // NUMスプライトは y+1 (fmdsp-pacc.c:480,484)。
+  // fmdsp-pacc.c:472-485 (update_track_without_key)。NUMスプライトは
+  // y+1 (fmdsp-pacc.c:480,484)。
+  // ミュート中は数字スプライトも COLOR_MUTED で塗り直す(blitCopyだとスプライト
+  // に焼き込まれた色番号(2/3、アンチエイリアス用の2階調)がそのまま出るため、
+  // blitColorに切り替えて非0ピクセルを一律 COLOR_MUTED で塗る)。
   const num1 = Math.floor(num / 10) % 10;
   const num2 = num % 10;
-  vram.blitCopy(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H);
-  vram.blitCopy(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H);
+  if (muted) {
+    vram.blitColor(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H, COLOR_MUTED);
+    vram.blitColor(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H, COLOR_MUTED);
+  } else {
+    vram.blitCopy(S_NUM[num1], NUM_W, x + NUM_X, y + 1, NUM_W, NUM_H);
+    vram.blitCopy(S_NUM[num2], NUM_W, x + NUM_X + NUM_W, y + 1, NUM_W, NUM_H);
+  }
 
-  drawText(vram, smallFont, TRACK_TYPE_LABEL[type] || '', x + 1, y, COLOR_TYPE);
+  drawText(vram, smallFont, TRACK_TYPE_LABEL[type] || '', x + 1, y, typeColor);
 
   // --- 行1(y+6): ラベル+値 (TRACK./KN:/TN:/Vl:/GT:/DT:/M:) ---
   // fmdsp-pacc.c:412-438 (init_track_without_key), 522-556 (update_track_without_key)。
@@ -166,42 +186,42 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data) {
   // (元コードは"EX"をy行、スロットマスク文字列をy+6行に描く。他はy+6行のみ)
   if (playing || info === TRACK_INFO_SSGEFF) {
     if (info === TRACK_INFO_PPZ8) {
-      drawText(vram, smallFont, 'PPZ8', x + TINFO_X, lineY, COLOR_TYPE);
+      drawText(vram, smallFont, 'PPZ8', x + TINFO_X, lineY, typeColor);
     } else if (info === TRACK_INFO_PDZF) {
-      drawText(vram, smallFont, 'PDZF', x + TINFO_X, lineY, COLOR_TYPE);
+      drawText(vram, smallFont, 'PDZF', x + TINFO_X, lineY, typeColor);
     } else if (info === TRACK_INFO_FM3EX) {
       const mask = [19, 20, 21, 22].map((i) => data[i] !== 0);
       const slotStr = ['1', '2', '3', '4'].map((c, i) => (mask[i] ? ' ' : c)).join('');
-      drawText(vram, smallFont, 'EX', x + TINFO_X + 5, y, COLOR_TYPE);
-      drawText(vram, smallFont, slotStr, x + TINFO_X, lineY, COLOR_TYPE);
+      drawText(vram, smallFont, 'EX', x + TINFO_X + 5, y, typeColor);
+      drawText(vram, smallFont, slotStr, x + TINFO_X, lineY, typeColor);
     }
     // SSG/SSGEFFのノイズ周波数表示は fp->work->ssg_noise_freq (グローバル値)が
     // 必要で、flat_track_status には含まれていないため未実装。
   }
-  drawText(vram, smallFont, 'TRACK.', x + 1, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, 'KN:', x + TDETAIL_X, lineY, COLOR_LABEL);
+  drawText(vram, smallFont, 'TRACK.', x + 1, lineY, labelColor);
+  drawText(vram, smallFont, 'KN:', x + TDETAIL_X, lineY, labelColor);
   if (!playing) {
     // fmdsp-pacc.c:522-525: TDETAIL_KN_V_X+5 (1文字ぶん右、"o%d%s"より短いため)。
-    drawText(vram, smallFont, 'S', x + TDETAIL_KN_V_X + 5, lineY, COLOR_LABEL);
+    drawText(vram, smallFont, 'S', x + TDETAIL_KN_V_X + 5, lineY, labelColor);
   } else if ((key & 0xf) === 0xf) {
-    drawText(vram, smallFont, 'R', x + TDETAIL_KN_V_X + 5, lineY, COLOR_LABEL);
+    drawText(vram, smallFont, 'R', x + TDETAIL_KN_V_X + 5, lineY, labelColor);
   } else {
     const name = KEY_NAMES[key & 0xf] || '';
-    drawText(vram, smallFont, `o${key >> 4}${name}`, x + TDETAIL_KN_V_X, lineY, COLOR_LABEL);
+    drawText(vram, smallFont, `o${key >> 4}${name}`, x + TDETAIL_KN_V_X, lineY, labelColor);
   }
-  drawText(vram, smallFont, 'TN:', x + TDETAIL_TN_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, String(tonenum).padStart(3, '0'), x + TDETAIL_TN_V_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, 'Vl', x + TDETAIL_VL_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, ':', x + TDETAIL_VL_C_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, String(volume).padStart(3, '0'), x + TDETAIL_VL_V_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, 'GT:', x + TDETAIL_GT_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, String(gate).padStart(3, '0'), x + TDETAIL_GT_V_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, 'DT:', x + TDETAIL_DT_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, String(Math.abs(detune)).padStart(3, '0'), x + TDETAIL_DT_V_X, lineY, COLOR_LABEL);
+  drawText(vram, smallFont, 'TN:', x + TDETAIL_TN_X, lineY, labelColor);
+  drawText(vram, smallFont, String(tonenum).padStart(3, '0'), x + TDETAIL_TN_V_X, lineY, labelColor);
+  drawText(vram, smallFont, 'Vl', x + TDETAIL_VL_X, lineY, labelColor);
+  drawText(vram, smallFont, ':', x + TDETAIL_VL_C_X, lineY, labelColor);
+  drawText(vram, smallFont, String(volume).padStart(3, '0'), x + TDETAIL_VL_V_X, lineY, labelColor);
+  drawText(vram, smallFont, 'GT:', x + TDETAIL_GT_X, lineY, labelColor);
+  drawText(vram, smallFont, String(gate).padStart(3, '0'), x + TDETAIL_GT_V_X, lineY, labelColor);
+  drawText(vram, smallFont, 'DT:', x + TDETAIL_DT_X, lineY, labelColor);
+  drawText(vram, smallFont, String(Math.abs(detune)).padStart(3, '0'), x + TDETAIL_DT_V_X, lineY, labelColor);
   const sign = detune === 0 ? 0 : (detune < 0 ? 1 : 2);
-  vram.blitColor(S_DT_SIGN[sign], DT_SIGN_W, x + TDETAIL_DT_S_X, lineY + 2, DT_SIGN_W, DT_SIGN_H, COLOR_LABEL);
-  drawText(vram, smallFont, 'M:', x + TDETAIL_M_X, lineY, COLOR_LABEL);
-  drawText(vram, smallFont, statusString(data), x + TDETAIL_M_V_X, lineY, COLOR_LABEL);
+  vram.blitColor(S_DT_SIGN[sign], DT_SIGN_W, x + TDETAIL_DT_S_X, lineY + 2, DT_SIGN_W, DT_SIGN_H, labelColor);
+  drawText(vram, smallFont, 'M:', x + TDETAIL_M_X, lineY, labelColor);
+  drawText(vram, smallFont, statusString(data), x + TDETAIL_M_V_X, lineY, labelColor);
 
   // --- 鍵盤(y+KEY_Y) ---
   // fmdsp-pacc.c:770-797 (update_track_10)。KEY_Y=14 (fmdsp_sprites.h:25)。
@@ -243,10 +263,10 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data) {
   // vram.fillRect を使う。
   const barY = y + BAR_Y;
   const isRest = (key & 0xf) === 0xf;
-  const barColor = !playing ? COLOR_BAR_BG : (isRest ? COLOR_BAR_REST : COLOR_TYPE);
+  const barColor = !playing ? COLOR_BAR_BG : (isRest ? COLOR_BAR_REST : typeColor);
   vram.fillRect(x + BAR_L_X, barY, BAR_L_W - 1, BAR_H, barColor);
   const width = ticksLeft >> 2;
-  const fillColor = !playing ? COLOR_BAR_BG : (isRest ? COLOR_BAR_REST : COLOR_TYPE);
+  const fillColor = !playing ? COLOR_BAR_BG : (isRest ? COLOR_BAR_REST : typeColor);
   vram.fillRect(x + BAR_X, barY, BAR_W * width, BAR_H, fillColor);
   vram.fillRect(x + BAR_X + BAR_W * width, barY, BAR_W * (64 - width), BAR_H, COLOR_BAR_BG);
   vram.fillRect(x + BAR_X + BAR_W * (ticks >> 2), barY, BAR_W, BAR_H, COLOR_BAR_REST);
@@ -254,12 +274,16 @@ export function drawTrackRow(vram, font, x, y, slotIndex, data) {
 
 // 10行(FMDSP_LEFT_MODE_OPNA)ぶんをまとめて描画する。
 // entryTracks: index.html 側で作る「trackスロット index -> flatten済みInt32配列」の配列。
-export function drawTrackRows(vram, font, entryTracks) {
+// mutedRows: ミュート中の行index(0-9)の集合(Set<number>)。省略時は誰もミュート
+// されていない(トラック行クリックミュート機能、docs参照はfmdsp/channel-mask.js)。
+export function drawTrackRows(vram, font, entryTracks, mutedRows = EMPTY_MUTED_ROWS) {
   TRACK_DISP_TABLE_OPNA.forEach((slotIndex, row) => {
     const data = entryTracks[slotIndex];
-    drawTrackRow(vram, font, 0, TRACK_H * row, slotIndex, data);
+    drawTrackRow(vram, font, 0, TRACK_H * row, slotIndex, data, mutedRows.has(row));
   });
 }
+
+const EMPTY_MUTED_ROWS = new Set();
 
 // PmdCore.c flatten() 相当のフラットレイアウト長。FIELD(上記)の最終フィールド
 // SSG_NOISE=25 が0始まりの最終indexなので+1で26。

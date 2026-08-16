@@ -2,12 +2,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "common/fmplayer_file.h"
 #include "fft/fft.h"
 #include "fmdriver/fmdriver.h"
+#include "fmdriver/fmdriver_pmd.h"  // pmd_ppc_load(): 検証専用ADPCMロードで使用
 #include "fmdriver/ppz8.h"
 #include "fmdsp/fmdsp-pacc.h"  // FMDSP_LEVEL_COUNT のみ利用(実装は使わない)
 #include "leveldata/leveldata.h"
@@ -485,6 +487,47 @@ uint32_t pmdweb_get_snapshot_level_offset(void) { return (uint32_t)offsetof(stru
 int pmdweb_get_fft_bin_count(void) { return FFT_BIN_COUNT; }
 int pmdweb_get_level_count(void) { return LEVEL_COUNT; }
 int pmdweb_get_level_field_count(void) { return LEVEL_FIELD_COUNT; }
+
+// --- FMDSPトラック行クリックミュート機能(fmdsp/trackrow.js、fmdsp/channel-mask.js参照) ---
+// opna_set_mask()(libopna/opna.h:54, opna.c:63-66)をそのまま叩く。
+// ビット割り当てはMUCOM88(fmgen OPNABase::SetChannelMask)と異なる
+// (LIBOPNA_CHAN_*, libopna/opna.h:14-30: DRUM_BD..RIMがbit9-14の6bit、
+// ADPCMがbit15=0x8000)。fmdsp/channel-mask.jsのbuildPmdChannelMask()が
+// このビット割り当てで組み立てる。JS側は絶対にMUCOM用マスク値をここへ渡さないこと。
+void pmdweb_set_channel_mask(unsigned mask) {
+  opna_set_mask(&g_player.opna, mask);
+}
+
+// 検証専用(tools/verify_pmd_channel_mute.mjs)。opna_set_mask()のADPCMビット
+// (bit15)が本当にADPCMチャンネルだけを消しているかを実測するには、無音でない
+// ADPCM再生が要る。しかし本Web版はPPC/PVIファイルの読み込みをUIから一切
+// サポートしていない(ADPCM RAMは常にゼロ初期化のまま)ため、検証スクリプトが
+// PPC形式(pmd_ppc_load(), fmdriver/fmdriver_pmd.c:6076、"ADPCM DATA for  PMD
+// ver.4.4-  "ヘッダ+256エントリのstart/stopアドレス表+生ADPCMデータ)の
+// バイト列をMEMFS経由で読み込み、g_player.workへロードできるようにする。
+// 製品UI(html/pmd-app.js)からは呼ばれない。
+int pmdweb_test_load_ppc_file(const char *path) {
+  if (!g_player.active) return 0;
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (size <= 0) {
+    fclose(f);
+    return 0;
+  }
+  uint8_t *buf = (uint8_t *)malloc((size_t)size);
+  if (!buf) {
+    fclose(f);
+    return 0;
+  }
+  size_t read_bytes = fread(buf, 1, (size_t)size, f);
+  fclose(f);
+  bool ok = pmd_ppc_load(&g_player.work, buf, read_bytes);
+  free(buf);
+  return ok ? 1 : 0;
+}
 
 // --- コメント欄(曲名・作曲者・編曲者・メモ) ---
 // fmdriver.h:94-109 の get_comment()/comment_mode_pmd を export する。

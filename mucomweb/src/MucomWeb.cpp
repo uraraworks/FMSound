@@ -605,6 +605,25 @@ emscripten::val GetChannelData()
 	return channels;
 }
 
+// FMDSPトラック行クリックミュート機能(fmdsp/trackrow.js、fmdsp/channel-mask.js参照)。
+// mucomvm::GetOpna()(mucomvm.h:110、upstream patch 0002-fmgen-leveldata.patchで
+// public化済み)経由でFM::OPNA::SetChannelMask(uint mask)
+// (fmgen/opna.cpp:494、OPNABase::SetChannelMaskの実体。OPNAはOPNABaseを継承する
+// だけでオーバーライドしていないため、これがそのまま呼ばれる)を叩く。
+// ビット割り当てはPMD(opna_set_mask, libopna/opna.h)と異なる(bit9=ADPCM、
+// bit10-15=リズム6音)。fmdsp/channel-mask.jsのbuildMucomChannelMask()が
+// このビット割り当てで組み立てる。JS側は絶対にPMD用マスク値をここへ渡さないこと
+// (取り違えるとADPCMを消したつもりでリズムが消える、の逆もまた然り)。
+void SetChannelMask(unsigned mask)
+{
+	if (g_mucom == nullptr) return;
+	mucomvm *vm = g_mucom->GetVM();
+	if (vm == nullptr) return;
+	FM::OPNA *opna = vm->GetOpna();
+	if (opna == nullptr) return;
+	opna->SetChannelMask(mask);
+}
+
 EMSCRIPTEN_BINDINGS(mucom88)
 {
 	emscripten::function("compileMML", &CompileMML);
@@ -630,4 +649,5 @@ EMSCRIPTEN_BINDINGS(mucom88)
 	// AudioWorklet経由のProcessAudioRequest()に到達できないための直接レンダリング口。
 	emscripten::function("renderFramesForTest", &RenderFramesForTest);
 	emscripten::function("getSampleRate", &GetSampleRate);
+	emscripten::function("setChannelMask", &SetChannelMask);
 }
