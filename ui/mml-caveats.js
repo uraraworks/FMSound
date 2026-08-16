@@ -93,7 +93,18 @@ export function formatMmlCaveatMessage(caveats) {
   const parts = [];
   if (caveats.missingRefs.length > 0) {
     const files = [...new Set(caveats.missingRefs.map((r) => r.file))].join(', ');
-    parts.push(t('mml.caveatMissingRefs', { files }));
+    // 2026-08-16(利用者指示): 参照しているタグの種類で文言を分ける。#voiceは音色、
+    // #pcm(非標準バンク)はドラム(ADPCM)、両方参照していれば両方に言及する
+    // (rhythmパートの有無ではなく、あくまで#voice/#pcmヘッダー参照の有無で判定する。
+    // ヘッダー未解決=タグそのものが検出対象なので、tagはこの2値のどちらかしか来ない)。
+    const tags = new Set(caveats.missingRefs.map((r) => r.tag));
+    const hasVoice = tags.has('voice');
+    const hasPcm = tags.has('pcm');
+    const key =
+      hasVoice && hasPcm ? 'mml.caveatMissingRefsBoth' :
+      hasPcm ? 'mml.caveatMissingRefsPcm' :
+      'mml.caveatMissingRefsVoice';
+    parts.push(t(key, { files }));
   }
   return parts.length > 0 ? parts.join(' ') : null;
 }

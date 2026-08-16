@@ -2,13 +2,24 @@
 //
 // 設計(利用者指示、発明はしない):
 //   - 英語のみへの置き換えではなく、日本語の辞書もここに残す。
-//   - 言語の決定順: (1) URLの?lang=ja/?lang=en(この2値以外は無視)
-//                    (2) navigator.languageが'ja'始まりならja、それ以外はen。
+//   - 言語の決定順(2026-08-16改定): (1) 記憶した選択(localStorage、明示的に
+//     選んだときだけ書き込む。下記参照) (2) URLの?lang=ja/?lang=en(この2値以外は
+//     無視) (3) navigator.languageが'ja'始まりならja、それ以外はen。
+//     記憶がURLに勝つ(利用者の明示的な選択のほうが、投稿者の言語を反映しただけの
+//     URLより優先される、という利用者判断)。
+//   - 記憶するのは「利用者が明示的にトグルを操作したとき」だけ。初回訪問時の
+//     navigator.languageによる自動判定の結果は保存しない(選んでいないものを
+//     選択として焼き付けないため)。そのため initLang() 自体はstoreLang()を呼ばない。
+//   - ?lang= は「まだ選んだことのない人への初期値のヒント」という役割だけを持つ設計。
+//     結果として?lang=は普段URLに現れない: トグル操作時は記憶してreloadするだけで
+//     ?lang=を足さず(足す方向の同期は絶対にしない)、逆に?lang=が付いていて記憶した
+//     選択と食い違う場合は history.replaceState でURLから取り除く(表示と食い違った
+//     まま転送されるのを防ぐ。他のクエリパラメータ、特に?driver=は保持する)。
 //   - このモジュール自体はビルド不要の素のES module(依存追加なし)。
 //   - tools/verify_i18n.mjs がNode(ブラウザではない)からこのファイルをそのまま
 //     importして辞書の整合性を検証する。そのため、モジュール評価の副作用として
-//     `location`/`navigator` に触れてはいけない(Nodeには存在せず即クラッシュする)。
-//     参照は detectLang() 等の関数の「呼び出し時」に限定する。
+//     `location`/`navigator`/`localStorage` に触れてはいけない(Nodeには存在せず
+//     即クラッシュする)。参照は detectLang() 等の関数の「呼び出し時」に限定する。
 //
 // 今回(L1)の対象は「利用者が操作する前から画面に出ている固定ラベル」だけ。
 // コンパイル結果・エラー理由・再生ボタンの状態表示など、実行時に動的合成される
@@ -83,11 +94,17 @@ const ja = {
   'mml.jumpToLine': 'クリックでMML {line}行目へ移動',
   'mml.emptyNotice': 'MMLが空です。何か入力してから再生してください。',
   'mml.playbackError': '再生エラー: {error}',
-  'mml.caveatMissingRefs': 'この曲は {files} を参照していますが読み込めません。音色とドラムが本来と異なります。',
+  // --- 2026-08-16: 参照しているタグの種類で分ける(利用者指示)。#voiceだけなら
+  // 音色のみ、#pcm(非標準バンク)だけならドラム(ADPCM)のみ、両方なら両方に言及する。
+  // ui/mml-caveats.js formatMmlCaveatMessage() がmissingRefsのtagを見て呼び分ける。
+  'mml.caveatMissingRefsVoice': 'この曲は {files} を参照していますが読み込めません。音色が本来と異なります。',
+  'mml.caveatMissingRefsPcm': 'この曲は {files} を参照していますが読み込めません。ドラム(ADPCM)が本来と異なります。',
+  'mml.caveatMissingRefsBoth': 'この曲は {files} を参照していますが読み込めません。音色とドラムが本来と異なります。',
 
   'confirm.newFile': '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?',
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
 
+  'sample.mmlLabel': 'サンプルMML:',
   'sample.furEliseLabel': 'エリーゼのために・冒頭',
   'sample.openHintPmd': '「曲を開く」から手元の.M/.mファイルを選ぶこともできます。',
 
@@ -228,11 +245,14 @@ const en = {
   'mml.jumpToLine': 'Click to jump to line {line} of the MML',
   'mml.emptyNotice': 'The MML is empty. Enter something before playing.',
   'mml.playbackError': 'Playback error: {error}',
-  'mml.caveatMissingRefs': 'This song references {files}, which cannot be loaded. The instrument tones and drums will differ from the original.',
+  'mml.caveatMissingRefsVoice': 'This song references {files}, which cannot be loaded. The instrument tones will differ from the original.',
+  'mml.caveatMissingRefsPcm': 'This song references {files}, which cannot be loaded. The drums (ADPCM) will differ from the original.',
+  'mml.caveatMissingRefsBoth': 'This song references {files}, which cannot be loaded. The instrument tones and drums will differ from the original.',
 
   'confirm.newFile': 'This clears the MML you are editing and starts a new file. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',
 
+  'sample.mmlLabel': 'Sample MML:',
   'sample.furEliseLabel': 'Für Elise, opening',
   'sample.openHintPmd': 'You can also choose a .M/.m file from your device via "Open song".',
 
@@ -308,25 +328,92 @@ const en = {
 
 export const DICT = { ja, en };
 
+// 記憶した選択の保存先。html/*.jsの他のlocalStorageキー(fmsound-pmd-ui-mode等)と
+// 同じ命名作法('fmsound-'接頭辞)に合わせる。
+export const LANG_STORAGE_KEY = 'fmsound-lang';
+
 /**
- * URL(?lang=)とnavigator.languageから言語を決める。
+ * localStorageから記憶した選択を読む(ja/en以外・未設定はnull)。
+ * private mode等でlocalStorage自体が使えない場合もnull(既存作法、
+ * ui/mml-draft.js・html/pmd-app.js等のUI_MODE_KEY読み書きと同じベストエフォート)。
+ */
+function readStoredLang() {
+  try {
+    const raw = localStorage.getItem(LANG_STORAGE_KEY);
+    return raw === 'ja' || raw === 'en' ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 記憶する選択を書く。呼び出しは「利用者が明示的にトグルを操作したとき」限定
+ * (ファイル冒頭のコメント参照)。initLang()の自動判定からは呼ばない。
+ */
+export function storeLang(lang) {
+  if (!LANGS.includes(lang)) return;
+  try {
+    localStorage.setItem(LANG_STORAGE_KEY, lang);
+  } catch {
+    // private mode等。保存できないだけで、その場の表示自体は継続できる。
+  }
+}
+
+/**
+ * 記憶した選択・URL(?lang=)・navigator.languageから言語を決める。
+ * 優先順位: 記憶 > URL > navigator.language(ファイル冒頭のコメント参照)。
  * 引数はテスト/Node向けの差し込み(既定はブラウザの実値)。
  */
 export function detectLang(
   search = typeof location !== 'undefined' ? location.search : '',
   navLang = typeof navigator !== 'undefined' ? navigator.language : '',
+  storedLang = typeof localStorage !== 'undefined' ? readStoredLang() : null,
 ) {
+  if (storedLang === 'ja' || storedLang === 'en') return storedLang;
   const params = new URLSearchParams(search);
   const urlLang = params.get('lang');
   if (urlLang === 'ja' || urlLang === 'en') return urlLang;
   return navLang && navLang.toLowerCase().startsWith('ja') ? 'ja' : DEFAULT_LANG;
 }
 
+/**
+ * 現在のURLと決定した言語から、次に表示すべきURLを返す純粋関数(テスト用に分離)。
+ * ?lang= がURLに付いていて、それが決定した言語と異なる場合だけ ?lang= を取り除いた
+ * URLを返す(表示と食い違ったまま転送されるのを防ぐため)。それ以外(?lang=が無い、
+ * または一致している)は入力をそのまま返す。他のクエリパラメータ(?driver=等)には
+ * 一切触れない。足す方向の同期は行わない(?lang=が無い状態を維持する)。
+ * @param {string} currentUrl - 絶対URL文字列(new URL()に渡せるもの)
+ * @param {string} decidedLang - detectLang()の結果
+ * @returns {string}
+ */
+export function computeLangSyncUrl(currentUrl, decidedLang) {
+  const url = new URL(currentUrl);
+  const urlLang = url.searchParams.get('lang');
+  if (urlLang !== null && urlLang !== decidedLang) {
+    url.searchParams.delete('lang');
+    return url.toString();
+  }
+  return currentUrl;
+}
+
 let currentLang = null;
 
-/** ページ起動時に1回呼ぶ。以降 getLang()/t() はこの値を使う。 */
+/**
+ * ページ起動時に1回呼ぶ。以降 getLang()/t() はこの値を使う。
+ * 記憶した選択とURL(?lang=)が食い違う場合は、history.replaceState()で
+ * ?lang=をURLから取り除く(computeLangSyncUrl参照)。
+ */
 export function initLang() {
-  currentLang = detectLang();
+  const storedLang = readStoredLang();
+  currentLang = detectLang(
+    typeof location !== 'undefined' ? location.search : '',
+    typeof navigator !== 'undefined' ? navigator.language : '',
+    storedLang,
+  );
+  if (typeof location !== 'undefined' && typeof history !== 'undefined') {
+    const nextHref = computeLangSyncUrl(location.href, currentLang);
+    if (nextHref !== location.href) history.replaceState(null, '', nextHref);
+  }
   return currentLang;
 }
 

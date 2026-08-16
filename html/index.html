@@ -39,18 +39,19 @@
       <option value="mucom">MUCOM88 (PC-8801)</option>
     </select>
   </label>
-  <!-- 言語切替。既存のdriverSelectとまったく同じ作法(location.searchを書き換えて
-       reload)。?driver=は消さない(app.js側で配線、両パラメータが共存する)。 -->
-  <label class="driver-switch">
+  <!-- 言語切替(2026-08-16、selectからJA/ENの2ボタンへ変更。利用者判断: 記憶した
+       選択をlocalStorageへ保存してreloadするだけで、?lang=はURLに足さない
+       (ui/i18n.js冒頭のコメント参照)。?driver=は触らない(URL自体を書き換えない
+       ため自然に保持される)。音源ドライバ側のselectは変更しない(3種以上に増える
+       余地があるため作法を揃える必要はない、という利用者判断)。 -->
+  <div class="lang-switch" role="group" data-i18n-title="toolbar.langLabel">
     <span class="driver-switch-label" data-i18n="toolbar.langLabel"></span>
-    <select id="langSelect">
-      <!-- 言語名は選択中のUI言語に関わらず常に自言語表記(endonym)で出す(他の
-           言語切替UIの慣習と同じ)。翻訳しないので辞書は引かない。
-           tools/verify_i18n.mjs 項目6のi18n-exemptマーカー対象。 -->
-      <option value="ja">日本語</option><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
-      <option value="en">English</option>
-    </select>
-  </label>
+    <!-- 言語名は選択中のUI言語に関わらず常に自言語表記(endonym)で出す(他の
+         言語切替UIの慣習と同じ)。翻訳しないので辞書は引かない。
+         tools/verify_i18n.mjs 項目6のi18n-exemptマーカー対象。 -->
+    <button type="button" id="langBtnJa" class="lang-toggle-btn" aria-pressed="false">日本語</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+    <button type="button" id="langBtnEn" class="lang-toggle-btn" aria-pressed="false">English</button><!-- i18n-exempt: 言語名(endonym)は固定表記 -->
+  </div>
 </header>
 
 <div id="app">

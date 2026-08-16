@@ -131,12 +131,6 @@ header.app-header .app-tagline {
   color: var(--header-tagline-text);
 }
 
-/* 言語切替select(driver-switchの隣)。同じ見た目で、間隔だけ空ける。
-   画面が狭いと折り返す(driver-switch自体がinline-flexなので自然に折り返せる)。 */
-.driver-switch + .driver-switch {
-  margin-left: 10px;
-}
-
 .driver-switch select {
   font-size: 11px;
   padding: 2px 4px;
@@ -144,6 +138,53 @@ header.app-header .app-tagline {
   border: 1px solid var(--footer-btn-border);
   background: var(--footer-btn-bg);
   color: var(--footer-text);
+}
+
+/* 言語切替トグル(driver-switchの隣、2026-08-16にselectから2ボタンへ変更)。
+   driver-switchと同じ見た目の土台(font-size/color/gap)を .lang-switch にも
+   与えつつ、間隔だけ空ける。画面が狭いと折り返す(親がinline-flexなので自然に
+   折り返せる)。ボタンの選択状態はaria-pressed/.activeで示す
+   (toolbar button.icon-btn.activeと同じaccent配色に揃える)。 */
+.driver-switch + .lang-switch {
+  margin-left: 10px;
+}
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--header-tagline-text);
+}
+
+.lang-switch .lang-toggle-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--footer-btn-border);
+  background: var(--footer-btn-bg);
+  color: var(--footer-text);
+  cursor: pointer;
+}
+
+.lang-switch .lang-toggle-btn:hover {
+  background: var(--footer-btn-bg-hover);
+}
+
+.lang-switch .lang-toggle-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--footer-text);
+}
+
+.lang-switch .lang-toggle-btn.active:hover {
+  background: var(--accent);
+}
+
+.lang-switch .lang-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* 課題B: PMDコメント欄スクロールの専用ボタン(「↑コメント」「↓コメント」)は

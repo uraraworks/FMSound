@@ -200,7 +200,7 @@ export async function init(ctx) {
   // samplja.muc(日本語コメント表示の確認用テストファイル)は削除せず残すが、
   // 利用者向けサンプルではないため?debug=1のときだけ表示する(class="debug-only")。
   sampleLinksEl.innerHTML = `
-    Sample MML:
+    ${t('sample.mmlLabel')}
     <a href="javascript:void(0);" id="dlSampleFurEliseMucom">sample_fur_elise_mucom.muc(${t('sample.furEliseLabel')})</a>
     <a href="javascript:void(0);" id="dlSamplJa" class="debug-only">samplja.muc</a>
   `;
