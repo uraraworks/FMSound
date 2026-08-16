@@ -14,9 +14,22 @@ import { extractZip } from './zip.js';
 // depth=2の中でさらにd88が見つかっても、それ以上は展開せず生バイト列のまま残す)。
 const MAX_NEST_DEPTH = 2;
 
+/**
+ * 書庫として扱う拡張子(ドット付き)の一覧。判定規則(isArchive())と
+ * fileInput.accept 属性(html/mucom-app.js・html/pmd-app.js)の両方がここを
+ * 参照する唯一の情報源(片方だけ拡張子を足し忘れる事故を構造的に防ぐため。
+ * 課題: ファイルから開く/D&Dの書庫対応、2026-08-16)。
+ */
+export const ARCHIVE_EXTENSIONS = ['.lzh', '.zip', '.d88'];
+
+const ARCHIVE_EXTENSION_RE = new RegExp(
+  `\\.(${ARCHIVE_EXTENSIONS.map((ext) => ext.slice(1)).join('|')})$`,
+  'i',
+);
+
 /** ファイル名の拡張子(大文字小文字無視)からLZH/ZIP/d88アーカイブかどうかを判定する。 @param {string} fileName */
 export function isArchive(fileName) {
-  return /\.(lzh|zip|d88)$/i.test(fileName);
+  return ARCHIVE_EXTENSION_RE.test(fileName);
 }
 
 /**

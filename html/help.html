@@ -68,7 +68,7 @@
       <h2>曲を開く</h2>
       <p>ツールバーの「曲を開く」アイコンから、「ファイルから開く」と「URLから開く」を選べます。</p>
       <h3>ファイルから開く</h3>
-      <p>手元の <code>.M</code>/<code>.m</code>(PMD)、<code>.muc</code>(MUCOM88)ファイルを選ぶか、画面のどこにドラッグ&ドロップしても読み込めます。ZIP/LZHで固めた書庫を渡すと中身を展開して曲を選べます(書庫の中に <code>.d88</code> ディスクイメージが入っている場合は、さらにその中も展開します)。</p>
+      <p>手元の <code>.M</code>/<code>.m</code>(PMD)、<code>.muc</code>(MUCOM88)ファイルを選ぶか、画面のどこにドラッグ&ドロップしても読み込めます。ZIP/LZHで固めた書庫を渡すと中身を展開して曲を選べます(書庫の中に <code>.d88</code> ディスクイメージが入っている場合は、さらにその中も展開します)。書庫内に曲が複数あるときは一覧から選ぶ画面が出ます(URLから書庫を開いたときと同じ画面です)。</p>
       <h3>URLから開く</h3>
       <p>URLを入力して「実行」を押すと、そのURLの曲データ(または書庫)を取得して開きます。取得するだけで自動再生はしません(ブラウザの制約で音声再生にはユーザー操作が必要なため、読み込んだあとは再生ボタンを押してください)。</p>
       <p><strong>対応している配信元:</strong> GitHub(<code>raw.githubusercontent.com</code>)や jsDelivr(<code>cdn.jsdelivr.net</code>)のように、クロスオリジン取得(CORS)を許可しているホストは直接取得できます。Google Drive・Dropboxの共有リンクは、このサイトに中継サーバーが設定されている場合にのみ利用できます(中継サーバーが設定されていない場合はその旨のエラーになります)。<strong>OneDriveの共有リンクには対応していません。</strong></p>
@@ -80,7 +80,7 @@
       <h2>Opening a song</h2>
       <p>The toolbar's "Open song" icon offers two choices: "Open from file" and "Open from URL".</p>
       <h3>Opening from a file</h3>
-      <p>Pick a local <code>.M</code>/<code>.m</code> (PMD) or <code>.muc</code> (MUCOM88) file, or drag & drop it anywhere on the page. Pointing it at a ZIP/LZH archive extracts the contents so you can pick a song from inside (if the archive contains a <code>.d88</code> disk image, that gets extracted too).</p>
+      <p>Pick a local <code>.M</code>/<code>.m</code> (PMD) or <code>.muc</code> (MUCOM88) file, or drag & drop it anywhere on the page. Pointing it at a ZIP/LZH archive extracts the contents so you can pick a song from inside (if the archive contains a <code>.d88</code> disk image, that gets extracted too). If the archive holds more than one song, a picker appears (the same one you get when opening an archive from a URL).</p>
       <h3>Opening from a URL</h3>
       <p>Enter a URL and press "Go" to fetch and open the song data (or archive) at that URL. Fetching alone doesn't autoplay — browsers require a user gesture before audio can play, so press the play button after it loads.</p>
       <p><strong>Sources it supports:</strong> Hosts that allow cross-origin fetches (CORS), such as GitHub (<code>raw.githubusercontent.com</code>) and jsDelivr (<code>cdn.jsdelivr.net</code>), can be fetched directly. Google Drive and Dropbox share links only work when this site has a relay server configured (otherwise you'll get an error saying so). <strong>OneDrive share links are not supported.</strong></p>

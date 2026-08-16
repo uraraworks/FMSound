@@ -29,9 +29,10 @@ import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
 import {
-  resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
+  resolveSongFromUrl, resolveSongFromFile, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
   closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
+  ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 import { decodeMmlBytes, decodeMmlBytesAs } from './net/charset.js';
@@ -163,7 +164,10 @@ export async function init(ctx) {
     '<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.ja" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a> | ' +
     '<a href="https://github.com/uraraworks/FMSound" target="_blank" rel="noopener">FMSound on GitHub</a>';
 
-  fileInput.accept = '.muc';
+  // 課題: ファイルから開く/D&Dの書庫対応(2026-08-16)。書庫拡張子の一覧は
+  // net/archive.js ARCHIVE_EXTENSIONS(唯一の情報源)を参照する。isArchive()の
+  // 判定規則と食い違わないよう、ここでは拡張子を書き並べない。
+  fileInput.accept = ['.muc', ...ARCHIVE_EXTENSIONS].join(',');
 
   // --- エンジン固有領域(MMLエディタ+結果表示+デバッグテーブル)を組み立てる ---
   // 「透明textarea+背面pre」方式の重ね合わせエディタ。行番号ガター・色付きpre・
@@ -1113,23 +1117,91 @@ export async function init(ctx) {
   });
 
   // --- 曲を開く(ローカルの.mucファイル選択 / ドラッグ&ドロップ) ---
-  function openMmlFile(file) {
+  //
+  // 【拡張・2026-08-16】ローカルファイルが書庫(zip/lzh/d88)だった場合の対応を追加。
+  // 以前はここで書庫判定を一切せず、書庫のバイト列をそのままapplyMmlBytes()(MML
+  // テキストとしてデコードする経路)へ渡していたため無言で壊れていた(利用者報告)。
+  // URL経路(下のloadSongFromUrl())が既に持っている書庫展開・曲選択・ライブラリ
+  // 一括取り込みの仕組みへ合流させる(html/net-load.js resolveSongFromFile()が
+  // resolveSongFromUrl()と同じnet/archive.js・net/song-select.jsを経由するため、
+  // 判定・展開ロジックはここで新しく書き起こさない)。
+  async function openMmlFile(file) {
     if (!file) return;
-    file.arrayBuffer().then((buffer) => {
-      // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
-      // 残っている`?mml=`はここで取り除く。
-      clearLoadedUrlFromAddressBar();
-      applyMmlBytes(buffer, { name: file.name });
-      compileAndPlay();
-      // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
-      // そのまま曲ライブラリへ残す。ローカルファイルにはURLが無いため、出所は
-      // ファイル名だけで識別する(net/library.js computeSongId()参照)。
-      persistSongToLibrary({
-        driver: 'mucom',
-        bytes: new Uint8Array(buffer),
-        fileName: file.name,
-        origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    let resolved;
+    try {
+      resolved = await resolveSongFromFile(file);
+    } catch (err) {
+      setNetStatus(describeNetError(err), true);
+      return;
+    }
+    // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
+    // 残っている`?mml=`はここで取り除く。
+    clearLoadedUrlFromAddressBar();
+
+    if (resolved.kind === 'archive') {
+      const mucomCandidates = resolved.candidates.filter((c) => c.driver === 'mucom');
+      if (mucomCandidates.length === 0) {
+        const otherCount = resolved.candidates.length;
+        setNetStatus(
+          otherCount > 0
+            ? t('net.noMucomCandidatesOther', { otherCount })
+            : t('net.noPlayableSongs'),
+          true,
+        );
+        return;
+      }
+      // 自動取り込み: URL経路(loadSongFromUrl())と同じく、書庫を開いた時点(=候補一覧が
+      // 出た時点、どれを再生するか選ぶ前)で書庫内の全曲をライブラリへ一括取り込みする。
+      // 出所はURLではなくローカルファイルなので kind: 'local' を渡す(net/library.js
+      // importArchiveSongs()参照。computeSongId()もkind==='local'+entryPathありを
+      // 書庫由来として扱うよう対応済み)。
+      const importResult = await importArchiveSongsToLibrary({
+        driver: 'mucom', kind: 'local', url: null, entries: resolved.entries, archiveLabel: resolved.archiveLabel,
+        candidates: mucomCandidates, defaultVoiceNames: MUCOM_DEFAULT_VOICE_NAMES,
       });
+      if (importResult.added > 0) {
+        setNetStatus(t('net.addedToLibrary', { count: importResult.total }), false);
+      } else if (importResult.total > 0) {
+        setNetStatus(t('net.alreadyInLibrary', { count: importResult.total }), false);
+      }
+
+      let chosen = mucomCandidates[0];
+      if (mucomCandidates.length > 1) {
+        libraryPopover.close();
+        chosen = await pickSongCandidate(mucomCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
+        if (!chosen) {
+          setNetStatus(t('net.selectionCancelled'), false);
+          return;
+        }
+      }
+      // #voice対応: URL経路と同じく、対になるシステムディスクのvoice.datが同じ書庫内に
+      // 見つかればコンパイル時に使う(net/voice-bank.js参照)。
+      const voicePair = findPairedVoiceBank(resolved.entries, chosen.entry.name, MUCOM_DEFAULT_VOICE_NAMES);
+      applyMmlBytes(chosen.entry.data, {
+        name: chosen.displayName,
+        voiceBank: voicePair ? voicePair.bytes : null,
+        voiceBankSource: voicePair ? voicePair.sysDiskName : null,
+      });
+      compileAndPlay();
+      setNetStatus(
+        voicePair
+          ? t('net.loadedReadyWithVoiceBank', { name: chosen.displayName, source: voicePair.sysDiskName })
+          : t('net.loadedReady', { name: chosen.displayName }),
+        false,
+      );
+      return;
+    }
+
+    applyMmlBytes(resolved.bytes, { name: resolved.fileName });
+    compileAndPlay();
+    // 自動取り込み(利用者指示): 「曲を開く」/ドラッグ&ドロップで読み込んだ曲は
+    // そのまま曲ライブラリへ残す。ローカルファイルにはURLが無いため、出所は
+    // ファイル名だけで識別する(net/library.js computeSongId()参照)。
+    persistSongToLibrary({
+      driver: 'mucom',
+      bytes: resolved.bytes,
+      fileName: resolved.fileName,
+      origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
     });
   }
 

@@ -66,12 +66,21 @@ export function openLibraryDb(idbFactory) {
  * または `local:<ファイル名>`(D&D・ローカルファイル選択由来。URLが無いためファイル名で
  * 代用する。同名の別内容ファイルを読み込んだ場合は下のsaveSong()の「内容が変わっていれば
  * 上書き」規則で吸収する)。
- * @param {{ kind: 'url'|'local', url: string|null, entryPath: string|null }} origin
+ *
+ * 【拡張・2026-08-16】ローカルの書庫(zip/lzh/d88)を開いた場合もentryPathが渡ってくる
+ * (importArchiveSongs()参照、kind==='local'でも書庫由来なら渡す)。ファイル名だけでは
+ * 同じ書庫内の別ディレクトリにある同名曲が衝突するため、entryPathがあれば
+ * `local:<書庫名>::<entryPath>` を使う(URL由来のarchive分岐と同じ考え方)。
+ * entryPathが無い(単体ファイル)場合は従来どおりファイル名のみ。
+ * @param {{ kind: 'url'|'local', url: string|null, archiveName?: string|null, entryPath: string|null }} origin
  * @param {string} fileName
  */
 export function computeSongId(origin, fileName) {
   if (origin.kind === 'url') {
     return origin.entryPath ? `url:${origin.url}::${origin.entryPath}` : `url:${origin.url}`;
+  }
+  if (origin.entryPath) {
+    return `local:${origin.archiveName ?? ''}::${origin.entryPath}`;
   }
   return `local:${fileName}`;
 }
@@ -224,7 +233,7 @@ function mmlHeaderField(bytes, field) {
  * @param {IDBDatabase | null} db nullなら何もせず{total, added:0, unchanged:0}を返す
  *   (IndexedDBが使えない環境向け。ui/mml-draft.jsのlocalStorage同様、保存できないだけで
  *   再生自体は継続する)。
- * @param {{ driver: 'mucom'|'pmd', url: string,
+ * @param {{ driver: 'mucom'|'pmd', kind?: 'url'|'local', url: string|null,
  *   entries: import('./archive-util.js').ArchiveEntry[], archiveLabel: string,
  *   candidates: import('./song-select.js').SongCandidate[],
  *   defaultVoiceNames?: {slot: number, nameHex: string}[] }} input defaultVoiceNamesは
@@ -232,10 +241,15 @@ function mmlHeaderField(bytes, field) {
  *   driver==='mucom'かつ対になるシステムディスクが実在する場合のみ使う
  *   (net/voice-bank.js findPairedVoiceBank()がバンク本体の開始オフセットを実測で
  *   特定するのに必須。呼び出し側=html/net-load.jsがimportして渡す)。
+ *   `kind`省略時は従来どおり'url'(?mml=/URLから開く経由)。「ファイルから開く」/D&Dで
+ *   ローカルの書庫を開いた場合は呼び出し側が`kind: 'local', url: null`を渡す
+ *   (課題: ファイルから開く/D&Dの書庫対応、2026-08-16。出所がURLではない以上、
+ *   originのkindを実態に合わせる。computeSongId()側もkind==='local'かつ
+ *   entryPathありを書庫由来として扱うよう対応済み)。
  * @returns {Promise<{ total: number, added: number, unchanged: number }>}
  */
 export async function importArchiveSongs(db, input) {
-  const { driver, url, entries, archiveLabel, candidates, defaultVoiceNames } = input;
+  const { driver, kind = 'url', url, entries, archiveLabel, candidates, defaultVoiceNames } = input;
   const total = candidates.length;
   if (!db) return { total, added: 0, unchanged: 0 };
   const inputs = candidates.map((c) => {
@@ -255,7 +269,7 @@ export async function importArchiveSongs(db, input) {
       title,
       composer,
       trackNumber: trackInfo.trackNumber ?? null,
-      origin: { kind: 'url', url, archiveName: archiveLabel, groupPath, entryPath: c.entry.name },
+      origin: { kind, url: kind === 'url' ? url : null, archiveName: archiveLabel, groupPath, entryPath: c.entry.name },
       bytes: c.entry.data,
       voiceBank: pair ? pair.bytes : null,
       voiceBankSource: pair ? pair.sysDiskName : null,

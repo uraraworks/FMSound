@@ -5,7 +5,8 @@
 // wasm側への実際の書き込み・再生開始はengine-app側(html/pmd-app.js・html/mucom-app.js)の
 // 責務のまま残す(そちらは駆動するModuleのAPIがエンジンごとに違うため共通化しない)。
 
-import { resolveArchiveFileName, extractArchive, baseNameOf } from './net/archive.js';
+import { resolveArchiveFileName, extractArchive, baseNameOf, ARCHIVE_EXTENSIONS } from './net/archive.js';
+export { ARCHIVE_EXTENSIONS };
 import { fetchSongBytes } from './net/fetch.js';
 import { findSongCandidates } from './net/song-select.js';
 import { decodeMmlBytes } from './net/charset.js';
@@ -171,6 +172,35 @@ export async function resolveSongFromUrl(url, onProgress) {
     fileName: resolveSingleFileNameOnly(url, responseHeaders),
     bytes,
   };
+}
+
+/**
+ * ローカルファイル(「ファイルから開く」/ドラッグ&ドロップ)から曲データを取得し、
+ * 単体ファイルか書庫かを判定して返す。resolveSongFromUrl()のローカル版
+ * (URL取得が無い分だけ薄い)。書庫の展開・曲候補列挙はURL経路と全く同じ関数
+ * (resolveArchiveFileName()・extractArchive()・findSongCandidates())を経由するため、
+ * ファイル経路とURL経路が別々のロジックに分岐しない(課題: ファイルから開く/D&Dの
+ * 書庫対応、2026-08-16。以前はこの判定自体が無く、書庫のバイト列がそのままMMLとして
+ * デコードされ無言で壊れていた)。
+ *
+ * ローカルファイルにはContent-Dispositionヘッダも無いため、表示名/ファイル名は
+ * 常に`file.name`をそのまま使う(resolveSongFromUrl()のような優先順位判定は不要)。
+ * @param {File} file
+ * @returns {Promise<
+ *   | { kind: 'single', name: string, fileName: string, bytes: Uint8Array }
+ *   | { kind: 'archive', candidates: import('./net/song-select.js').SongCandidate[],
+ *       entries: import('./net/archive-util.js').ArchiveEntry[], archiveLabel: string }
+ * >}
+ */
+export async function resolveSongFromFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const archiveFileName = resolveArchiveFileName(file.name, bytes);
+  if (archiveFileName) {
+    const entries = await extractArchive(archiveFileName, bytes);
+    const candidates = findSongCandidates(entries);
+    return { kind: 'archive', candidates, entries, archiveLabel: file.name };
+  }
+  return { kind: 'single', name: file.name, fileName: file.name, bytes };
 }
 
 // --- 曲ライブラリへの自動取り込み(IndexedDB、net/library.js) -------------------------

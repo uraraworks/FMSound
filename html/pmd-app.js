@@ -46,9 +46,10 @@ import { setupPopover } from './ui/shell.js';
 import { t } from './ui/i18n.js';
 import { describeNetError } from './ui/net-error.js';
 import {
-  resolveSongFromUrl, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
+  resolveSongFromUrl, resolveSongFromFile, pickSongCandidate, FILEBAR_RESTORED_DRAFT_NAME,
   persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
   closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
+  ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
 
@@ -84,7 +85,10 @@ export async function init(ctx) {
     '<a href="https://github.com/myon98/98fmplayer/blob/master/LICENSE" target="_blank" rel="noopener">(BSD 2-Clause)</a> | ' +
     '<a href="https://github.com/uraraworks/FMSound" target="_blank" rel="noopener">FMSound on GitHub</a>';
 
-  fileInput.accept = '.m,.M';
+  // 課題: ファイルから開く/D&Dの書庫対応(2026-08-16)。書庫拡張子の一覧は
+  // net/archive.js ARCHIVE_EXTENSIONS(唯一の情報源)を参照する。isArchive()の
+  // 判定規則と食い違わないよう、ここでは拡張子を書き並べない。
+  fileInput.accept = ['.m', '.M', ...ARCHIVE_EXTENSIONS].join(',');
 
   // --- 曲を開く導線。東方Projectアレンジ曲(PC-98_Hartmann_s_Youkai_GIrl.M、
   // 権利不明のため同梱をやめた)の代わりに自作サンプル(エリーゼのために冒頭、
@@ -1010,30 +1014,86 @@ export async function init(ctx) {
     });
   }
 
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files && fileInput.files[0];
+  // --- 曲を開く(ローカルの.m/.Mファイル選択 / ドラッグ&ドロップ) ---
+  //
+  // 【拡張・2026-08-16】ローカルファイルが書庫(zip/lzh/d88)だった場合の対応を追加。
+  // 以前はここで書庫判定を一切せず、書庫のバイト列をそのままバイナリ(コンパイル済み
+  // .M/.m)として仮想FSへ書き込んでいたため無言で壊れていた(利用者報告)。
+  // URL経路(下のloadSongFromUrl())が既に持っている書庫展開・曲選択・ライブラリ
+  // 一括取り込みの仕組みへ合流させる(html/net-load.js resolveSongFromFile()が
+  // resolveSongFromUrl()と同じnet/archive.js・net/song-select.jsを経由するため、
+  // 判定・展開ロジックはここで新しく書き起こさない)。
+  async function openPmdFile(file) {
     if (!file) return;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    // 修正1: 「ファイルから開く」もURL由来ではないので、残っている`?mml=`はここで取り除く。
+    let resolved;
+    try {
+      resolved = await resolveSongFromFile(file);
+    } catch (err) {
+      setNetStatus(describeNetError(err), true);
+      return;
+    }
+    // 修正1: 「ファイルから開く」/ドラッグ&ドロップもURL由来ではないので、
+    // 残っている`?mml=`はここで取り除く。
     clearLoadedUrlFromAddressBar();
-    await playBytes(bytes, file.name);
-    persistLocalPmdSong(bytes, file.name);
+
+    if (resolved.kind === 'archive') {
+      const pmdCandidates = resolved.candidates.filter((c) => c.driver === 'pmd');
+      if (pmdCandidates.length === 0) {
+        const otherCount = resolved.candidates.length;
+        setNetStatus(
+          otherCount > 0
+            ? t('net.noPmdCandidatesOther', { otherCount })
+            : t('net.noPlayableSongs'),
+          true,
+        );
+        return;
+      }
+      // 自動取り込み: URL経路(loadSongFromUrl())と同じく、書庫を開いた時点で書庫内の
+      // 全曲をライブラリへ一括取り込みする。出所はURLではなくローカルファイルなので
+      // kind: 'local' を渡す(net/library.js importArchiveSongs()参照)。
+      const importResult = await importArchiveSongsToLibrary({
+        driver: 'pmd', kind: 'local', url: null, entries: resolved.entries, archiveLabel: resolved.archiveLabel,
+        candidates: pmdCandidates,
+      });
+      if (importResult.added > 0) {
+        setNetStatus(t('net.addedToLibrary', { count: importResult.total }), false);
+      } else if (importResult.total > 0) {
+        setNetStatus(t('net.alreadyInLibrary', { count: importResult.total }), false);
+      }
+
+      let chosen = pmdCandidates[0];
+      if (pmdCandidates.length > 1) {
+        libraryPopover.close();
+        chosen = await pickSongCandidate(pmdCandidates, { entries: resolved.entries, archiveLabel: resolved.archiveLabel });
+        if (!chosen) {
+          setNetStatus(t('net.selectionCancelled'), false);
+          return;
+        }
+      }
+      // 「曲を開く」/D&Dはそれ自体が利用者操作(ユーザージェスチャー)なので、URL経路の
+      // ようにpendingUrlSongへ保持して再生ボタン待ちにはせず、従来の単体ファイルと
+      // 同じくplayBytes()で即座に再生する。
+      await playBytes(chosen.entry.data, chosen.displayName);
+      setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
+      return;
+    }
+
+    await playBytes(resolved.bytes, resolved.fileName);
+    persistLocalPmdSong(resolved.bytes, resolved.fileName);
+  }
+
+  fileInput.addEventListener('change', () => {
+    openPmdFile(fileInput.files && fileInput.files[0]);
   });
 
   // 課題B: ドロップの受付はapp.js側(ページ全体、setupPageDropZone)に一本化した。
   // ここでは「ドロップされたファイルをどう解釈するか」だけを登録する(1件目のみ
   // 使う。複数件落とされた場合は黙って捨てず、netStatusで案内する)。
-  ctx.handleDroppedFiles = async (files) => {
+  ctx.handleDroppedFiles = (files) => {
     if (files.length > 1) {
       setNetStatus(t('net.dropMultiple', { count: files.length, name: files[0].name }), false);
     }
-    const file = files[0];
-    if (!file) return;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    // 修正1: ドラッグ&ドロップもURL由来ではないので、残っている`?mml=`はここで取り除く。
-    clearLoadedUrlFromAddressBar();
-    await playBytes(bytes, file.name);
-    persistLocalPmdSong(bytes, file.name);
+    openPmdFile(files[0]);
   };
 
   // --- 課題D: ダウンロード(MMLソース/コンパイル済み.M/asmのdb配列)。
