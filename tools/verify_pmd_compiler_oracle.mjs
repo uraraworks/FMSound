@@ -132,8 +132,9 @@ if (fileB[LENGTH_BYTE_FILE_INDEX] !== ((48) & 0xff)) fileB[LENGTH_BYTE_FILE_INDE
 
 // --- エラー集計: 既知のエラーを含むMMLで機能単位の集計が期待どおりになる ---
 {
-  // J: 未対応のパート指定(x1)。A x: 未対応の文字'x'(x2)。A y: 未対応の文字'y'(x1)。
-  const mml = ['J c', 'A x', 'A x', 'A y'].join('\n');
+  // K: 未対応のパート指定(x1、リズムK/Rはv2 5章の未解明のため未実装のまま)。
+  // A x: 未対応の文字'x'(x2)。A y: 未対応の文字'y'(x1)。
+  const mml = ['K c', 'A x', 'A x', 'A y'].join('\n');
   const { errors } = compileMml(mml, {});
   check('[本体] エラー集計テスト用MMLがちょうど4件のエラーを出す(前提の確認)', errors.length === 4, `errors=${errors.length}`);
   const agg = aggregateErrors(errors);
@@ -148,8 +149,8 @@ if (fileB[LENGTH_BYTE_FILE_INDEX] !== ((48) & 0xff)) fileB[LENGTH_BYTE_FILE_INDE
     byFeature["未対応の文字: 'y'"] === 1,
   );
   check(
-    "[本体] エラー集計: 未対応のパート指定'J'が1件",
-    byFeature["未対応のパート指定: 'J'"] === 1,
+    "[本体] エラー集計: 未対応のパート指定'K'が1件",
+    byFeature["未対応のパート指定: 'K'"] === 1,
   );
   check(
     '[本体] エラー集計: 種類数が3種(4件が3機能にまとまる)',

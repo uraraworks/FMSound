@@ -109,7 +109,7 @@ export const PMD_TOKEN_RULES = [
 // 「絶対にマッチしない」ダミー正規表現を渡す(空の否定先読み)。
 export const PMD_MACRO_HEADER_RE = /(?!)/;
 
-// 行頭のパート文字(A～I、PART_LETTERS=FM1-6,SSG1-3。compiler/pmd_mml_parser.mjs参照)。
+// 行頭のパート文字(A～J、PART_LETTERS=FM1-6,SSG1-3,ADPCM。compiler/pmd_mml_parser.mjs参照)。
 // パーサは複数文字の連続指定("ABC cdefg"のように同じMMLを複数パートへ)を許すため、
-// MUCOM版と異なり1文字ではなく連続するA-Iをまとめて1トークンにする。
-export const PMD_PART_LETTER_RE = /^([ \t]*)([A-Ia-i]+)/;
+// MUCOM版と異なり1文字ではなく連続するA-Jをまとめて1トークンにする。
+export const PMD_PART_LETTER_RE = /^([ \t]*)([A-Ja-j]+)/;

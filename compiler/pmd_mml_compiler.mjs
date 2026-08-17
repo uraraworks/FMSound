@@ -307,13 +307,13 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
 
   // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)。
   // PART_LETTERS(pmd_mml_parser.mjs)の配列indexが、そのままこのヘッダindexと一致するよう設計してある
-  // (A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3)。
+  // (A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3, J=idx9=ADPCM。v2 step3でJを追加)。
   for (let idx = 0; idx < PART_LETTERS.length; idx++) {
     const letter = PART_LETTERS[idx];
     const layout = trackLayout[letter];
     w16(idx * 2, layout ? layout.startAddr : EMPTY_TRACK_OFF);
   }
-  for (let idx = PART_LETTERS.length; idx < 11; idx++) w16(idx * 2, EMPTY_TRACK_OFF); // ADPCM/RHYTHM: v1未対応、空トラック
+  for (let idx = PART_LETTERS.length; idx < 11; idx++) w16(idx * 2, EMPTY_TRACK_OFF); // RHYTHM: K/Rは未解明のため未対応、空トラック
   w16(0x16, EMPTY_TRACK_OFF); // r_offset(未使用)
   w16(0x18, toneOff); // tone_ptr
 

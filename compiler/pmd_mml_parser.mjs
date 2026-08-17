@@ -4,7 +4,8 @@
 //   音符・休符・オクターブ(o/</>)・タイ(&)・音長(数値/付点/%)・テンポ(t/T)・
 //   ローカルループ([ : ]n)・全体ループ(L)・音色選択(@n、第1段階からの継続利用)・
 //   音量(v/V)・SSGパート(G/H/I)・音色定義(@ 音色番号 ALG FB ...)。
-// v1範囲外(リズム・ADPCM・PPZ8・FM3拡張・LFO・ポルタメント・パン・相対音量v+/v-等)は対象外。
+// v1範囲外(リズム・PPZ8・FM3拡張・LFO本体/ポルタメント一部・qの数値1等)は対象外。
+// J(ADPCM)パートはv2 step3で追加(docs/pmd-compiler-spec-v2.md 1.2節)。
 //
 // パート行の形式は PMD の慣習に合わせ「行頭にパート文字(A-I)を1つ以上並べ、
 // 空白の後にコマンド列を書く」("ABC t120 o4 cdefg" のように複数パートへ同じ内容を流せる)。
@@ -14,10 +15,15 @@
 // エラーはすべて {line, message} 形式(1-indexed行番号)で返す。エディタのエラー行
 // ジャンプに使う想定(MUCOM側の `in line N.` 相当)。
 
-export const PART_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']; // FM1-6, SSG1-3 (doc 1.2節の順。配列indexが.M側の11パートヘッダindexと一致する)
+// FM1-6, SSG1-3, ADPCM (doc v1 1.2節 / v2 1.2節の順。配列indexが.M側の11パート
+// ヘッダindexと一致する: A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3, J=idx9=ADPCM)。
+// J(ADPCM)はv2 1.2節で「既存ヘッダ枠を流用、トラック書式もFM/SSGと共通」と確定した
+// もの(step3で実装)。K/R(リズム)・PPZ8は未解明が残るため引き続き対象外。
+export const PART_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 export const PART_KIND = {
   A: 'fm', B: 'fm', C: 'fm', D: 'fm', E: 'fm', F: 'fm',
   G: 'ssg', H: 'ssg', I: 'ssg',
+  J: 'adpcm',
 };
 export const NOTE_LETTER_TO_BASE_INDEX = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 const DEFAULT_MEAS_LEN = 96; // 全音符長の初期値。`C`(v2 3.8節, 0xdf)で変更可能。
@@ -248,21 +254,22 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     }
 
     if (c === 'V') {
-      // 音量指定2(細かい値、絶対値)。PMDMML.MAN §5-2。FM:0-127 / SSG:0-15。
+      // 音量指定2(細かい値、絶対値)。PMDMML.MAN §5-2。FM:0-127 / SSG:0-15 / PCM(ADPCM):0-255
+      // (doc本文/pmd-compiler-spec.md 7.2節)。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'V' の後に音量数値がありません`);
       i += m[0].length;
       const val = parseInt(m[0], 10);
-      const max = partKind === 'ssg' ? 15 : 127;
+      const max = partKind === 'ssg' ? 15 : partKind === 'adpcm' ? 255 : 127;
       if (val < 0 || val > max) {
-        throw new ParseError(line, `'V' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : 'FMは0-127'}): ${val}`);
+        throw new ParseError(line, `'V' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : partKind === 'adpcm' ? 'PCMは0-255' : 'FMは0-127'}): ${val}`);
       }
       events.push({ type: 'volAbs', line, value: val });
       continue;
     }
     if (c === 'v') {
-      // 音量指定1(大雑把な値)。PMDMML.MAN §5-1。FM:0-16(変換テーブル経由でVへ)/ SSG:0-15(素通し、未解明)。
+      // 音量指定1(大雑把な値)。PMDMML.MAN §5-1。FM/PCM:0-16(変換テーブル経由でVへ)/ SSG:0-15(素通し、未解明)。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'v' の後に音量数値がありません`);
@@ -618,7 +625,7 @@ export function parseMml(source) {
       if (!PART_LETTERS.includes(upper)) {
         errors.push({
           line: lineNo,
-          message: `未対応のパート指定です: '${ch}'（v1は FM1-6=A-F, SSG1-3=G-I のみ。ADPCM/リズム等は対象外）`,
+          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J に対応。K/Rリズム・PPZ8拡張パートは未解明のため対象外）`,
         });
         continue;
       }

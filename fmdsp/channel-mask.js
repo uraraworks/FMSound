@@ -163,15 +163,18 @@ export function usedChannelsFromMucomCompileLog(log) {
   return any ? used : null;
 }
 
-// PMD: MMLをこのアプリのv1コンパイラ(compiler/pmd_mml_compiler.mjs)で読み込んだ
-// 場合のみ判定できる。同コンパイラのPART_LETTERS(A-I)はFM1-6/SSG1-3の9パートのみを
-// 表し、配列indexの並びはFM_CHANNELS+SSG_CHANNELSの並びと一致する(pmd_mml_parser.mjs
-// 冒頭コメント「A-F=FM1-6, G-I=SSG1-3」参照)。
-// 重要: 同コンパイラはRHYTHM/ADPCMを構造的に一切出力しない
-// (compiler/pmd_mml_compiler.mjs `// ADPCM/RHYTHM: v1未対応、空トラック`
-// のとおり、該当ヘッダを常にEMPTY_TRACK_OFFで埋める)。そのためRHYTHM/ADPCMは
-// 「判定できない」のではなく「このアプリでMML入力した曲では絶対に鳴らない」と
-// 確定できる事実であり、usedPartLettersに含まれることは無い(=常に未使用表示になる)。
+// PMD: MMLをこのアプリのコンパイラ(compiler/pmd_mml_compiler.mjs)で読み込んだ
+// 場合のみ判定できる。同コンパイラのPART_LETTERS(A-J)はFM1-6/SSG1-3/ADPCMの10パートを
+// 表し、配列indexの並びはFM_CHANNELS+SSG_CHANNELS+[ADPCM_CHANNEL]の並びと一致する
+// (pmd_mml_parser.mjs冒頭コメント「A-F=FM1-6, G-I=SSG1-3, J=ADPCM」参照。
+// JはADPCMパート実装(docs/pmd-compiler-spec-v2.md 1.2節、v2 step3)で追加された)。
+// 重要: 同コンパイラはRHYTHM(K/R)を構造的に一切出力しない(K/Rの14bitマスクの
+// `@`対応が未解明のため未実装、compiler/pmd_mml_compiler.mjs
+// `// RHYTHM: K/Rは未解明のため未対応、空トラック`のとおり、該当ヘッダを常に
+// EMPTY_TRACK_OFFで埋める)。そのためRHYTHMは「判定できない」のではなく
+// 「このアプリでMML入力した曲では絶対に鳴らない」と確定できる事実であり、
+// usedPartLettersに含まれることは無い(=常に未使用表示になる)。ADPCM(J)は
+// 実際に使われていれば使用チャンネルとして検出される。
 //
 // usedPartLetters: parseMml()が返すtracksのkeys、またはcompileMml()が返す
 // layout.tracksのObject.keys()(どちらもPART_LETTERSの部分集合の配列)。
@@ -192,7 +195,7 @@ export function usedChannelsFromPmdMmlParts(usedPartLetters) {
 // 「読み込んだ瞬間に表示する」という本機能の要件に合わないため実装しない。
 // 呼び出し側はこの経路ではusedChannelsをnull(判定不能)のままにすること。
 export const PMD_MML_PART_LETTERS = PART_LETTERS;
-export const PMD_MML_PART_ORDER = [...FM_CHANNELS, ...SSG_CHANNELS];
+export const PMD_MML_PART_ORDER = [...FM_CHANNELS, ...SSG_CHANNELS, ADPCM_CHANNEL];
 
 // usedChannels(Set<string>|null)を、トラック行描画用のSet<number>(未使用の行index)
 // へ変換する。usedChannelsがnull(判定不能)のときは何も暗くしない(空集合を返す)。
