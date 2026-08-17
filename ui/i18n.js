@@ -118,6 +118,7 @@ const ja = {
 
   'confirm.newFile': '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?',
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
+  'confirm.shareLinkLoad': '編集中のMMLを共有リンクの内容で置き換えます。よろしいですか?',
 
   'sample.mmlLabel': 'サンプルMML:',
   'sample.furEliseLabel': 'エリーゼのために・冒頭',
@@ -307,6 +308,7 @@ const en = {
 
   'confirm.newFile': 'This clears the MML you are editing and starts a new file. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',
+  'confirm.shareLinkLoad': 'This replaces the MML you are editing with the content of the shared link. Continue?',
 
   'sample.mmlLabel': 'Sample MML:',
   'sample.furEliseLabel': 'Für Elise, opening',

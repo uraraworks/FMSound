@@ -393,6 +393,54 @@ export function clearShareFragmentFromAddressBar() {
 }
 
 /**
+ * 共有リンク(`#s1=...`)を同じタブのアドレスバーに直接貼り付けたときの読み込み配線。
+ *
+ * 【不具合修正・2026-08-17、利用者報告】同じタブでアドレスバーの`#`以降だけを
+ * 書き換えても、ページは再読み込みされない(`hashchange`が飛ぶだけの同一文書内の
+ * 移動になる)。従来の実装は`#s1=`を起動時にしか読んでいなかったため、貼り付けても
+ * 何も起きず、画面に残っていた内容がそのまま表示され続けていた(新しいタブでは
+ * 本当に起動するので読める。「共有リンクが読まれていない」だけなのに、利用者からは
+ * 「新規作成の方が優先された」ように見えていた)。
+ *
+ * 起動時の読み込み関数(呼び出し側のloadSongFromShareFragment()。html/mucom-app.js・
+ * html/pmd-app.jsそれぞれが持つ、既存のdecodeShareFragment()呼び出し+エラー処理+
+ * 曲ライブラリ自動取り込みまでを含む一連の処理)をそのまま`load`として受け取り、
+ * ここでは「いつ呼ぶか/呼ばないか」の判定だけを担当する(同じ処理を2箇所に書くと
+ * 片方だけ直る事故が起きるため)。
+ *
+ * `lastHandledHash`による重複排除1本で、以下の2つの要件を同時に満たす:
+ *   (a) `clearShareFragmentFromAddressBar()`等、このアプリ自身が`history.replaceState()`
+ *       でフラグメントを書き換えたときに読み込みが再発火しないこと。
+ *       (`history.replaceState()`は仕様上`hashchange`を発火させないため、実際には
+ *       この経路で発火すること自体が無いはずだが、将来別の経路が増えても壊れない
+ *       よう保険として効かせる。加えて、変化後の値が空文字列なら
+ *       「共有リンクではない」ため`load`を呼ぶまでもなく早期returnする)。
+ *   (b) 同じ共有リンクが連続して貼り付けられても読み直さない(無駄な確認ダイアログ・
+ *       曲ライブラリへの重複取り込み試行を避ける)。
+ *
+ * `isDirty`が真のとき(未コンパイルの編集がある)だけ確認ダイアログを出す
+ * (新規作成ボタンと同じ`t('confirm.shareLinkLoad')`。空の編集欄/コンパイル済みの
+ * 内容なら黙って読み込む)。壊れたフラグメント/未知バージョンを貼り付けられた場合も
+ * 判定を先に済ませてからloadを呼ぶ(loadの中でエラー処理まで行われるのは起動時と
+ * 同じ)ため、ここでは正当性を検査しない。
+ *
+ * `location`/`window`が使えない環境(Node.jsのverifyスクリプト等)では何もしない。
+ * @param {{ isDirty: () => boolean, load: () => Promise<boolean> }} handlers
+ */
+export function watchShareFragmentHashChange({ isDirty, load }) {
+  if (typeof window === 'undefined' || typeof location === 'undefined') return;
+  let lastHandledHash = location.hash;
+  window.addEventListener('hashchange', () => {
+    const newHash = location.hash;
+    if (newHash === lastHandledHash) return; // 自分自身の消去・同じリンクの再貼り付けを含め、既に処理済みの値なら何もしない
+    lastHandledHash = newHash;
+    if (!newHash) return; // 空になった変化(新規作成等による消去)は共有リンクではない
+    if (isDirty() && !window.confirm(t('confirm.shareLinkLoad'))) return;
+    load();
+  });
+}
+
+/**
  * 共有リンク(`#s1=...`)から復元した曲を曲ライブラリへ保存する際のファイル名を作る。
  * 出所がURLでもローカルファイルでもない(URLそのものが曲データを丸ごと運んでいる)ため、
  * `net/library.js computeSongId()`の`kind:'local'`分岐(`local:<ファイル名>`)へ

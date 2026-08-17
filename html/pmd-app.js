@@ -58,6 +58,7 @@ import {
   SHARE_LINK_FILEBAR_NAME, persistSongToLibrary, importArchiveSongsToLibrary, getLibraryDb, urlBaseName,
   closeActiveSongPicker, reflectLoadedUrlInAddressBar, clearLoadedUrlFromAddressBar,
   clearShareFragmentFromAddressBar, shareLibraryFileName, decodeShareFragment,
+  watchShareFragmentHashChange,
   ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
@@ -1496,4 +1497,12 @@ export async function init(ctx) {
   } else if (!hasDraft) {
     loadDefaultSample();
   }
+
+  // 【不具合修正・2026-08-17】同じタブのアドレスバーに共有リンクを貼り付けても
+  // 読み込まれない不具合の対処(net-load.js watchShareFragmentHashChange()コメント参照)。
+  // 起動時と同じloadSongFromShareFragment()をそのまま渡す(処理を2箇所に書かない)。
+  watchShareFragmentHashChange({
+    isDirty: () => mmlDirty && mmlTextarea.value.trim().length > 0,
+    load: loadSongFromShareFragment,
+  });
 }
