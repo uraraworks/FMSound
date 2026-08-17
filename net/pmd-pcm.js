@@ -12,7 +12,7 @@
 // absSumが「.PPCを置かない陰性対照」と完全一致した)。そのため曲ごとに専用の
 // サブディレクトリを作り、曲とPCMを必ず同居させる。
 
-import { baseNameOf } from './archive.js';
+import { baseNameOf, dirNameOf } from './archive.js';
 
 /** 対応拡張子(ドット付き、大文字小文字は無視)。upstream未実装の.P86(PMD86)・
  * .PPS(PPSDRV)は対象外(fmdriver_pmd.c参照)。 */
@@ -28,14 +28,60 @@ const PMD_PCM_EXTENSION_RE = new RegExp(
  * ファイルだけを拾う純関数。nameはディレクトリを含みうる(書庫内のサブフォルダや
  * d88入れ子展開の "<d88名>/<内側のファイル名>" 形式)ため、basename化して返す
  * (MEMFS上は曲と同じディレクトリへフラットに置くため)。
+ *
+ * 不具合(実測で確定、2026-08-18): 実データのzipで、別ディレクトリに同名だが
+ * 中身の違う .PPC が2つ存在する構成があった(例: JSM/MF88PCM.PPC と
+ * YD/MF88PCM.PPC)。basename化するとどちらも同じnameになり、
+ * writeSongWithPcm()は受け取った配列を順に書き込むため「後に書いた方が勝つ」
+ * 事故になる(音は出るが別の曲の音色バンクで鳴る、無音より気づきにくい不具合)。
+ * これを防ぐため、songEntryName(選ばれた曲の書庫内エントリ名)を受け取り、
+ * 同名候補があれば曲と同じディレクトリのものを優先して1つに絞る。
+ *
  * @param {{name: string, data: Uint8Array}[]} entries
+ * @param {string} [songEntryName] 選ばれた曲の書庫内エントリ名(entry.name。
+ *   表示用のdisplayName/basenameではなくパスを含む実際の名前を渡すこと)。
+ *   **省略時**: 従来通りbasename化するだけで、同名衝突の解決は一切行わない
+ *   (=entries内の出現順そのままを返す。writeSongWithPcm()が書き込み順に
+ *   上書きするため、実質「entries内で最後に出現したものが勝つ」という、
+ *   この関数がまだ知らなかった頃の挙動と同じになる)。曲のエントリ名を
+ *   持たない/特定できない呼び出し元のための後方互換用の分岐であり、
+ *   同名PCMが複数ディレクトリに存在する書庫では不正確になりうる。
+ *   本番の呼び出し元(html/pmd-app.js)は必ず第2引数を渡すこと。
  * @returns {{name: string, data: Uint8Array}[]}
  */
-export function collectPmdPcmFiles(entries) {
+export function collectPmdPcmFiles(entries, songEntryName) {
   if (!entries) return [];
-  return entries
-    .filter((entry) => PMD_PCM_EXTENSION_RE.test(entry.name))
-    .map((entry) => ({ name: baseNameOf(entry.name), data: entry.data }));
+  const matches = entries.filter((entry) => PMD_PCM_EXTENSION_RE.test(entry.name));
+
+  if (songEntryName === undefined) {
+    return matches.map((entry) => ({ name: baseNameOf(entry.name), data: entry.data }));
+  }
+
+  // 同名(basename一致)の候補をグループ化し、グループごとに1つだけ採用する。
+  // 採用規則(利用者指示通り、決め打ちしない部分を明記する):
+  //  1. グループ内に「曲と同じディレクトリ(dirNameOf一致)」の候補があれば、
+  //     その中でentries配列の出現順が最初のものを採用する。
+  //  2. 曲と同じディレクトリに候補が無ければ、他ディレクトリの候補を捨てず
+  //     (1曲が別フォルダの共有音色バンクを参照する構成もありうるため)、
+  //     グループ全体の中で出現順が最初のものを採用する。
+  //  どちらの場合も「出現順最初」で固定し、「たまたま配列の最後に来たもの」に
+  //  依存しないようにする(=同じ入力なら常に同じ結果になる)。
+  const songDir = dirNameOf(songEntryName);
+  /** @type {Map<string, {name: string, data: Uint8Array}[]>} */
+  const byBase = new Map();
+  for (const entry of matches) {
+    const base = baseNameOf(entry.name);
+    if (!byBase.has(base)) byBase.set(base, []);
+    byBase.get(base).push(entry);
+  }
+
+  const result = [];
+  for (const [base, candidates] of byBase) {
+    const sameDir = candidates.filter((c) => dirNameOf(c.name) === songDir);
+    const chosen = (sameDir.length > 0 ? sameDir : candidates)[0];
+    result.push({ name: base, data: chosen.data });
+  }
+  return result;
 }
 
 // upstreamが未実装の拡張子(.P86=PMD86, .PPS=PPSDRV)。PMD_PCM_EXTENSIONSには

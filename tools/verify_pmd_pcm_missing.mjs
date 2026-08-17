@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import createPmdWeb from '../pmdweb/build-web/pmdweb.js';
 import { buildToneEntry } from '../compiler/gen_pmd_min.mjs';
-import { writeSongWithPcm, describePmdPcmStatus, collectUnsupportedPmdPcmFiles } from '../net/pmd-pcm.js';
+import { writeSongWithPcm, describePmdPcmStatus, collectUnsupportedPmdPcmFiles, collectPmdPcmFiles } from '../net/pmd-pcm.js';
 import { DICT as I18N_DICT } from '../ui/i18n.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -396,6 +396,82 @@ async function main() {
         typeof value === 'string' && value.includes('{files}'), `value="${value}"`);
     }
   }
+
+  // --- 同名PCM取り違え不具合(2026-08-18実測)の検証 ---
+  // 実データのzip構成を模した合成エントリ配列: 別ディレクトリ(JSM/YD)に同名だが
+  // 中身の違う MF88PCM.PPC が1つずつある。中身の違いはdataのバイト列そのもので
+  // 判定する(ファイル名だけの比較では取り違えを検出できないため)。
+  const jsmPpcData = Uint8Array.from([0x11, 0x22, 0x33, 0x44]); // JSM側の.PPCの中身(印)
+  const ydPpcData = Uint8Array.from([0x99, 0x88, 0x77, 0x66]); // YD側の.PPCの中身(印。JSMとは別バイト列)
+  const dupEntries = [
+    { name: 'PMD_MS_sample/JSM/MF88PCM.PPC', data: jsmPpcData },
+    { name: 'PMD_MS_sample/JSM/mso_JSM.M', data: new Uint8Array(0) },
+    { name: 'PMD_MS_sample/SS_TENG/MSPCM3.PZI', data: new Uint8Array(0) },
+    { name: 'PMD_MS_sample/SS_TENG/mspcm4.pzi', data: new Uint8Array(0) },
+    { name: 'PMD_MS_sample/SS_TENG/SS_TENG_ppz.m', data: new Uint8Array(0) },
+    { name: 'PMD_MS_sample/YD/MF88PCM.PPC', data: ydPpcData },
+    { name: 'PMD_MS_sample/YD/ms_yokai_disco.M', data: new Uint8Array(0) },
+  ];
+
+  // [本体] JSM相当の曲を指定 -> 採用されるMF88PCM.PPCはJSM側のバイト列。
+  const jsmPcmFiles = collectPmdPcmFiles(dupEntries, 'PMD_MS_sample/JSM/mso_JSM.M');
+  const jsmPpc = jsmPcmFiles.find((f) => f.name === 'MF88PCM.PPC');
+  check('[本体] JSM曲を指定すると、採用されるMF88PCM.PPCの中身がJSM側のバイト列',
+    !!jsmPpc && Buffer.from(jsmPpc.data).equals(Buffer.from(jsmPpcData)),
+    `data=${jsmPpc && JSON.stringify(Array.from(jsmPpc.data))}`);
+
+  // [本体] YD相当の曲を指定 -> 採用されるMF88PCM.PPCはYD側のバイト列。
+  const ydPcmFiles = collectPmdPcmFiles(dupEntries, 'PMD_MS_sample/YD/ms_yokai_disco.M');
+  const ydPpc = ydPcmFiles.find((f) => f.name === 'MF88PCM.PPC');
+  check('[本体] YD曲を指定すると、採用されるMF88PCM.PPCの中身がYD側のバイト列',
+    !!ydPpc && Buffer.from(ydPpc.data).equals(Buffer.from(ydPpcData)),
+    `data=${ydPpc && JSON.stringify(Array.from(ydPpc.data))}`);
+
+  // [本体] 曲と同じディレクトリにPCMが無い場合、候補を捨てず他ディレクトリの
+  // 候補を採用する(1曲が別フォルダの共有音色バンクを参照する構成もありうるため)。
+  const sharedBankData = Uint8Array.from([0xaa, 0xbb, 0xcc]);
+  const noLocalPcmEntries = [
+    { name: 'BANK/SHARED.PPC', data: sharedBankData },
+    { name: 'SONGS/song.M', data: new Uint8Array(0) },
+  ];
+  const noLocalResult = collectPmdPcmFiles(noLocalPcmEntries, 'SONGS/song.M');
+  const sharedPpc = noLocalResult.find((f) => f.name === 'SHARED.PPC');
+  check('[本体] 曲と同じディレクトリにPCMが無い場合、他ディレクトリの候補が採用される(候補を捨てない)',
+    !!sharedPpc && Buffer.from(sharedPpc.data).equals(Buffer.from(sharedBankData)),
+    `result=${JSON.stringify(noLocalResult.map((f) => f.name))}`);
+
+  // [本体] 同名候補が複数あってどれも曲のディレクトリに無い場合、採用は決定論的
+  // (同じ入力で2回呼んで同じ結果になる。「たまたま最後」に依存しない)。
+  const noMatchDupEntries = [
+    { name: 'A/DUPE.PPC', data: Uint8Array.from([1, 1, 1]) },
+    { name: 'B/DUPE.PPC', data: Uint8Array.from([2, 2, 2]) },
+    { name: 'SONGS/song.M', data: new Uint8Array(0) },
+  ];
+  const run1 = collectPmdPcmFiles(noMatchDupEntries, 'SONGS/song.M');
+  const run2 = collectPmdPcmFiles(noMatchDupEntries, 'SONGS/song.M');
+  const dupe1 = run1.find((f) => f.name === 'DUPE.PPC');
+  const dupe2 = run2.find((f) => f.name === 'DUPE.PPC');
+  check('[本体] 同名候補がどれも曲のディレクトリに無い場合、2回呼んでも同じ候補が採用される(決定論的)',
+    !!dupe1 && !!dupe2 && Buffer.from(dupe1.data).equals(Buffer.from(dupe2.data)),
+    `run1=${dupe1 && JSON.stringify(Array.from(dupe1.data))} run2=${dupe2 && JSON.stringify(Array.from(dupe2.data))}`);
+
+  // [陽性対照] 修正前の挙動(basename化して受け取った順に書き込み、後に書いた方が
+  // 勝つ)に相当する経路で、この検査が実際に「取り違え」の症状で落ちることを確認する。
+  // songEntryNameを省略した場合の戻り値は意図的に非重複のまま返す(この関数の
+  // 「省略時は従来通り」の仕様)。それをwriteSongWithPcm()と同じ「後勝ち」の
+  // 書き込み順で畳み込むと、JSMの曲を選んだつもりでもYD側のバイト列が最終的に
+  // 書き込まれてしまうことを確認する(単に「変えたら変わる」ではなく、取り違えという
+  // 具体的な症状で崩れることを見る)。
+  const legacyPcmFiles = collectPmdPcmFiles(dupEntries); // 第2引数省略=従来挙動
+  let legacyWinner;
+  for (const pcm of legacyPcmFiles) {
+    if (pcm.name === 'MF88PCM.PPC') legacyWinner = pcm.data; // 後に出現したものが書き込みで勝つ
+  }
+  checkExpectFail(
+    '[陽性対照] songEntryNameを省略した従来経路では、JSM曲を選んでもMF88PCM.PPCの中身がJSM側にならない(取り違え症状で落ちる)',
+    !!legacyWinner && Buffer.from(legacyWinner).equals(Buffer.from(jsmPpcData)),
+    `legacyWinner=${legacyWinner && JSON.stringify(Array.from(legacyWinner))}(修正前相当の経路ではYD側=${JSON.stringify(Array.from(ydPpcData))}になるはず)`,
+  );
 
   console.log(`\n=== 結果: ${passCount} PASS / ${failCount} FAIL ===`);
   if (failCount > 0) process.exit(1);

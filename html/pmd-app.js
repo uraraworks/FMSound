@@ -1368,14 +1368,17 @@ export async function init(ctx) {
       // 「曲を開く」/D&Dはそれ自体が利用者操作(ユーザージェスチャー)なので、URL経路の
       // ようにpendingUrlSongへ保持して再生ボタン待ちにはせず、従来の単体ファイルと
       // 同じくplayBytes()で即座に再生する。書庫内の.PPC/.PZI/.PVIも同じ書庫の
-      // entriesから拾ってそのまま渡す(collectPmdPcmFiles()、net/pmd-pcm.js)。
+      // entriesから拾って渡す(collectPmdPcmFiles()、net/pmd-pcm.js)。同名PCMが
+      // 別ディレクトリに複数ある取り違え不具合の修正(2026-08-18)で、選ばれた曲の
+      // 書庫内エントリ名(chosen.entry.name。表示用のdisplayNameではなくパスを
+      // 含む実際の名前)を渡し、曲と同じディレクトリのものを優先させる。
       // upstream未対応の.P86/.PPSも同じentriesから拾い、reportPmdPcmStatus()経由の
       // 案内に使う(collectUnsupportedPmdPcmFiles())。
       const pcmMessages = await playBytes(
         chosen.entry.data,
         chosen.displayName,
         undefined,
-        collectPmdPcmFiles(resolved.entries),
+        collectPmdPcmFiles(resolved.entries, chosen.entry.name),
         collectUnsupportedPmdPcmFiles(resolved.entries),
       );
       // playBytes()内でPCM不足等の案内を既にsetNetStatus()済みなら、それを
@@ -1498,11 +1501,12 @@ export async function init(ctx) {
       if (uiMode === 'editor') setUiMode('player');
       // 書庫内の.PPC/.PZI/.PVI(・upstream未対応の.P86/.PPS)も同じ書庫のentriesから
       // 拾って一緒に保持する(playBytes()呼び出し時にpcmFiles/unsupportedFilesとして
-      // 渡される。上のbtnPlayPauseハンドラ参照)。
+      // 渡される。上のbtnPlayPauseハンドラ参照)。同名PCMの取り違え防止のため
+      // chosen.entry.name(曲の書庫内エントリ名)を渡す(collectPmdPcmFiles()参照)。
       pendingUrlSong = {
         bytes: chosen.entry.data,
         name: chosen.displayName,
-        pcmFiles: collectPmdPcmFiles(resolved.entries),
+        pcmFiles: collectPmdPcmFiles(resolved.entries, chosen.entry.name),
         unsupportedFiles: collectUnsupportedPmdPcmFiles(resolved.entries),
       };
       currentSongName = chosen.displayName;

@@ -42,6 +42,18 @@ export function baseNameOf(path) {
 }
 
 /**
+ * アーカイブ内エントリ名からディレクトリ部分のみを取り出す(末尾の'/'は含まない)。
+ * ルート直下のエントリは空文字を返す。baseNameOf()と対になる関数
+ * (net/pmd-pcm.js collectPmdPcmFiles()が、同名PCMの取り違え防止のため
+ * 「曲と同じディレクトリか」を判定するのに使う)。
+ * @param {string} path
+ */
+export function dirNameOf(path) {
+  const i = path.lastIndexOf('/');
+  return i >= 0 ? path.slice(0, i) : '';
+}
+
+/**
  * アーカイブ(LZH/ZIP/d88)を展開し、格納されている各エントリを返す。
  * OS付随のメタデータエントリ(__MACOSX/、._ファイル、.DS_Store等)はここで一括除外する。
  * ZIP/LZH/d88いずれの展開結果も必ずこの関数を経由するため、全形式に等しく効く。

@@ -190,9 +190,11 @@ function verifyWiring() {
   const rootWriteRe = /FS\.writeFile\(\s*'\/'\s*\+/;
   check('[結線] ルート直下へ直接書く記述(FS.writeFile(\'/\' + ...))が残っていない', !rootWriteRe.test(src));
   // 書庫の枝(openPmdFile/loadSongFromUrl)がcollectPmdPcmFilesの結果を渡していること。
-  const archiveBranchCalls = src.match(/collectPmdPcmFiles\(resolved\.entries\)/g) || [];
+  // 同名PCM取り違え修正(2026-08-18)で、選ばれた曲の書庫内エントリ名
+  // (chosen.entry.name)も第2引数として渡すようになった。
+  const archiveBranchCalls = src.match(/collectPmdPcmFiles\(resolved\.entries,\s*chosen\.entry\.name\)/g) || [];
   check(
-    '[結線] 書庫の枝(openPmdFile/loadSongFromUrl)が2箇所ともcollectPmdPcmFiles(resolved.entries)を渡している',
+    '[結線] 書庫の枝(openPmdFile/loadSongFromUrl)が2箇所ともcollectPmdPcmFiles(resolved.entries, chosen.entry.name)を渡している',
     archiveBranchCalls.length >= 2,
     `検出数=${archiveBranchCalls.length}`,
   );
