@@ -25,6 +25,7 @@ import { albumGroupPathFor, resolveTrackInfo } from './album-info.js';
 import { decodeMmlBytes } from './charset.js';
 import { findPairedVoiceBank } from './voice-bank.js';
 import { collectPmdPcmFiles } from './pmd-pcm.js';
+import { extractMmlSourceText } from './pmd-mml-source.js';
 
 // DB_NAME/STORE_NAME/PCM_STORE_NAMEはexportしてある。net/library.js自体を無改変で
 // 検証するtools/verify_library.mjsが、DBバージョン昇格(1→2)検証のために「昇格前の
@@ -143,8 +144,13 @@ export function hashBytes(bytes) {
  *   origin: { kind: 'url'|'local', url: string|null, archiveName: string|null, groupPath: string[]|null, entryPath: string|null },
  *   bytes: Uint8Array,
  *   pcmFiles?: { name: string, data: Uint8Array }[],
+ *   mmlSource?: string | null,
  * }} input pcmFiles(PMD専用、PPC/PZI/PVI)は省略時[]扱い(MUCOM側の呼び出しは
- *   このフィールドを渡さないため一切影響しない)。
+ *   このフィールドを渡さないため一切影響しない)。mmlSource(PMD専用、書庫内に
+ *   同梱されていた曲のMMLソーステキスト)も同様に省略時null扱い。voiceBankと
+ *   同じ考え方(net/pmd-mml-source.js冒頭コメント参照。PCMと違ってテキストは
+ *   小さいので内容ハッシュの共有ストアは使わず、レコードのフィールドとして
+ *   素直に持たせる)。
  * @returns {Promise<string>} 保存したレコードのid
  */
 export async function saveSong(db, input) {
@@ -252,6 +258,11 @@ async function upsertOne(songStore, pcmStore, input, now) {
     // 生バイト列そのものではなくPCMストアへの参照(name/hash/size)だけを持つ
     // (内容ハッシュで共有するため。実体はPCM_STORE_NAME側)。
     pcmRefs,
+    // MMLソーステキスト(PMD専用、書庫内に同梱されていた`.mml`。
+    // net/pmd-mml-source.js findMmlSourceEntry()参照)。対が無い曲(単体ファイル/
+    // MUCOM側/mml同梱の無い書庫)はnull。voiceBankと同じくschemaVersionは
+    // 据え置き(新規フィールドの追加のみ、既存レコードは読み出し時に`?? null`で扱う)。
+    mmlSource: input.mmlSource ?? null,
     contentHash,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
@@ -357,6 +368,12 @@ export async function importArchiveSongs(db, input) {
     // 要求を型で保証する。上の#voice分岐と対称: driver==='pmd'でのみvoiceBankを
     // 探さないのと同じ考え方を逆方向にも適用する)。
     const pcmFiles = driver === 'pmd' ? collectPmdPcmFiles(entries, c.entry.name) : [];
+    // MMLソース(PMD専用、書庫内同梱の`.mml`)。#voice/pcmFilesと同じ考え方で、
+    // driverが'mucom'の場合は探しにいかない(MUCOM側には一切影響させない、という
+    // 要求を型で保証する)。c.related(SongCandidate、net/song-select.js)は既に
+    // 「主ファイルと同じディレクトリのエントリ集合」に絞り込み済みなので、そのまま
+    // findMmlSourceEntry()へ渡せる(取り違え防止、net/pmd-mml-source.js冒頭コメント参照)。
+    const mmlSource = driver === 'pmd' ? extractMmlSourceText(c.entry.name, c.related) : null;
     return {
       driver,
       fileName: c.displayName,
@@ -368,6 +385,7 @@ export async function importArchiveSongs(db, input) {
       voiceBank: pair ? pair.bytes : null,
       voiceBankSource: pair ? pair.sysDiskName : null,
       pcmFiles,
+      mmlSource,
     };
   });
   const { addedCount, unchangedCount } = await saveSongs(db, inputs);

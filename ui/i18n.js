@@ -122,9 +122,11 @@ const ja = {
   'pmd.pcm.missing': 'この曲は {files} を必要としますが読み込めていません。PCMパートは鳴りません。PCMファイルを曲と同じ書庫(zip等)に入れて開いてください。なおPMD86(.P86)とPPSDRV(.PPS)のPCMは未対応です。',
   'pmd.pcm.ppsUnsupported': 'この曲はPPSDRV({files})を使いますが未対応です。そのパートは鳴りません。',
   'pmd.pcm.p86Unsupported': 'この曲はPMD86のPCM({files})を使いますが未対応です。PCMパートは鳴りません。',
+  'pmd.editor.noMmlSource': 'この曲にはMMLソースが無いため編集できません。編集欄には別の曲のMMLが入っています。',
 
   'confirm.newFile': '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?',
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
+  'confirm.songMmlReplace': '編集中のMMLを、選んだ曲のMMLで置き換えます。元の内容はこの操作で失われます。',
   'confirm.shareLinkLoad': '編集中のMMLを共有リンクの内容で置き換えます。よろしいですか?',
 
   'sample.mmlLabel': 'サンプルMML:',
@@ -316,9 +318,11 @@ const en = {
   'pmd.pcm.missing': 'This song requires {files}, which could not be loaded. Its PCM parts will be silent. Put the PCM file in the same archive (zip, etc.) as the song and open it again. Note that PMD86 (.P86) and PPSDRV (.PPS) PCM are not supported.',
   'pmd.pcm.ppsUnsupported': 'This song uses PPSDRV ({files}), which is not supported. That part will be silent.',
   'pmd.pcm.p86Unsupported': 'This song uses PMD86 PCM ({files}), which is not supported. Its PCM parts will be silent.',
+  'pmd.editor.noMmlSource': "This song has no MML source, so it cannot be edited. The editor contains a different song's MML.",
 
   'confirm.newFile': 'This clears the MML you are editing and starts a new file. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',
+  'confirm.songMmlReplace': "The MML in the editor will be replaced with the selected song's MML. Your current content will be lost.",
   'confirm.shareLinkLoad': 'This replaces the MML you are editing with the content of the shared link. Continue?',
 
   'sample.mmlLabel': 'Sample MML:',

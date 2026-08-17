@@ -77,6 +77,12 @@ import { collectPmdPcmFiles, collectUnsupportedPmdPcmFiles, describePmdPcmStatus
 // 修正。net-load.jsは薄いラッパーに徹する設計方針のため(net-load.js冒頭コメント参照)、
 // DB本体の読み出しはnet/library.jsを直接importする(net-load.jsのsaveSong等と同じ経路)。
 import { loadPcmFilesForSong } from './net/library.js';
+// MMLソース連動(2026-08-18新設)。利用者報告「聞いていた曲と違うMMLが編集欄に
+// 入っている」への対処。書庫内に曲と同じディレクトリで同梱されている`.mml`を
+// 見つける窓口(net/pmd-mml-source.js冒頭コメント参照)。曲データのバイト列と
+// 一緒にentries/relatedを扱うhtml/pmd-app.js側の全読み込み経路(書庫/URL/
+// ライブラリ選択)がここを通す。
+import { extractMmlSourceText } from './net/pmd-mml-source.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -172,7 +178,12 @@ export async function init(ctx) {
     // 集計は「未集計」のままにする(利用者がエディタへ切り替えて再生するまで
     // 実際に集計された値であることを保証できない)。
     shareControls.markDirty();
-    await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M');
+    // サンプルはMMLソース(sample_fur_elise.mml、上でfetch済み)を持つ扱いにする
+    // (利用者指示: ここを取り違えると初見の利用者が編集できなくなる)。この時点で
+    // 既にmmlTextareaへtextを反映済みなので、playBytes()側の6引数目は
+    // bookkeeping(currentSongIsLoaded/currentSongMmlSourceText)専用として渡す
+    // (reflectSongMmlSourceQuietly()は呼ばれない。playBytes()の実装コメント参照)。
+    await playBytes(new Uint8Array(buffer), 'sample_fur_elise.M', undefined, [], [], text);
   });
 
   // --- エンジン固有領域: コメント欄操作(常時表示) + MMLエディタ(モード切替で表示)。
@@ -237,7 +248,13 @@ export async function init(ctx) {
       // describePmdPcmStatus()によるPCM不足案内が自然に出る。新しい文言は作らない)。
       const db = await getLibraryDb();
       const pcmFiles = db ? await loadPcmFilesForSong(db, song) : [];
-      playBytes(song.bytes, song.fileName, undefined, pcmFiles);
+      // MMLソース連動(2026-08-18): 書庫取り込み時に保存しておいたsong.mmlSource
+      // (net/library.js importArchiveSongs()参照)を編集欄へ反映する。入力源ごとに
+      // 別配線を作らない(書庫を直接開く経路と同じ窓口=reflectSongMmlSourceQuietly()+
+      // playBytes()のmmlSourceText引数を通す)。
+      const mmlSourceText = song.mmlSource ?? null;
+      if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
+      playBytes(song.bytes, song.fileName, undefined, pcmFiles, [], mmlSourceText);
     },
   });
   // 「曲を開く」メニュー(ui/open-menu.js)のポップオーバー制御。btnLibrary側の
@@ -298,6 +315,16 @@ export async function init(ctx) {
 
   btnEditorMode.addEventListener('click', () => {
     const next = uiMode === 'editor' ? 'player' : 'editor';
+    // 課題(MMLソース連動、2026-08-18、利用者報告「聞いていた曲と違うMMLが編集欄に
+    // 入っている」): player→editor へ移るときだけ、再生中/読み込み済みの曲に
+    // MMLソースが無ければモードを切り替えず案内する(エラー表示と同じ見せ方=
+    // setNetStatus(msg, true)。「曲を開く」等の読み込み結果と同じ表示先を使う)。
+    // stopPlayback()より前に判定する: 先に止めてしまうと、ブロックされて
+    // プレイヤーモードのままなのに曲だけ頭出しで止まる、という中途半端な状態になる。
+    if (next === 'editor' && uiMode !== 'editor' && currentSongIsLoaded && currentSongMmlSourceText == null) {
+      setNetStatus(t('pmd.editor.noMmlSource'), true);
+      return;
+    }
     // 課題E: 「編集OFF→ON」の遷移のときだけ、再生中の曲を頭出しで止める
     // (一時停止ではない)。編集ONで再生ボタンを押すのは普通に鳴らす通常操作なので
     // ここでは止めない。編集から戻るときも何もしない(moduleReadyが立つ前の
@@ -467,6 +494,10 @@ export async function init(ctx) {
     // 共有リンク(`#s1=...`)も同じ理由で取り除く(net-load.js
     // clearShareFragmentFromAddressBar()コメント参照)。
     clearShareFragmentFromAddressBar();
+    // MMLソース連動(2026-08-18): 新規作成した時点で「曲」の識別は無くなる
+    // (=このテキスト自体が手元にある状態)。古い曲のcurrentSongMmlSourceTextが
+    // 残ったままだと、後でエディタボタンを押したとき無関係な理由でブロックされうる。
+    clearCurrentSongMmlSource();
   });
 
   rescale();
@@ -497,6 +528,60 @@ export async function init(ctx) {
   // ここで設定しておく(空のまま=壊れて見える、を避ける。fmdsp/rightpane.js
   // drawFileBar()参照)。
   let currentSongName = hasDraft ? FILEBAR_RESTORED_DRAFT_NAME : null;
+
+  // 課題(MMLソース連動、2026-08-18、利用者報告「聞いていた曲と違うMMLが編集欄に
+  // 入っている」): 「編集ボタンで player→editor へ移るとき、再生中/読み込み済みの
+  // 曲にMMLソースが無ければモードを切り替えない」ためのbookkeeping。
+  //   currentSongIsLoaded: 「今どこかの曲(pendingUrlSongまたはplayBytes()で
+  //     再生済みのバイナリ)が読み込まれている」状態かどうか。false = 下書き復元/
+  //     新規作成/エディタで直接コンパイルした状態(=「曲」ではなくテキストその
+  //     ものが手元にあるので、編集モードへ入るのを妨げる理由が無い)。
+  //   currentSongMmlSourceText: currentSongIsLoaded===trueのときだけ意味を持つ。
+  //     null = その曲にMMLソースが見つからなかった(=編集を妨げる)。文字列 =
+  //     見つかったMMLソース(=編集を許す)。
+  // 曲の識別が変わる箇所(playBytes()・pendingUrlSong代入・compileAndPlay()・
+  // 新規作成・共有リンク読み込み)全てで更新する。1箇所だけ更新し忘れると
+  // 古い状態のままガードが誤動作する(過去に同じ形の不具合が繰り返し起きている、
+  // resetTransientMessages()コメント参照)ため、専用のsetCurrentSongMmlSource()を
+  // 唯一の書き込み窓口にする。
+  let currentSongIsLoaded = false;
+  let currentSongMmlSourceText = null;
+  function setCurrentSongMmlSource(text) {
+    currentSongIsLoaded = true;
+    currentSongMmlSourceText = text; // null = ソース無し
+  }
+  function clearCurrentSongMmlSource() {
+    currentSongIsLoaded = false;
+    currentSongMmlSourceText = null;
+  }
+
+  // 見つかったMMLソースを編集欄へ静かに反映する(dlSampleFurElise クリックハンドラの
+  // プレイヤーモード分岐・loadDefaultSample()と同じ「プレイヤーモードでも編集欄を
+  // 静かに更新しておく」作法)。ただしこちらは利用者が明示的に別の曲を選ぶ操作
+  // (URL/ファイル/書庫/曲ライブラリ)の結果として起きるため、文言はサンプルではなく
+  // 「選んだ曲のMML」で置き換える専用のconfirm.songMmlReplaceを使う
+  // (confirm.sampleReplaceはdlSampleFurElise側専用のまま残す。あちらは文言通り
+  // 本当にサンプルを読み込む操作なので流用しない)。
+  //
+  // 確認の要否判定はdlSampleFurElise側(「編集欄が空でなければ確認」)とあえて
+  // 揃えない。loadDefaultSample()が起動直後に同梱サンプルのMMLを編集欄へ
+  // 自動で入れてしまうため、「空でなければ確認」のままだと利用者が一文字も
+  // 書いていない状態でも曲を開くたびに毎回確認が出て邪魔だった(利用者報告)。
+  // 曲を選ぶ操作自体が利用者の明示的な選択なので、ここで守るべきは「利用者が
+  // 今のテキストに対して行った未保存の編集」だけでよい。それを表すのが
+  // mmlDirty(markMmlDirty()がtextarea inputイベントで立てる。プログラムによる
+  // 書き換え=下書き復元・サンプル読み込み・曲のMML反映自体はmmlDirtyを立てない/
+  // 直後にfalseへ戻すため、利用者の打鍵だけを拾える)。
+  function reflectSongMmlSourceQuietly(text) {
+    if (mmlDirty) {
+      const ok = window.confirm(t('confirm.songMmlReplace'));
+      if (!ok) return;
+    }
+    mmlTextarea.value = text;
+    mmlEditorApi.render();
+    mmlDirty = false;
+    shareControls.markDirty();
+  }
 
   // --- URL指定読み込み時の状態表示(常時表示。#result/#mmlStatusはmmlEditorPane配下で
   // プレイヤーモード時に隠れるため、その外側(sampleLinksElの直後)に置く)。 ---
@@ -1110,6 +1195,11 @@ export async function init(ctx) {
     // フォールバックするのはもう適切ではない。ファイル名が無い以上、捏造せずnull
     // (何も表示しない)。
     currentSongName = null;
+    // MMLソース連動(2026-08-18): エディタで直接コンパイル&再生した場合、そのMMLは
+    // 今まさに編集欄にあるテキストそのものなので「曲」の識別としては扱わない
+    // (=以後player→editor遷移のガード対象にしない。上のcurrentSongName=nullと
+    // 同じ理由)。
+    clearCurrentSongMmlSource();
     setAudioPaused(false);
   }
 
@@ -1120,9 +1210,9 @@ export async function init(ctx) {
       return;
     }
     if (pendingUrlSong && uiMode !== 'editor') {
-      const { bytes, name, fileName, pcmFiles, unsupportedFiles } = pendingUrlSong;
+      const { bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText } = pendingUrlSong;
       pendingUrlSong = null;
-      playBytes(bytes, name, fileName, pcmFiles, unsupportedFiles);
+      playBytes(bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText);
       return;
     }
     const audioState = globalThis.pmdAudioState;
@@ -1278,7 +1368,13 @@ export async function init(ctx) {
   // ファイル名だけを渡したいため、両者を分離できるよう引数を分けた。省略時は
   // nameをそのまま使う(sample_fur_elise.M・ローカルファイルのFile.name等、
   // 元々ファイル名そのものである呼び出しはこれで正しい)。
-  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = [], unsupportedFiles = []) {
+  // mmlSourceText: MMLソース連動(2026-08-18)。呼び出し元が既にreflectSongMmlSourceQuietly()で
+  // 編集欄への反映を済ませている前提の、bookkeeping専用の引数(setCurrentSongMmlSource()参照)。
+  // ここで改めて編集欄へ書き込んだり確認ダイアログを出したりはしない(呼び出し元ごとに
+  // 「いつ確認するか」が異なる=既にconfirmしたのに二重に確認が出る事故を避けるため、
+  // 反映そのものは呼び出し元の責務のままにしてある)。省略時(既存の呼び出し元)はnull=
+  // 「この曲にMMLソースは無い」として記録される。
+  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = [], unsupportedFiles = [], mmlSourceText = null) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
@@ -1291,6 +1387,7 @@ export async function init(ctx) {
     resetTransientMessages();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     currentSongName = fileNameForBar;
+    setCurrentSongMmlSource(mmlSourceText);
     // 曲ごとに専用ディレクトリへ配置する窓口(net/pmd-pcm.js)を必ず通す。
     // ルート直下へ直接書くと.PPC等のPCM探索(opendir/readdir)が失敗するため
     // (詳細は同ファイルの冒頭コメント参照)。
@@ -1429,12 +1526,20 @@ export async function init(ctx) {
       // 含む実際の名前)を渡し、曲と同じディレクトリのものを優先させる。
       // upstream未対応の.P86/.PPSも同じentriesから拾い、reportPmdPcmStatus()経由の
       // 案内に使う(collectUnsupportedPmdPcmFiles())。
+      // MMLソース連動(2026-08-18): 同じ書庫のchosen.related(主ファイルと同じ
+      // ディレクトリのエントリ集合、net/song-select.js SongCandidate.related)から
+      // 同名`.mml`を探す(net/pmd-mml-source.js)。見つかれば、playBytes()が
+      // resetTransientMessages()等で状態を進める前に確認・反映しておく(反映は
+      // playBytes()の責務にしていない。上のplayBytes()コメント参照)。
+      const mmlSourceText = extractMmlSourceText(chosen.entry.name, chosen.related);
+      if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
       const pcmMessages = await playBytes(
         chosen.entry.data,
         chosen.displayName,
         undefined,
         collectPmdPcmFiles(resolved.entries, chosen.entry.name),
         collectUnsupportedPmdPcmFiles(resolved.entries),
+        mmlSourceText,
       );
       // playBytes()内でPCM不足等の案内を既にsetNetStatus()済みなら、それを
       // 「読み込みました」で上書きしない(唯一の窓口を通しつつ、後勝ちで警告が
@@ -1558,11 +1663,18 @@ export async function init(ctx) {
       // 拾って一緒に保持する(playBytes()呼び出し時にpcmFiles/unsupportedFilesとして
       // 渡される。上のbtnPlayPauseハンドラ参照)。同名PCMの取り違え防止のため
       // chosen.entry.name(曲の書庫内エントリ名)を渡す(collectPmdPcmFiles()参照)。
+      // MMLソース連動(2026-08-18): まだPlayを押していない段階(pendingUrlSong)でも
+      // 「読み込み済みの曲」なので、editorボタンのガードが正しく働くよう、この時点で
+      // 反映・記録する(playBytes()を待たない。btnEditorMode/playBytes()コメント参照)。
+      const mmlSourceText = extractMmlSourceText(chosen.entry.name, chosen.related);
+      if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
+      setCurrentSongMmlSource(mmlSourceText);
       pendingUrlSong = {
         bytes: chosen.entry.data,
         name: chosen.displayName,
         pcmFiles: collectPmdPcmFiles(resolved.entries, chosen.entry.name),
         unsupportedFiles: collectUnsupportedPmdPcmFiles(resolved.entries),
+        mmlSourceText,
       };
       currentSongName = chosen.displayName;
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
@@ -1581,6 +1693,9 @@ export async function init(ctx) {
     // (playBytes()のfileNameForBar引数参照)。ツールバーの「読み込みました」は
     // 従来どおり曲名(タイトル)を優先するresolved.nameのまま(役割が違ってよい)。
     pendingUrlSong = { bytes: resolved.bytes, name: resolved.name, fileName: resolved.fileName };
+    // MMLソース連動: 単体ファイルURL(書庫を経由しない)は同梱`.mml`を探す手段が無い
+    // (related相当のエントリ集合を持たない)ため、常に「ソース無し」として記録する。
+    setCurrentSongMmlSource(null);
     currentSongName = resolved.fileName;
     setNetStatus(t('net.loadedReady', { name: resolved.name }), false);
     updateTransportButtonUI();
@@ -1615,7 +1730,10 @@ export async function init(ctx) {
     mmlDirty = false;
     // 共有可能カウンタ: まだコンパイルしていない内容なので「未集計」のまま。
     shareControls.markDirty();
-    pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M' };
+    // サンプルはMMLソース(上でfetch済みのtext)を持つ扱いにする(dlSampleFurElise
+    // クリックハンドラと同じ判断。取り違えると初見の利用者が編集できなくなる)。
+    setCurrentSongMmlSource(text);
+    pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', mmlSourceText: text };
     currentSongName = 'sample_fur_elise.M';
     updateTransportButtonUI();
   }
@@ -1660,6 +1778,10 @@ export async function init(ctx) {
     // 排除と競合させないため)。
     resetTransientMessages({ viaShareLink: true });
     pendingUrlSong = null;
+    // MMLソース連動: 共有リンクはMMLテキストそのものを運ぶ(=編集欄に既にある)。
+    // uiModeを強制的にeditorへ切り替えるためガードは無関係だが、bookkeepingが
+    // 古いまま残らないようcompileAndPlay()/btnNewMmlと同じく「曲」の識別を外す。
+    clearCurrentSongMmlSource();
     currentSongName = SHARE_LINK_FILEBAR_NAME;
     setNetStatus(t('net.loadedFromShareLink'), false);
     updateTransportButtonUI();

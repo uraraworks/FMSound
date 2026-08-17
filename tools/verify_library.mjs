@@ -741,8 +741,11 @@ function testPmdAppLibraryWiring() {
   const onSelectBody = onSelectMatch ? onSelectMatch[0] : '';
   check('html/pmd-app.js: onSelect内でloadPcmFilesForSong()を呼んでいる',
     /loadPcmFilesForSong\(/.test(onSelectBody));
+  // 【拡張・2026-08-18】MMLソース連動(tools/verify_pmd_mml_source.mjs参照)で
+  // playBytes()に6番目の引数(mmlSourceText)が加わったため、pcmFilesの直後で
+  // 閉じることをもう要求しない(呼び出し自体・pcmFilesの位置は変わっていない)。
   check('html/pmd-app.js: onSelect内で解決したpcmFilesをplayBytes()へ渡している',
-    /playBytes\(\s*song\.bytes\s*,\s*song\.fileName\s*,\s*undefined\s*,\s*pcmFiles\s*\)/.test(onSelectBody));
+    /playBytes\(\s*song\.bytes\s*,\s*song\.fileName\s*,\s*undefined\s*,\s*pcmFiles\s*,/.test(onSelectBody));
 }
 
 // --- 実行 --------------------------------------------------------------------------
