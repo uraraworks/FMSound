@@ -21,7 +21,6 @@ import { parseMml, PART_LETTERS } from './pmd_mml_parser.mjs';
 import { encodeCp932 } from './cp932.mjs';
 
 const HEADER_LEN = 0x1a; // 11ポインタ(22) + r_offset(2) + tone_ptr(2)。doc 1.1/1.2節。
-const EMPTY_TRACK_OFF = HEADER_LEN;
 
 // メモ/タイトルテーブル(#Title/#Composer/#Arranger/#Memo)。
 // 出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の pmd_get_memo()(5962-5993)・
@@ -283,16 +282,37 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   }
   if (errors.length > 0) return { file: null, errors, layout: null };
 
-  // トラックのレイアウト: ヘッダ直後に空トラック(0x80)、続けて使用中の A-I トラックを順に並べる。
-  let cursor = EMPTY_TRACK_OFF + 1;
+  // トラックのレイアウト: 本家MC.EXE(ver4.8s)の出力を実測して確定した(tools/pmd-reference/、
+  // 2026-08-18作業。推測ではなく実バイト列から逆算)。
+  //   ヘッダの各スロット(A-J実装パート10個 + K=リズム(常に空、未実装) + r_offset の計12個、
+  //   pmd_mml_parser.mjsのPART_LETTERS順)を「ヘッダindex順」にそのまま処理し、
+  //   使用中パートは実トラックデータを、未使用スロット(未使用パート・K・r_offset)は
+  //   スロットごとに専用の終端バイト(0x80)を1個だけ、その時点のcursorに置く。
+  //   これにより「未使用パートが1つの終端アドレスを共有する」自作旧実装と違い、
+  //   本家同様に各未使用スロットが個別のアドレスを持つ。
+  //   実測の根拠(pmdssg.M: Gだけ使用): ヘッダ = 001a 001b 001c 001d 001e 001f 0020(G) 0030...
+  //   → A-F(未使用)の終端バイトがG本体より前、0x1a-0x1fに1byteずつ連続で並ぶ。
+  //   これはヘッダindex順(A,B,C,D,E,F,G,...)で処理しないと再現できない配置であり、
+  //   「使用パートを先に全部並べてから未使用の終端をまとめて置く」という単純化では出せない。
+  const SLOT_LETTERS = [...PART_LETTERS, 'K', null]; // idx0-9=A-J、idx10=K(リズム、常に空)、idx11=r_offset(常に空)
+  let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
-  for (const letter of PART_LETTERS) {
-    const events = tracks.get(letter);
-    if (!events || events.length === 0) continue;
-    const startAddr = cursor;
-    const { endAddr, termAddr } = layoutTrack(events, startAddr);
-    trackLayout[letter] = { startAddr, termAddr, events };
-    cursor = endAddr;
+  const slotAddr = new Array(SLOT_LETTERS.length); // 各スロットがヘッダに書き込むポインタ値
+  const emptySlotAddrs = []; // 未使用スロットの終端バイト(0x80)を書き込むアドレス
+  for (let idx = 0; idx < SLOT_LETTERS.length; idx++) {
+    const letter = SLOT_LETTERS[idx];
+    const events = letter && letter !== 'K' ? tracks.get(letter) : null;
+    if (events && events.length > 0) {
+      const startAddr = cursor;
+      const { endAddr, termAddr } = layoutTrack(events, startAddr);
+      trackLayout[letter] = { startAddr, termAddr, events };
+      slotAddr[idx] = startAddr;
+      cursor = endAddr;
+    } else {
+      slotAddr[idx] = cursor;
+      emptySlotAddrs.push(cursor);
+      cursor += 1; // このスロット専用の終端バイト(0x80)
+    }
   }
 
   // ヘッダ命令(#Title/#Composer/#Arranger/#Memo)が1つでもあれば、tone_ptr直前に
@@ -325,16 +345,12 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)。
   // PART_LETTERS(pmd_mml_parser.mjs)の配列indexが、そのままこのヘッダindexと一致するよう設計してある
   // (A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3, J=idx9=ADPCM。v2 step3でJを追加)。
-  for (let idx = 0; idx < PART_LETTERS.length; idx++) {
-    const letter = PART_LETTERS[idx];
-    const layout = trackLayout[letter];
-    w16(idx * 2, layout ? layout.startAddr : EMPTY_TRACK_OFF);
-  }
-  for (let idx = PART_LETTERS.length; idx < 11; idx++) w16(idx * 2, EMPTY_TRACK_OFF); // RHYTHM: K/Rは未解明のため未対応、空トラック
-  w16(0x16, EMPTY_TRACK_OFF); // r_offset(未使用)
+  // idx10=K(リズム)、idx11(0x16)=r_offset。値はいずれも上のslotAddrで確定済み。
+  for (let idx = 0; idx < 11; idx++) w16(idx * 2, slotAddr[idx]);
+  w16(0x16, slotAddr[11]); // r_offset(常に未使用)
   w16(0x18, toneOff); // tone_ptr
 
-  rel[EMPTY_TRACK_OFF] = 0x80;
+  for (const addr of emptySlotAddrs) rel[addr] = 0x80;
 
   for (const letter of Object.keys(trackLayout)) {
     const { events, termAddr } = trackLayout[letter];

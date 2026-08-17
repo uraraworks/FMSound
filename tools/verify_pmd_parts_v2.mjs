@@ -73,8 +73,14 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
 
   if (file) {
     const HEADER_LEN = 0x1a;
-    const EMPTY_TRACK_OFF = HEADER_LEN; // 0x1a: 全パート共通の空トラック
-    const ADPCM_TRACK_OFF = EMPTY_TRACK_OFF + 1; // 0x1b: 最初の実データ(Jのみ使用)
+    // レイアウトは本家MC.EXEの出力を実測して確定した(2026-08-18作業、tools/pmd-reference/pmdadpc.M
+    // — Jパートだけを使うMMLの参照出力そのもの)。ヘッダの各スロット(A-J, K, r_offset)を
+    // index順に処理し、未使用スロットは1つにつき専用の終端バイト(0x80)を1個ずつ消費する。
+    // Jより前のA-I(9パート)がすべて未使用なので、A(index0)=0x1a から1byteずつ9個並び、
+    // J(index9)の実データは 0x1a+9=0x23 から始まる(pmdadpc.Mのheaderで実測: index9=0x0023)。
+    const FIRST_EMPTY_SLOT_OFF = HEADER_LEN; // 0x1a: 最初の未使用スロット(index0=A)
+    const UNUSED_SLOTS_BEFORE_J = 9; // index0-8 = A,B,C,D,E,F,G,H,I(いずれも未使用、1byteずつ)
+    const ADPCM_TRACK_OFF = FIRST_EMPTY_SLOT_OFF + UNUSED_SLOTS_BEFORE_J; // 0x23: Jの実データ先頭
     const rel = file.subarray(1);
 
     function read16le(off) { return rel[off] | (rel[off + 1] << 8); }
@@ -86,14 +92,21 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
       `actual=0x${read16le(0x12).toString(16)} expected=0x${ADPCM_TRACK_OFF.toString(16)}`);
     check('1c. [陽性対照] index9は他のFM/SSGパートのポインタ(0x1a、空トラック)とは異なる',
       read16le(0x12) !== read16le(0x00));
-    check('1d. ヘッダのRHYTHM(index10, offset0x14)は未対応のまま空トラックを指す',
-      read16le(0x14) === EMPTY_TRACK_OFF);
 
     // ADPCMトラックの中身: 0xfd(vol) 0x7f(v16->V127) / 0xff(tonenum選択) 0x01 /
     // note(oct4,c=0)=noteByte(4,0)=0x40 / len=4分音符=96/4=24=0x18 / 0x80(終端)。
     // (トラック書式はFM/SSGと共通、doc 1.2節)。
     const expectedTrack = Uint8Array.from([0xfd, 0x7f, 0xff, 0x01, noteByte(4, 0), 24, 0x80]);
     const actualTrack = rel.subarray(ADPCM_TRACK_OFF, ADPCM_TRACK_OFF + expectedTrack.length);
+
+    // ヘッダのRHYTHM(index10, offset0x14)は未対応のまま未使用スロットを指す。新レイアウトでは
+    // Jの直後(index10)に専用の終端バイトが割り当てられるので、アドレスはJトラックの直後になる
+    // (pmdadpc.Mでも同様にJの直後・0x2cにKの終端バイトが1個ある。今回のトラック内容は違うので
+    // 絶対値ではなく「Jの直後」という関係で検証する)。
+    const RHYTHM_OFF = ADPCM_TRACK_OFF + expectedTrack.length;
+    check('1d. ヘッダのRHYTHM(index10, offset0x14)は未対応のまま、Jトラック直後の未使用スロットを指す',
+      read16le(0x14) === RHYTHM_OFF,
+      `actual=0x${read16le(0x14).toString(16)} expected=0x${RHYTHM_OFF.toString(16)}`);
     check('1e. ADPCMトラックの生バイト列が仕様どおり(vol/tonenum/note/終端)',
       arraysEqual(actualTrack, expectedTrack),
       `actual=${hex(actualTrack)} expected=${hex(expectedTrack)}`);
