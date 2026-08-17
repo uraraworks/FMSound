@@ -103,6 +103,9 @@ function sizeOfEvent(ev) {
     case 'volInc': case 'volDec': return 2; // 0xe3/0xe2 + 1byte(v2 3.1節)
     case 'gateRandRange': return 2; // 0xb1 + 1byte(v2 3.3節)
     case 'gateMin': return 2; // 0xb3 + 1byte(v2 3.3節)
+    case 'portamento': return 4; // 0xda + note1(1byte) + note2(1byte) + clocks(1byte)(v2 3.5節、今回実測で解決)
+    case 'transposeAbs': return 2; // 0xf5 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
+    case 'transposeRel': return 2; // 0xe7 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
 }
@@ -219,6 +222,20 @@ function emitEvent(ev, out, offset) {
     case 'gateMin': // qの数値3(v2 3.3節)
       out[offset] = 0xb3;
       out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'portamento': // ポルタメント(v2 3.5節。0xda + note1 + note2 + clocks)
+      out[offset] = 0xda;
+      out[offset + 1] = noteByte(ev.note1.octave, ev.note1.noteIndex);
+      out[offset + 2] = noteByte(ev.note2.octave, ev.note2.noteIndex);
+      out[offset + 3] = ev.clocks & 0xff;
+      return;
+    case 'transposeAbs': // 転調・絶対値(PMDMML.MAN §4-14。0xf5 + 1byte符号付き)
+      out[offset] = 0xf5;
+      out[offset + 1] = signedByte(ev.value);
+      return;
+    case 'transposeRel': // 転調・相対値(PMDMML.MAN §4-14。0xe7 + 1byte符号付き)
+      out[offset] = 0xe7;
+      out[offset + 1] = signedByte(ev.value);
       return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);

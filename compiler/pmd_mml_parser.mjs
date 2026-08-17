@@ -43,6 +43,70 @@ class ParseError extends Error {
   }
 }
 
+// MML変数(`!`, v2 3.4節)。出典: PMDMML.MAN §3-2(定義)・§16-1(使用)、WebFetchで原文確認。
+// - 定義: 行頭 `!文字列` または `!数値` の直後にSPACE/TAB区切りでMML文字列本体(行末まで)。
+//   文字列名は先頭が数字でなければ任意、数値名は0-255。両者は名前空間としては
+//   区別されず、同じ命名規則(先頭が数字かどうか)で1つのテーブルとして扱ってよい
+//   (マッチング処理上は文字列そのものの前方一致検索のみで、数値/文字列の別を
+//   意識する必要が無いため。本実装ではこの単純化を採用)。
+// - 名前の認識長は半角30文字まで(§3-2注意1)。それ以上は切り捨てる。
+// - 使用: `!`の直後から、定義済み変数名のうち最長一致するものを採用する
+//   (§16-1注意1「!bcc!bc!bの順に検索」の通り、長い名前を優先)。
+// - ネスト可(値の中に別の`!変数`を含められる)だが再帰は禁止(§3-2「絶対に再帰させないで下さい」)。
+//   本実装は再帰を検出したら ParseError にする(マニュアルは「最悪の場合暴走」と警告するのみで
+//   検出方法は書いていないため、無限ループを避ける安全側の実装判断)。
+// 重複定義時の扱い(同名を複数回`!`定義した場合にどちらが有効か)はPMDMML.MANに明記が無く未解明。
+// 実データ3曲では重複定義は出現しなかった(目視確認)。本実装は他の重複コマンド
+// (#Title等、v1 8.1節)と同じ「後勝ち」を暫定的に採用する。
+const VAR_DEF_LINE_RE = /^!(\S+)[ \t]+(.*)$/;
+const VAR_NAME_MAX_LEN = 30; // PMDMML.MAN §3-2 注意1
+
+// ファイル全体を走査してMML変数の定義を集める(出現順・前方の行かどうかは問わない。
+// 定義行より前に使用箇所が来るケースは実データには無いが、二段階処理にしておけば
+// 順序に依存しない)。戻り値: Map<name, rawValue(未展開)>
+function collectVariableDefs(lines) {
+  const map = new Map();
+  for (const rawLine of lines) {
+    let s = rawLine;
+    const ci = s.indexOf(';');
+    if (ci >= 0) s = s.slice(0, ci);
+    const m = VAR_DEF_LINE_RE.exec(s);
+    if (!m) continue;
+    let name = m[1];
+    if (name.length > VAR_NAME_MAX_LEN) name = name.slice(0, VAR_NAME_MAX_LEN);
+    map.set(name, m[2]); // 後勝ち(未解明、上記コメント参照)
+  }
+  return map;
+}
+
+// text中の `!変数名` をすべて展開する。長さ降順にソート済みの名前リストを使い、
+// `!`の直後位置から前方一致で最長の名前を探す(§16-1注意1)。stackは再帰検出用。
+function expandVariables(text, varMap, sortedNames, line, stack) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '!') {
+      let matched = null;
+      for (const name of sortedNames) {
+        if (text.startsWith(name, i + 1)) { matched = name; break; }
+      }
+      if (matched) {
+        if (stack.has(matched)) {
+          throw new ParseError(line, `MML変数 '!${matched}' が再帰参照しています(PMDMML.MAN §3-2「絶対に再帰させないで下さい」)`);
+        }
+        stack.add(matched);
+        out += expandVariables(varMap.get(matched), varMap, sortedNames, line, stack);
+        stack.delete(matched);
+        i += 1 + matched.length;
+        continue;
+      }
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+}
+
 // ヘッダ命令(#Title/#Composer/#Arranger/#Memo)。出典: PMDMML.MAN §2-6〜§2-9
 // (WebFetchで原文確認。書式は「#コマンド名 + 1個以上のSPACE/TAB + 文字列」、
 // 内容は行末(CR)まで。「後ろに;をつけてコメント等は記せません」と明記されている
@@ -146,6 +210,44 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     }
     if (num < 0 || num > 63) throw new ParseError(line, `'('/')' の数値が範囲外です(0-63。無指定時は×4され1byteに収める制約から算出): ${num}`);
     return num * 4;
+  }
+
+  // '{ }' 内(ポルタメント音程指定、v2 3.5節→今回実測で解決)は c/d/e/f/g/a/b/o/</< のみ許可
+  // (PMDMML.MAN §4-3)。o/</> はここで state.octave を更新し、これは通常の音符と同じく
+  // '}' の外まで持ち越される(PMDの八度レジスタはパート共通の1つの状態のため)。
+  function readBraceNote() {
+    for (;;) {
+      if (body[i] === 'o' || body[i] === 'O') {
+        i++;
+        const m = /^\d+/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'{...}' 内の 'o' の後にオクターブ数値がありません`);
+        i += m[0].length;
+        const oct = parseInt(m[0], 10);
+        if (oct < 0 || oct > 7) throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(0-7): ${oct}`);
+        state.octave = oct;
+        continue;
+      }
+      if (body[i] === '<') { i++; state.octave += 1; continue; }
+      if (body[i] === '>') { i++; state.octave -= 1; continue; }
+      break;
+    }
+    const nc = body[i];
+    if (!(nc in NOTE_LETTER_TO_BASE_INDEX)) {
+      throw new ParseError(line, `'{...}' 内には c/d/e/f/g/a/b/o/</> のみ指定できます(PMDMML.MAN §4-3): '${nc ?? ''}'`);
+    }
+    i++;
+    let noteIndex = NOTE_LETTER_TO_BASE_INDEX[nc];
+    let octave = state.octave;
+    while (body[i] === '+' || body[i] === '#' || body[i] === '-') {
+      if (body[i] === '-') noteIndex -= 1; else noteIndex += 1;
+      i++;
+    }
+    if (noteIndex < 0) { noteIndex += 12; octave -= 1; }
+    if (noteIndex > 11) { noteIndex -= 12; octave += 1; }
+    if (octave < 0 || octave > 7) {
+      throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(0-7。cmd<0x80制約): ${octave}`);
+    }
+    return { octave, noteIndex };
   }
 
   while (i < n) {
@@ -353,17 +455,33 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
 
     if (c === 'M') {
       // ソフトウエアLFO本体。PMDMML.MAN §9-1。`.M`側 0xf2は常に4byte固定(v2 3.6節)。
-      // 「delayのみ」省略形は今回範囲外(4値すべて必須)。MA/MB/LFO2(0xbf)も範囲外。
+      // 「delayのみ」省略形(v2 3.6節「未解明」→今回マニュアル実測で解決): §9-1に
+      // 「delayのみ単独で指定すると、現在のdelay値のみ変更します」と明記されている。
+      // 0xf2は常に4byte書く必要があるため、コンパイラ側でspeed/depthA/depthBの
+      // 直前値を保持し、delayだけ差し替えて4byte全部を再送出する(state.lfoParams)。
+      // MA/MB/LFO2(0xbf)は今回も範囲外(Mのみ)。
       i++;
-      const m = /^(\d+)\s*,\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)/.exec(body.slice(i));
-      if (!m) {
-        throw new ParseError(line, `'M' の書式が不正です(delay,speed,depthA,depthBの4値すべてが必要。省略形は未対応)`);
+      const full = /^(\d+)\s*,\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)/.exec(body.slice(i));
+      let delay, speed, depthA, depthB;
+      if (full) {
+        i += full[0].length;
+        delay = parseInt(full[1], 10);
+        speed = parseInt(full[2], 10);
+        depthA = parseInt(full[3], 10);
+        depthB = parseInt(full[4], 10);
+        state.lfoParams = { speed, depthA, depthB };
+      } else {
+        const delayOnly = /^\d+/.exec(body.slice(i));
+        if (!delayOnly) {
+          throw new ParseError(line, `'M' の書式が不正です(delay,speed,depthA,depthBの4値、またはdelay単独の省略形のいずれかが必要)`);
+        }
+        i += delayOnly[0].length;
+        delay = parseInt(delayOnly[0], 10);
+        if (!state.lfoParams) {
+          throw new ParseError(line, `'M'をdelay単独で指定していますが、このパートでそれ以前にspeed/depthA/depthBを指定する'M'がありません(PMDMML.MAN §9-1)`);
+        }
+        ({ speed, depthA, depthB } = state.lfoParams);
       }
-      i += m[0].length;
-      const delay = parseInt(m[1], 10);
-      const speed = parseInt(m[2], 10);
-      const depthA = parseInt(m[3], 10);
-      const depthB = parseInt(m[4], 10);
       if (delay < 0 || delay > 255) throw new ParseError(line, `'M'のdelayが範囲外です(0-255): ${delay}`);
       if (speed < 0 || speed > 255) throw new ParseError(line, `'M'のspeedが範囲外です(0-255): ${speed}`);
       if (depthA < -128 || depthA > 127) throw new ParseError(line, `'M'のdepthAが範囲外です(-128〜127): ${depthA}`);
@@ -422,6 +540,64 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       i++;
       const val = readVolRelArg();
       events.push({ type: isAdd ? 'volInc' : 'volDec', line, value: val });
+      continue;
+    }
+
+    if (c === '{') {
+      // ポルタメント指定。PMDMML.MAN §4-3。`.M`側 0xda(v2 3.5節「未解明」→今回
+      // fmdriver_pmd.c:3083-3121精読で解決): 引数3byte固定 = note1(1byte,通常の音符
+      // バイトと同一形式) / note2(1byte,同형式) / clocks(1byte、音長1のクロック値)。
+      // 音長2(ディレイ)は`.M`側に専用フィールドが無く、PMDMML.MAN §4-3の例2
+      // 「{cg}4,8 は c8&{cg}8 と同様」の通り、コンパイル時に「note1のピッチをclocks2
+      // クロック分だけ発音してtieで繋ぎ、残り(clocks1-clocks2)クロックでポルタメント」
+      // という3命令(note+tie+portamento)へ展開する。
+      i++;
+      const note1 = readBraceNote();
+      const note2 = readBraceNote();
+      if (body[i] !== '}') {
+        throw new ParseError(line, `'{' に対応する '}' がありません(内部は c/d/e/f/g/a/b/o/</> の2音のみ許可、PMDMML.MAN §4-3)`);
+      }
+      i++;
+      const clocks1 = readLengthSpec();
+      let clocks2 = null;
+      if (body[i] === ',') {
+        i++;
+        clocks2 = readLengthSpec();
+      }
+      if (clocks1 < 1 || clocks1 > 255) throw new ParseError(line, `'{}' の音長1がクロック1byteに収まりません: ${clocks1}`);
+      if (clocks2 != null) {
+        if (clocks2 < 1 || clocks2 > 255) throw new ParseError(line, `'{}' の音長2がクロック1byteに収まりません: ${clocks2}`);
+        const glide = clocks1 - clocks2;
+        if (glide < 1) {
+          throw new ParseError(line, `'{}' の音長2は音長1より短い値である必要があります(PMDMML.MAN §4-3): 音長1=${clocks1}, 音長2=${clocks2}`);
+        }
+        events.push({ type: 'note', line, octave: note1.octave, noteIndex: note1.noteIndex, clocks: clocks2 });
+        events.push({ type: 'tie', line });
+        events.push({ type: 'portamento', line, note1, note2, clocks: glide });
+      } else {
+        events.push({ type: 'portamento', line, note1, note2, clocks: clocks1 });
+      }
+      continue;
+    }
+
+    if (c === '_') {
+      // 転調指定。PMDMML.MAN §4-14。`.M`側: 絶対値`_`=0xf5(pmd_cmdf5_transpose,
+      // fmdriver_pmd.c:2516-2523)/相対値`__`=0xe7(pmd_cmde7_transpose_rel, :2864-2871)、
+      // いずれも1byte符号付き引数(コード・マニュアルの-128〜127レンジが一致)。
+      // マニュアルの書式は符号必須(`_ +数値`/`_ -数値`)だが、実データには符号無しの
+      // `_0`のような表記があるため、符号省略時は正数として寛容に受理する。
+      i++;
+      let relative = false;
+      if (body[i] === '_') { relative = true; i++; }
+      const m = /^([+-]?)(\d+)/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'${relative ? '__' : '_'}' の後に転調数値がありません`);
+      i += m[0].length;
+      let val = parseInt(m[2], 10);
+      if (m[1] === '-') val = -val;
+      if (val < -128 || val > 127) {
+        throw new ParseError(line, `'${relative ? '__' : '_'}'(転調)の値が範囲外です(-128〜127): ${val}`);
+      }
+      events.push({ type: relative ? 'transposeRel' : 'transposeAbs', line, value: val });
       continue;
     }
 
@@ -581,6 +757,11 @@ export function parseMml(source) {
   // 全パートのtokenizeBody呼び出しで共有する。
   const globalState = { measLen: DEFAULT_MEAS_LEN };
 
+  // MML変数(`!`, v2 3.4節)の定義を先に一括収集する(ファイル中の出現順に依存しない
+  // 二段階処理。定義自体はプリプロセス段階のみで完結し`.M`側のバイトは持たない)。
+  const varMap = collectVariableDefs(lines);
+  const varSortedNames = [...varMap.keys()].sort((a, b) => b.length - a.length);
+
   for (let li = 0; li < lines.length; li++) {
     const lineNo = li + 1;
     // ヘッダ命令(#Title等)は';'をコメントとして切り詰めない生の行で判定する
@@ -591,6 +772,15 @@ export function parseMml(source) {
     if (commentIdx >= 0) raw = raw.slice(0, commentIdx);
     const trimmed = raw.trim();
     if (trimmed === '') continue;
+
+    if (trimmed[0] === '!') {
+      // MML変数定義行(PMDMML.MAN §3-2)。上でまとめて収集済みなので、ここでは
+      // 構文として妥当な定義行であることだけ確認してスキップする(パート指定行としては扱わない)。
+      if (!VAR_DEF_LINE_RE.test(trimmed)) {
+        errors.push({ line: lineNo, message: `MML変数定義の書式が不正です(PMDMML.MAN §3-2「!文字列 MML文字列」または「!数値 MML文字列」、名前と値の間にSPACE/TABが必要): "${trimmed}"` });
+      }
+      continue;
+    }
 
     if (trimmed[0] === '@') {
       // 音色定義ブロック(PMDMML.MAN §3-1)。行頭 '@' はトラック行(A-I)とは衝突しない。
@@ -640,11 +830,14 @@ export function parseMml(source) {
     }
 
     try {
+      // MML変数(`!`)の展開はトークナイズの直前、行ごとに行う(§16-1: FM/SSG/PCM等の
+      // 本文中で使用可能。パート指定文字自体や#系ヘッダ行・音色定義ブロックは対象外)。
+      const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
       // 同じ行を複数パートへ流す場合、各パートの state(o/l)は独立に進行する
       // (PMD慣習通り。パートごとに別オブジェクトへ積む必要があるため、パートごとに1回ずつ字句解析する)
       for (const p of partLetters) {
         const trackInfo = tracks.get(p);
-        tokenizeBody(body, lineNo, trackInfo.state, trackInfo.events, PART_KIND[p], globalState);
+        tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, PART_KIND[p], globalState);
       }
     } catch (e) {
       if (e instanceof ParseError) {

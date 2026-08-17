@@ -203,5 +203,99 @@ function compileTrackABytes(body) {
   check('[陽性対照] @1の複数回定義が「先勝ち」(1回目のAR=5)相当の誤り期待値とは一致しない', arOp0 !== 5, `AR(op0)=${arOp0}`);
 }
 
+// --- 9. `!` MML変数(v2 3.4節。今回マニュアル実測(PMDMML.MAN §3-2/§16-1)で解決) ---
+{
+  // 基本形: 定義したMML文字列がそのまま展開される。`.M`側は展開後のバイト列と同一になる。
+  const source = ['!A cde', 'A l8 !A fga'].join('\n');
+  const { file, errors, layout } = compileMml(source);
+  if (errors.length > 0) throw new Error(`!基本形テストのコンパイルに失敗: ${JSON.stringify(errors)}`);
+  const { startAddr, termAddr } = layout.tracks.A;
+  const actual = file.subarray(1 + startAddr, 1 + termAddr);
+  const { file: expFile, layout: expLayout } = compileMml('A l8 cdefga\n');
+  const exp = expFile.subarray(1 + expLayout.tracks.A.startAddr, 1 + expLayout.tracks.A.termAddr);
+  check('!A(=cde)の展開が"cde"直書きと同一バイト列になる(PMDMML.MAN §3-2 例1)', arraysEqual(actual, exp), `actual=${hex(actual)} exp=${hex(exp)}`);
+
+  const wrongExp = compileMml('A l8 cdefgb\n'); // 末尾を b に変えた誤り期待値(陽性対照)
+  const wrongBytes = wrongExp.file.subarray(1 + wrongExp.layout.tracks.A.startAddr, 1 + wrongExp.layout.tracks.A.termAddr);
+  check('[陽性対照] !Aの展開は1音違う誤り期待値とは一致しない', !arraysEqual(actual, wrongBytes), `actual=${hex(actual)} wrong=${hex(wrongBytes)}`);
+
+  // 長さ違いの2変数(!b/!bc)で長い方が優先されることを確認(PMDMML.MAN §16-1 例1)。
+  const nestSource = ['!b @0', '!bc @1', '!s @2', '@0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0',
+    '@1 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0',
+    '@2 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0', '0 0 0 0 0 0 1 0 0 0',
+    'A !bcc !sg !bc'].join('\n');
+  const nestResult = compileMml(nestSource);
+  if (nestResult.errors.length > 0) throw new Error(`!最長一致テストのコンパイルに失敗: ${JSON.stringify(nestResult.errors)}`);
+  const nestBytes = nestResult.file.subarray(1 + nestResult.layout.tracks.A.startAddr, 1 + nestResult.layout.tracks.A.termAddr);
+  // 期待: "!bcc !sg !bc" -> "@1 c @2g @1" (最長一致で!bcが優先される、!b cc ではない)。
+  // 直接バイト列を組み立てて比較する(0xff+tonenum、note=noteByte(oct4既定,idx)+clocks24既定長)。
+  const nestExpBytes = [0xff, 1, 0x40, 24, 0xff, 2, 0x47, 24, 0xff, 1];
+  check('!bcc!sg!bc が最長一致で"!bc c !s g !bc"(@1 c @2g @1相当)に展開される(PMDMML.MAN §16-1 例1)', arraysEqual(nestBytes, nestExpBytes), `actual=${hex(nestBytes)} exp=${hex(nestExpBytes)}`);
+
+  check('!の再帰定義(!A→!B→!A)はParseErrorになる(暴走を避ける安全側の実装)', (() => {
+    const { errors: e } = compileMml(['!A cde!B', '!B cde!A', 'A !A'].join('\n'));
+    return e.length > 0;
+  })());
+}
+
+// --- 10. `M` delay単独省略形(v2 3.6節「未解明」→今回PMDMML.MAN §9-1実測で解決) ---
+{
+  const actual = compileTrackABytes('M10,20,30,40 M5');
+  // 1回目: 0xf2 10 20 30 40。2回目(delay単独=5): speed/depthA/depthBを直前値のまま保持し
+  // 4byteとも書く(0xf2 05 20 30 40)。
+  const expected = [0xf2, 10, 20, 30, 40, 0xf2, 5, 20, 30, 40];
+  check('M10,20,30,40 の後の M5(delay単独)がspeed/depthA/depthBを保持して出力される(PMDMML.MAN §9-1)', arraysEqual(actual, expected), `actual=${hex(actual)}`);
+
+  const wrongExpected = [0xf2, 10, 20, 30, 40, 0xf2, 5, 21, 30, 40]; // speedを1違えた誤り期待値(陽性対照)
+  check('[陽性対照] M5(delay単独)の出力は1byte違う誤り期待値とは一致しない', !arraysEqual(actual, wrongExpected), `actual=${hex(actual)} wrong=${hex(wrongExpected)}`);
+
+  check('直前のMが無い状態でのdelay単独指定はエラーになる(保持すべき値が無いため)', (() => {
+    const { errors } = compileMml('A M5\n');
+    return errors.length > 0;
+  })());
+}
+
+// --- 11. `{ }` ポルタメント(v2 3.5節「未解明」→今回fmdriver_pmd.c:3083-3121実測で解決) ---
+{
+  const actual = compileTrackABytes('{cg}4');
+  // 0xda + note1(c, oct4=既定) + note2(g, oct4) + clocks(4分音符=C96で24)
+  const expected = [0xda, (4 << 4) | 0, (4 << 4) | 7, 24];
+  check('{cg}4 の出力が仕様どおり(0xda, note(c), note(g), clocks=24)', arraysEqual(actual, expected), `actual=${hex(actual)}`);
+
+  const wrongExpected = [0xda, (4 << 4) | 0, (4 << 4) | 7, 23]; // clocksを1違えた誤り期待値(陽性対照)
+  check('[陽性対照] {cg}4の出力は1byte違う誤り期待値とは一致しない', !arraysEqual(actual, wrongExpected), `actual=${hex(actual)} wrong=${hex(wrongExpected)}`);
+
+  // ディレイ付き: {cg}4,8 は "c8&{cg}8" と同等(PMDMML.MAN §4-3 例2)。
+  const actualDelay = compileTrackABytes('{cg}4,8');
+  const noteC8 = [(4 << 4) | 0, 12]; // note(c) + clocks(8分音符=96/8=12)
+  const tie = [0xfb];
+  const porta = [0xda, (4 << 4) | 0, (4 << 4) | 7, 24 - 12]; // 残り12clock
+  const expectedDelay = [...noteC8, ...tie, ...porta];
+  check('{cg}4,8 が "c8&{cg}(残りclock)" に展開される(PMDMML.MAN §4-3 例2)', arraysEqual(actualDelay, expectedDelay), `actual=${hex(actualDelay)} exp=${hex(expectedDelay)}`);
+
+  check("'{}' 内に音長を持つ文字(rやx等)を書くとエラーになる(c/d/e/f/g/a/b/o/</>のみ許可)", (() => {
+    const { errors } = compileMml('A {cr}4\n');
+    return errors.length > 0;
+  })());
+}
+
+// --- 12. `_` / `__` 転調(PMDMML.MAN §4-14。今回fmdriver_pmd.c:2516-2523/2864-2871実測で解決) ---
+{
+  const actualAbs = compileTrackABytes('_5');
+  check('_5(転調絶対値)の出力が仕様どおり(0xf5, 05)', arraysEqual(actualAbs, [0xf5, 5]), `actual=${hex(actualAbs)}`);
+
+  const actualAbsNoSign = compileTrackABytes('_0');
+  check('_0(符号無し、実データに出現する表記)がエラーにならず0xf5,00になる', arraysEqual(actualAbsNoSign, [0xf5, 0]), `actual=${hex(actualAbsNoSign)}`);
+
+  const actualNeg = compileTrackABytes('_-2');
+  check('_-2(転調絶対値・負)の出力が仕様どおり(0xf5, fe)', arraysEqual(actualNeg, [0xf5, 0xfe]), `actual=${hex(actualNeg)}`);
+
+  const actualRel = compileTrackABytes('__3');
+  check('__3(転調相対値)の出力が仕様どおり(0xe7, 03)', arraysEqual(actualRel, [0xe7, 3]), `actual=${hex(actualRel)}`);
+
+  const wrongExpected = [0xf5, 6]; // 1byte違う誤り期待値(陽性対照)
+  check('[陽性対照] _5の出力は1byte違う誤り期待値とは一致しない', !arraysEqual(actualAbs, wrongExpected), `actual=${hex(actualAbs)} wrong=${hex(wrongExpected)}`);
+}
+
 console.log(`\n${passCount} PASS, ${failCount} FAIL`);
 if (failCount > 0) process.exitCode = 1;
