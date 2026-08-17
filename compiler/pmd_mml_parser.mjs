@@ -20,7 +20,7 @@ export const PART_KIND = {
   G: 'ssg', H: 'ssg', I: 'ssg',
 };
 export const NOTE_LETTER_TO_BASE_INDEX = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
-const MEAS_LEN = 96; // 全音符長。v1は固定(doc 1.3節)。
+const DEFAULT_MEAS_LEN = 96; // 全音符長の初期値。`C`(v2 3.8節, 0xdf)で変更可能。
 
 // 'v'(大雑把な音量, PMDMML.MAN §5-1)のFM/PCM用変換テーブル。v0〜v16 -> V値。
 // 出典: PMDMML.MAN §5-1 の一覧表そのもの(WebFetchで原文確認、本ファイル冒頭コメント参照)。
@@ -70,12 +70,13 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
   return true;
 }
 
-// 数値長 → クロック値。96の約数のみ許容(PMDMML.MAN §2-11、doc 1.3節)。
-function numericLengthToClocks(n, line) {
-  if (n <= 0 || MEAS_LEN % n !== 0) {
-    throw new ParseError(line, `音長 ${n} は96の約数ではありません(全音符長96固定, v1)`);
+// 数値長 → クロック値。全音符長(既定96、`C`コマンドで変更可)の約数のみ許容
+// (PMDMML.MAN §2-11、doc 1.3節)。measLenは呼び出し時点でのグローバル全音符長。
+function numericLengthToClocks(n, line, measLen) {
+  if (n <= 0 || measLen % n !== 0) {
+    throw new ParseError(line, `音長 ${n} は全音符長${measLen}の約数ではありません`);
   }
-  return MEAS_LEN / n;
+  return measLen / n;
 }
 
 function applyDots(baseClocks, dotCount, line) {
@@ -94,7 +95,10 @@ function applyDots(baseClocks, dotCount, line) {
 // 本文(パート文字を除いた部分)を字句解析してイベント列を返す。
 // state: {octave, defaultLength(クロック値)} をパートごとに呼び出し元が持ち回す。
 // partKind: 'fm' | 'ssg' (v/Vの値域・変換がFM/SSGで異なるため、doc 6.6節)
-function tokenizeBody(body, line, state, events, partKind) {
+// globalState: {measLen} 。`C`(全音符長設定)は全パート共通のグローバル設定
+// (PMDMML.MAN §4-11「いずれかのパートの頭に設定すれば、すべてのパートに有効」)
+// のため、呼び出し元(parseMml)が1つのオブジェクトをすべてのパートへ使い回す。
+function tokenizeBody(body, line, state, events, partKind, globalState) {
   let i = 0;
   const n = body.length;
 
@@ -111,13 +115,31 @@ function tokenizeBody(body, line, state, events, partKind) {
     let clocks;
     if (m) {
       i += m[0].length;
-      clocks = numericLengthToClocks(parseInt(m[0], 10), line);
+      clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
     } else {
       clocks = state.defaultLength;
     }
     let dots = 0;
     while (body[i] === '.') { dots++; i++; }
     return dots > 0 ? applyDots(clocks, dots, line) : clocks;
+  }
+
+  // '(' ')' (音量相対変化、基本形のみ。v2 3.1節)。[%] [数値]、数値省略時は1。
+  // %付きは指定値そのまま(0-255)、%無しは指定値×4(0xe3/0xe2は1byte引数のため、
+  // ×4後に1byteへ収まるよう無指定時の数値域を0-63に制限する。doc本文には明記が無いが
+  // バイト長の制約から一意に導ける値域)。
+  function readVolRelArg() {
+    let percent = false;
+    if (body[i] === '%') { percent = true; i++; }
+    const m = /^\d+/.exec(body.slice(i));
+    let num;
+    if (m) { i += m[0].length; num = parseInt(m[0], 10); } else { num = 1; }
+    if (percent) {
+      if (num < 0 || num > 255) throw new ParseError(line, `'('/')' の%指定値が範囲外です(0-255): ${num}`);
+      return num;
+    }
+    if (num < 0 || num > 63) throw new ParseError(line, `'('/')' の数値が範囲外です(0-63。無指定時は×4され1byteに収める制約から算出): ${num}`);
+    return num * 4;
   }
 
   while (i < n) {
@@ -180,7 +202,7 @@ function tokenizeBody(body, line, state, events, partKind) {
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
       i += m[0].length;
-      let clocks = numericLengthToClocks(parseInt(m[0], 10), line);
+      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
       let dots = 0;
       while (body[i] === '.') { dots++; i++; }
       if (dots > 0) clocks = applyDots(clocks, dots, line);
@@ -267,6 +289,134 @@ function tokenizeBody(body, line, state, events, partKind) {
       continue;
     }
     if (c === ':') { i++; events.push({ type: 'loopExit', line }); continue; }
+
+    if (c === 'C') {
+      // 全音符長の設定。PMDMML.MAN §4-11。`.M`側 0xdf(v2 3.8節)。全パート共通のグローバル設定。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'C' の後に全音符長の数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 1 || val > 255) throw new ParseError(line, `'C'(全音符長)の値が範囲外です(1-255): ${val}`);
+      globalState.measLen = val; // 以降のこのパート・他パートの音長計算に即座に反映する
+      events.push({ type: 'measLen', line, value: val });
+      continue;
+    }
+
+    if (c === 'D') {
+      // デチューン設定。PMDMML.MAN §7-1。絶対値`D`=0xfa、相対値`DD`=0xd5(v2 3.9節)。
+      i++;
+      let relative = false;
+      if (body[i] === 'D') { relative = true; i++; }
+      const m = /^-?\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'${relative ? 'DD' : 'D'}' の後にデチューン数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < -32768 || val > 32767) {
+        throw new ParseError(line, `'${relative ? 'DD' : 'D'}'(デチューン)の値が範囲外です(-32768〜32767): ${val}`);
+      }
+      events.push({ type: relative ? 'detuneRel' : 'detuneAbs', line, value: val });
+      continue;
+    }
+
+    if (c === 'p') {
+      // パン設定1。PMDMML.MAN §13-1。`.M`側 0xec(v2 3.2節)。範囲0-3。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'p' の後にパン数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 0 || val > 3) throw new ParseError(line, `'p'(パン)の値が範囲外です(0-3): ${val}`);
+      events.push({ type: 'pan', line, value: val });
+      continue;
+    }
+
+    if (c === '*') {
+      // ソフトウエアLFOスイッチ。PMDMML.MAN §9-3。`.M`側 0xf1(v2 3.7節)。範囲0-7。
+      // *A/*B(対象明示)は今回範囲外(v2 4章の実装順どおり基本形のみ)。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'*' の後にLFOスイッチ数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 0 || val > 7) throw new ParseError(line, `'*'(LFOスイッチ)の値が範囲外です(0-7): ${val}`);
+      events.push({ type: 'lfoSwitch', line, value: val });
+      continue;
+    }
+
+    if (c === 'M') {
+      // ソフトウエアLFO本体。PMDMML.MAN §9-1。`.M`側 0xf2は常に4byte固定(v2 3.6節)。
+      // 「delayのみ」省略形は今回範囲外(4値すべて必須)。MA/MB/LFO2(0xbf)も範囲外。
+      i++;
+      const m = /^(\d+)\s*,\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)/.exec(body.slice(i));
+      if (!m) {
+        throw new ParseError(line, `'M' の書式が不正です(delay,speed,depthA,depthBの4値すべてが必要。省略形は未対応)`);
+      }
+      i += m[0].length;
+      const delay = parseInt(m[1], 10);
+      const speed = parseInt(m[2], 10);
+      const depthA = parseInt(m[3], 10);
+      const depthB = parseInt(m[4], 10);
+      if (delay < 0 || delay > 255) throw new ParseError(line, `'M'のdelayが範囲外です(0-255): ${delay}`);
+      if (speed < 0 || speed > 255) throw new ParseError(line, `'M'のspeedが範囲外です(0-255): ${speed}`);
+      if (depthA < -128 || depthA > 127) throw new ParseError(line, `'M'のdepthAが範囲外です(-128〜127): ${depthA}`);
+      if (depthB < 0 || depthB > 255) throw new ParseError(line, `'M'のdepthBが範囲外です(0-255): ${depthB}`);
+      events.push({ type: 'lfoBody', line, delay, speed, depthA, depthB });
+      continue;
+    }
+
+    if (c === 'q') {
+      // 音の切り方の指定2。PMDMML.MAN §4-13。数値2→0xb1(gate_rand_range)、
+      // 数値3→0xb3(gate_min)は確定済み(v2 3.3節)。数値1(固定カット量)は
+      // `.M`側のバイト表現が未解明のため今回は非対応のまま(推測で埋めない)。
+      i++;
+      const m1 = /^\d+/.exec(body.slice(i));
+      if (m1) {
+        throw new ParseError(line, `'q'の数値1(固定カット量)は未対応です(バイト表現が未解明。docs/pmd-compiler-spec-v2.md 3.3/5章参照)`);
+      }
+      let num2 = null;
+      if (body[i] === '-') {
+        i++;
+        const m2 = /^\d+/.exec(body.slice(i));
+        if (!m2) throw new ParseError(line, `'q-' の後に数値2がありません`);
+        i += m2[0].length;
+        num2 = parseInt(m2[0], 10);
+        if (num2 < 0 || num2 > 127) throw new ParseError(line, `'q'の数値2が範囲外です(0-127。0xb1下位7bit): ${num2}`);
+      }
+      let num3 = null;
+      if (body[i] === ',') {
+        i++;
+        const m3 = /^\d+/.exec(body.slice(i));
+        if (!m3) throw new ParseError(line, `'q,' の後に数値3がありません`);
+        i += m3[0].length;
+        num3 = parseInt(m3[0], 10);
+        if (num3 < 0 || num3 > 255) throw new ParseError(line, `'q'の数値3が範囲外です(0-255): ${num3}`);
+      }
+      if (num2 == null && num3 == null) {
+        throw new ParseError(line, `'q'の書式が不正です(数値2('-n')または数値3(',n')の少なくとも一方が必要。単独の数値1は未対応)`);
+      }
+      if (num2 != null) {
+        // bit7=1(減算方向)に固定する設計判断: 0xb1のbit7は「1なら減算方向」
+        // (fmdriver_pmd.c:1473-1483)。qは「後ろカット」(発音を短くする)コマンドなので
+        // 減算方向で統一する。数値1省略時にどちらの方向を選ぶべきかの一次情報は無く、
+        // これは実装上の設計判断であることを明記する(v2 3.3節/5章の未解明とは別軸)。
+        events.push({ type: 'gateRandRange', line, value: 0x80 | num2 });
+      }
+      if (num3 != null) {
+        events.push({ type: 'gateMin', line, value: num3 });
+      }
+      continue;
+    }
+
+    if (c === '(' || c === ')') {
+      // 音量相対変化、基本形のみ。PMDMML.MAN §5-5。`.M`側 0xe3(')' 加算)/0xe2('(' 減算)
+      // (v2 3.1節)。`^`(アクセント)は未解明のため今回は非対応のまま。
+      const isAdd = c === ')';
+      i++;
+      const val = readVolRelArg();
+      events.push({ type: isAdd ? 'volInc' : 'volDec', line, value: val });
+      continue;
+    }
 
     throw new ParseError(line, `未対応の文字です: '${c}'（v1範囲外、またはPMD_PART_FM_1-6以外のパート機能の可能性）`);
   }
@@ -367,7 +517,7 @@ function parseToneOperatorLine(cleaned, line, opIndex) {
 // 音色定義ブロック(ヘッダ1行+オペレータ4行)を lines[li]から読み進める。
 // 戻り値: { tone: {tonenum, ...buildToneEntry用options}, nextLi }
 // 空行・コメントのみの行は読み飛ばす(オペレータ4行が揃うまで先読みを続ける)。
-function parseToneDefBlock(lines, li, lineNo) {
+export function parseToneDefBlock(lines, li, lineNo) {
   const header = parseToneHeader(cleanToneLine(lines[li]), lineNo);
   const ops = [];
   let cur = li + 1;
@@ -412,6 +562,9 @@ export function parseMml(source) {
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);
+  // `C`(全音符長)は全パート共通のグローバル設定(v2 3.8節)。1つの可変オブジェクトを
+  // 全パートのtokenizeBody呼び出しで共有する。
+  const globalState = { measLen: DEFAULT_MEAS_LEN };
 
   for (let li = 0; li < lines.length; li++) {
     const lineNo = li + 1;
@@ -428,11 +581,8 @@ export function parseMml(source) {
       // 音色定義ブロック(PMDMML.MAN §3-1)。行頭 '@' はトラック行(A-I)とは衝突しない。
       try {
         const { tone, nextLi } = parseToneDefBlock(lines, li, lineNo);
-        if (tones.has(tone.tonenum)) {
-          errors.push({ line: lineNo, message: `音色番号 @${tone.tonenum} が複数回定義されています` });
-        } else {
-          tones.set(tone.tonenum, tone);
-        }
+        // 複数回定義は「後勝ち」(実データとの突き合わせで実測、v2 3.11節→本ファイル冒頭コメント参照)。
+        tones.set(tone.tonenum, tone);
         li = nextLi;
       } catch (e) {
         if (e instanceof ParseError) {
@@ -479,7 +629,7 @@ export function parseMml(source) {
       // (PMD慣習通り。パートごとに別オブジェクトへ積む必要があるため、パートごとに1回ずつ字句解析する)
       for (const p of partLetters) {
         const trackInfo = tracks.get(p);
-        tokenizeBody(body, lineNo, trackInfo.state, trackInfo.events, PART_KIND[p]);
+        tokenizeBody(body, lineNo, trackInfo.state, trackInfo.events, PART_KIND[p], globalState);
       }
     } catch (e) {
       if (e instanceof ParseError) {

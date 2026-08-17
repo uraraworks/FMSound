@@ -95,6 +95,14 @@ function sizeOfEvent(ev) {
     case 'loopClose': return 5;
     case 'loopExit': return 3;
     case 'globalLoop': return 1;
+    case 'measLen': return 2; // 0xdf + 1byte(v2 3.8節)
+    case 'detuneAbs': case 'detuneRel': return 3; // 0xfa/0xd5 + 2byte符号付き(v2 3.9節)
+    case 'pan': return 2; // 0xec + 1byte(v2 3.2節)
+    case 'lfoSwitch': return 2; // 0xf1 + 1byte(v2 3.7節)
+    case 'lfoBody': return 5; // 0xf2 + 4byte固定(v2 3.6節)
+    case 'volInc': case 'volDec': return 2; // 0xe3/0xe2 + 1byte(v2 3.1節)
+    case 'gateRandRange': return 2; // 0xb1 + 1byte(v2 3.3節)
+    case 'gateMin': return 2; // 0xb3 + 1byte(v2 3.3節)
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
 }
@@ -168,6 +176,49 @@ function emitEvent(ev, out, offset) {
     }
     case 'globalLoop':
       out[offset] = 0xf6;
+      return;
+    case 'measLen': // 全音符長設定(v2 3.8節)
+      out[offset] = 0xdf;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'detuneAbs': // デチューン絶対値(v2 3.9節)
+      out[offset] = 0xfa;
+      w16(offset + 1, ev.value);
+      return;
+    case 'detuneRel': // デチューン相対値(v2 3.9節)
+      out[offset] = 0xd5;
+      w16(offset + 1, ev.value);
+      return;
+    case 'pan': // パン設定1(v2 3.2節)
+      out[offset] = 0xec;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'lfoSwitch': // ソフトウエアLFOスイッチ(v2 3.7節)
+      out[offset] = 0xf1;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'lfoBody': // ソフトウエアLFO本体(v2 3.6節)。常に4byte固定。
+      out[offset] = 0xf2;
+      out[offset + 1] = ev.delay & 0xff;
+      out[offset + 2] = ev.speed & 0xff;
+      out[offset + 3] = signedByte(ev.depthA);
+      out[offset + 4] = ev.depthB & 0xff;
+      return;
+    case 'volInc': // 音量相対変化・加算(v2 3.1節)
+      out[offset] = 0xe3;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'volDec': // 音量相対変化・減算(v2 3.1節)
+      out[offset] = 0xe2;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'gateRandRange': // qの数値2(v2 3.3節)
+      out[offset] = 0xb1;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'gateMin': // qの数値3(v2 3.3節)
+      out[offset] = 0xb3;
+      out[offset + 1] = ev.value & 0xff;
       return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
