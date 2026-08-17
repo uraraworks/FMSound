@@ -34,8 +34,8 @@ import { Vram, PC98_W, PC98_H } from './fmdsp/vram.js';
 import { FmdspFont, SmallFont } from './fmdsp/font.js';
 import { drawTrackRows, createIdleEntryTracks, TRACK_H, TRACK_DISP_TABLE_OPNA, TRACK_PANEL_W } from './fmdsp/trackrow.js';
 import {
-  buildPmdChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
-  channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
+  buildPmdChannelMask, buildPpz8Mask, mutedRowsFromChannels, mutedColumnsFromChannels,
+  channelForRow, channelForLevelColumn, PMD_LEVEL_COLUMN_CHANNELS,
   usedChannelsFromPmdMmlParts, unusedRowsFromChannels, unusedColumnsFromChannels,
   PPZ8_CHANNELS,
 } from './fmdsp/channel-mask.js';
@@ -621,8 +621,15 @@ export async function init(ctx) {
     applyChannelMask();
   }
   function applyChannelMask() {
+    // OPNAマスク(FM/SSG/RHYTHM/ADPCM)とPPZ8マスクは別系統(fmdsp/channel-mask.js
+    // buildPpz8Mask()コメント、pmdweb/src/PmdCore.c pmdweb_set_ppz8_mask()コメント
+    // 参照)なので両方送る。呼び出し元(クリック・曲切り替え時の全解除)は必ず
+    // このapplyChannelMask()経由にすること(入力源ごとに別配線を作らない)。
     if (typeof Module.setChannelMask === 'function') {
       Module.setChannelMask(buildPmdChannelMask(mutedChannels));
+    }
+    if (typeof Module.setPpz8Mask === 'function') {
+      Module.setPpz8Mask(buildPpz8Mask(mutedChannels));
     }
   }
 
@@ -688,7 +695,10 @@ export async function init(ctx) {
   const LEVEL_COLUMN_HIT_CONFIG = {
     columnX0: rightpane.LEVEL_X, columnW: rightpane.LEVEL_W,
     topY: rightpane.LEVEL_TRACK_Y, bottomY: rightpane.LEVEL_KEY_Y + 8,
-    columnCount: LEVEL_COLUMN_CHANNELS.length,
+    // PMD_LEVEL_COLUMN_CHANNELS.length(=19)。2026-08-18、PPZ8バンク読み込みで
+    // PPZ8が実際に鳴るようになったのに合わせ、PPZ8列(11-18)もクリック/ホバー枠の
+    // 対象に含めた(以前はLEVEL_COLUMN_CHANNELS.length=11でPPZ8列を除外していた)。
+    columnCount: PMD_LEVEL_COLUMN_CHANNELS.length,
   };
   // クライアント座標(event.clientX/Y)から、トラック行/レベルメーター列のどちらに
   // 当たったかを返す(三角(コメントスクロール)は含まない。ホバー枠の対象は
@@ -724,11 +734,11 @@ export async function init(ctx) {
     // 三角に当たらなかった場合、トラック行/レベルメータークリックミュートの判定
     // へフォールバック(2026-08-16追加、fmdsp/channel-mask.js LEVEL_COLUMN_CHANNELS
     // 参照。リズムはトラック行を持たないため、ミュートできるのはレベルメーター
-    // 経由のみ)。
+    // 経由のみ。PPZ8も同様、2026-08-18追加)。
     const hit = hitTestTrackOrLevel(event.clientX, event.clientY);
     if (!hit) return;
     if (hit.kind === 'row') toggleMutedChannel(channelForRow(hit.index));
-    else toggleMutedChannel(channelForLevelColumn(hit.index));
+    else toggleMutedChannel(channelForLevelColumn(hit.index, PMD_LEVEL_COLUMN_CHANNELS));
   });
 
   // ホバー枠(利用者指示A)。クリック可能な対象(hitTestTrackOrLevelが返す対象と
@@ -908,7 +918,7 @@ export async function init(ctx) {
 
       const { fft, levels } = readRightPaneData(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels), unusedColumnsFromChannels(pmdUsedChannels, pmdPpz8UsedChannels));
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels, PMD_LEVEL_COLUMN_CHANNELS), unusedColumnsFromChannels(pmdUsedChannels, pmdPpz8UsedChannels));
       rightpane.drawFileBar(vram, currentSongName);
       drawHover(vram);
 

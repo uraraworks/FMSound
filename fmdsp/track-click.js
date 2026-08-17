@@ -44,9 +44,11 @@ export function trackRowIndexAt(canvasX, canvasY, { trackH, rowCount, panelWidth
 // 隣接列との間に無反応の帯ができないようこちらを当たり判定に使う)。
 // topY/bottomY: 列の縦方向の当たり判定範囲([topY, bottomY))。呼び出し側が
 // fmdsp/rightpane.jsの定数(LEVEL_TRACK_Y〜LEVEL_KEY_Y相当)から組み立てる。
-// columnCount: クリック可能な列数(fmdsp/channel-mask.js
-// LEVEL_COLUMN_CHANNELS.length相当)。それより右の列(PPZ8)はマスク非対応につき
-// クリック対象に含めない。
+// columnCount: クリック可能な列数。呼び出し側(html/mucom-app.js)がMUCOM用に
+// LEVEL_COLUMN_CHANNELS.length(=11、PPZ8列は対象外。MUCOM88にPPZ8という概念が
+// 無いため)を渡すか、呼び出し側(html/pmd-app.js)がPMD用に
+// PMD_LEVEL_COLUMN_CHANNELS.length(=19、PPZ8列(11-18)も対象)を渡すかで決まる
+// (fmdsp/channel-mask.js参照)。
 // 範囲外なら-1を返す(trackRowIndexAtと同じ流儀)。
 export function levelColumnIndexAt(canvasX, canvasY, { columnX0, columnW, topY, bottomY, columnCount }) {
   if (canvasY < topY || canvasY >= bottomY) return -1;

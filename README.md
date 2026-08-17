@@ -53,8 +53,9 @@ real driver's output.
    color but dims it, and its keyboard highlight dims the same way. The
    rhythm part has no row of its own, so mute it by clicking the RHY column
    in the level meters on the right; the FM1–SSG3/ADPCM columns there mirror
-   the same mute state as their part rows (the PPZ columns don't support
-   muting). Hovering anything mutable (a part row or a level-meter column)
+   the same mute state as their part rows. PMD's PPZ columns (PPZ8, columns
+   11–18) can be muted the same way too; MUCOM88 has no concept of PPZ8 at
+   all, so this stays unsupported there. Hovering anything mutable (a part row or a level-meter column)
    draws an outline around it before you click. Parts are shown in three
    brightness levels — normal, muted (half brightness), and "unused by this
    song" (quarter brightness, only available when the MML was compiled in
@@ -140,9 +141,13 @@ The player currently has a few honest limitations worth stating up front.
   file from the same archive (zip, etc.) makes the used channels light up;
   they stay dark if no bank was supplied, or if the song doesn't use PPZ8 at
   all. **MUCOM88 has no concept of PPZ8 at all, so these columns always stay
-  dark there** (unlike PMD, this never changes for MUCOM88). **The PPZ
-  columns still don't support muting**, on either engine. See
-  `fmdsp/channel-mask.js` `unusedColumnsFromChannels()` and
+  dark there** (unlike PMD, this never changes for MUCOM88). **PMD's PPZ
+  columns can be muted and unmuted by clicking, same as the other columns**
+  (MUCOM88 still has no support for it, since the concept doesn't exist
+  there). The bar itself keeps moving while muted — the raw meter value
+  isn't affected by the mute mask, same as every other part — and the mute
+  state shows up as dimming instead. See `fmdsp/channel-mask.js`
+  `unusedColumnsFromChannels()`, `buildPpz8Mask()`, and
   `docs/pmd-pcm-support.md` for the source-level detail.
 - **PMD's PCM (`.PPC` = ADPCM, `.PZI`/`.PVI` = PPZ8 banks) only loads when
   you open the song from the same archive (zip/lzh/etc.) as its PCM

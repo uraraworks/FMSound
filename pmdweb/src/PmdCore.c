@@ -199,6 +199,16 @@ static void build_levels(struct flat_level_status *out) {
   }
   if (g_player.work.ppz8) {
     for (int p = 0; p < 8; p++) {
+      // 意図的にppz8_get_mask()でマスク済みチャンネルの値を0にしていない。
+      // upstream/98fmplayer/fmdriver/ppz8.c ppz8_mix()はlevel[p]の更新(202行台)を
+      // マスクチェック(208行 `if ((1u << p) & (ppz8->mask)) continue;`)より前に
+      // 行っており、ミュート中でもleveldataは動き続ける(実測: tools/verify_pmd_ppz8_mute.mjs
+      // 「マスクしてもレベルが動き続ける」項目で確認)。これはFM(libopna/opnafm.c
+      // opna_fm_mix()、leveldata_update()がfm->maskチェックより前にある)・SSG・ADPCM・
+      // リズムの全チャンネルで既に同じ構造になっており(このアプリのfmdsp/rightpane.js
+      // drawLevelMeters()冒頭コメント参照)、この製品はミュート状態をバー自体の停止では
+      // なく列全体の暗色化(dim-tier)で表現する設計を採っている。PPZ8だけ特別扱いして
+      // 表示側で0にすると他チャンネルと挙動が食い違うため、あえて揃えている。
       levels[11 + p].level = leveldata_read(&g_player.work.ppz8->channel[p].leveldata);
       static const int table[10] = {5, 0, 1, 1, 1, 2, 3, 3, 3, 4};
       levels[11 + p].pan = table[g_player.work.ppz8->channel[p].pan];
@@ -391,6 +401,13 @@ static void initialize_synth(void) {
   opna_adpcm_set_ram_256k(&g_player.opna.adpcm, g_player.adpcm_ram);
   opna_timer_reset(&g_player.timer, &g_player.opna);
   ppz8_init(&g_player.ppz8, SAMPLE_RATE, PPZ8_MIX_VOLUME);
+  // ppz8_init()自身はmaskフィールドに触れない(upstream/98fmplayer/fmdriver/ppz8.c
+  // 参照。channel[]/buf[]はループで初期化するがppz8->maskへの代入は無い)ため、
+  // 前の曲でPPZ8列をミュートしたまま次の曲を読み込むと、g_player.ppz8が
+  // static構造体で状態を持ち越す性質上マスクも持ち越してしまう。opna_reset()
+  // (直前で呼んでいる)はopna->maskを0に戻す(libopna/opna.c:13)ので、それと
+  // 挙動を揃えるために明示的にリセットする。
+  ppz8_set_mask(&g_player.ppz8, 0);
   memset(&g_player.work, 0, sizeof(g_player.work));
   if (!g_fft_table_ready) {
     fft_init_table();
@@ -504,6 +521,23 @@ int pmdweb_get_level_field_count(void) { return LEVEL_FIELD_COUNT; }
 // このビット割り当てで組み立てる。JS側は絶対にMUCOM用マスク値をここへ渡さないこと。
 void pmdweb_set_channel_mask(unsigned mask) {
   opna_set_mask(&g_player.opna, mask);
+}
+
+// --- FMDSPレベルメーターPPZ8列(11-18)クリックミュート機能 ---
+// PPZ8はOPNAのチャンネルではない(別ミキサー。upstream/98fmplayer/fmdriver/ppz8.c
+// ppz8_mix()がopna_timer_mix()とは独立にg_player.ppz8を混ぜる。initialize_synth()の
+// opna_timer_set_mix_callback()参照)ため、上のpmdweb_set_channel_mask()
+// (opna_set_mask())とは完全に別系統のマスクとして扱う。
+// ppz8_set_mask()(fmdriver/ppz8.h:78)をそのまま叩く。ビット割り当ては
+// ppz8.c:208 `if ((1u << p) & (ppz8->mask)) continue;`(ppz8_mix()内、
+// pの範囲は同ファイル200行のfor(p=0;p<8;p++)、ppz8->channel[8]の配列indexそのもの)
+// より、bit p (0-7) = ppz8->channel[p] = PPZ8chの(p+1)番目
+// (fmdsp/channel-mask.js PPZ8_CHANNELS = ['PPZ8_1',...,'PPZ8_8']の並びと直接対応、
+// build_levels()のlevels[11+p]/FMDRIVER_TRACK_PPZ8_1+pと同じp)。シフトや並べ替えは
+// 一切不要(opna_set_mask()のADPCM/リズムのような特殊ビット位置が無い8bitフラット
+// マスクなので、fmdsp/channel-mask.jsのbuildPpz8Mask()もシフト計算をしない)。
+void pmdweb_set_ppz8_mask(unsigned mask) {
+  ppz8_set_mask(&g_player.ppz8, mask);
 }
 
 // 検証専用(tools/verify_pmd_channel_mute.mjs)。opna_set_mask()のADPCMビット

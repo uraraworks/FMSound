@@ -27,6 +27,7 @@ int pmdweb_get_fft_bin_count(void);
 int pmdweb_get_level_count(void);
 int pmdweb_get_level_field_count(void);
 void pmdweb_set_channel_mask(unsigned mask);
+void pmdweb_set_ppz8_mask(unsigned mask);
 int pmdweb_test_load_ppc_file(const char *path);
 void pmdweb_test_write_opna_reg(unsigned reg, unsigned val);
 void pmdweb_test_reset_drum_no_rom(void);
@@ -73,6 +74,9 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("getLevelFieldCount", &pmdweb_get_level_field_count);
   // FMDSPトラック行クリックミュート機能(fmdsp/trackrow.js、fmdsp/channel-mask.js参照)。
   emscripten::function("setChannelMask", &pmdweb_set_channel_mask);
+  // FMDSPレベルメーターPPZ8列(11-18)クリックミュート機能。opna_set_mask()系
+  // (setChannelMask)とは別系統のマスク(PmdCore.c pmdweb_set_ppz8_mask()コメント参照)。
+  emscripten::function("setPpz8Mask", &pmdweb_set_ppz8_mask);
   // 検証専用(tools/verify_pmd_channel_mute.mjs)。製品UIからは呼ばれない。
   emscripten::function("testLoadPpcFile", &TestLoadPpcFile);
   // 検証専用(tools/verify_pmd_rhythm.mjs)。製品UIからは呼ばれない。

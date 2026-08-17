@@ -78,17 +78,21 @@ export function channelForRow(rowIndex) {
 // レベルメーター列(FMDSP_LEVEL_COUNT=19)のうち0-10列の対応(出典:
 // fmdsp-pacc.c:1670-1696、fmdsp/rightpane.js drawLevelLabels()の列見出しと一致):
 //   0-5=FM1-6, 6-8=SSG1-3, 9=RHYTHM, 10=ADPCM, 11-18=PPZ8 1-8
-// PPZ8(11-18)はbuildMucomChannelMask/buildPmdChannelMaskがそもそもマスク値の
-// 組み立てに対応していない(TRACK_ROW_CHANNELSにも含まれない)ため、クリック対象に
-// 含めない(未対応チャンネルをクリックできる見た目にすると、押しても効かない
-// UIになってしまう)。
+// PPZ8(11-18)は下のPPZ8_CHANNELS/buildPpz8Mask()参照(2026-08-18対応)。ここには
+// 含めない: buildMucomChannelMask/buildPmdChannelMaskが組み立てるのはOPNA用マスク
+// (opna_set_mask())で、PPZ8は別ミキサー(ppz8_set_mask())なのでビット体系が違う。
+// MUCOM88はPPZ8という概念自体を持たない(fmgenに相当実装が無い)ため、この定数を
+// 使うMUCOM側の呼び出し(html/mucom-app.js)はLEVEL_COLUMN_CHANNELSのままでよい。
 export const LEVEL_COLUMN_CHANNELS = [
   ...FM_CHANNELS, ...SSG_CHANNELS, RHYTHM_CHANNEL, ADPCM_CHANNEL,
 ];
 
-// レベルメーター列index(0-18) -> 論理チャンネル名。11以上(PPZ8)はundefined。
-export function channelForLevelColumn(columnIndex) {
-  return LEVEL_COLUMN_CHANNELS[columnIndex];
+// レベルメーター列index -> 論理チャンネル名。channels省略時はLEVEL_COLUMN_CHANNELS
+// (0-10列。既存呼び出し=MUCOM側の挙動を変えないための既定値)。PMD側は
+// html/pmd-app.jsからPMD_LEVEL_COLUMN_CHANNELS(0-18列)を明示的に渡す。
+// 範囲外はundefined。
+export function channelForLevelColumn(columnIndex, channels = LEVEL_COLUMN_CHANNELS) {
+  return channels[columnIndex];
 }
 
 // mutedChannels(Set<string>、論理チャンネル名の集合)を、トラック行クリック用の
@@ -103,9 +107,11 @@ export function mutedRowsFromChannels(mutedChannels) {
 }
 
 // mutedChannelsを、レベルメーター描画用のSet<number>(列index)へ変換する。
-export function mutedColumnsFromChannels(mutedChannels) {
+// channels省略時はLEVEL_COLUMN_CHANNELS(MUCOM側の挙動を変えないための既定値)。
+// PMD側はhtml/pmd-app.jsからPMD_LEVEL_COLUMN_CHANNELS(0-18列)を明示的に渡す。
+export function mutedColumnsFromChannels(mutedChannels, channels = LEVEL_COLUMN_CHANNELS) {
   const columns = new Set();
-  LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (mutedChannels.has(ch)) columns.add(col); });
+  channels.forEach((ch, col) => { if (mutedChannels.has(ch)) columns.add(col); });
   return columns;
 }
 
@@ -205,12 +211,37 @@ const PPZ8_LEVEL_COLUMN_START = 11;
 const PPZ8_LEVEL_COLUMN_COUNT = 8;
 
 // レベルメーター列11-18(PPZ8 1-8)個別の論理チャンネル名。
-// LEVEL_COLUMN_CHANNELS(0-10列。クリックミュート対応チャンネルのみ)には
-// 含めない(PPZ8はクリックミュート未対応のまま。上のLEVEL_COLUMN_CHANNELS
-// コメント参照)。unusedColumnsFromChannelsの第2引数(ppz8UsedChannels)専用。
+// LEVEL_COLUMN_CHANNELS(0-10列。OPNA用マスクのみ)には含めない(PPZ8はOPNAの
+// チャンネルではなく別ミキサーなので、buildMucomChannelMask/buildPmdChannelMask
+// が組み立てるマスク値には出てこない。上のLEVEL_COLUMN_CHANNELSコメント参照)。
+// unusedColumnsFromChannelsの第2引数(ppz8UsedChannels)、下のbuildPpz8Mask()、
+// PMD_LEVEL_COLUMN_CHANNELSで使う。
 export const PPZ8_CHANNELS = [
   'PPZ8_1', 'PPZ8_2', 'PPZ8_3', 'PPZ8_4', 'PPZ8_5', 'PPZ8_6', 'PPZ8_7', 'PPZ8_8',
 ];
+
+// PMD専用: レベルメーター列0-18全部(=LEVEL_COLUMN_CHANNELS + PPZ8_CHANNELS)。
+// 2026-08-18、PPZ8がPPZ8バンク読み込みで実際に鳴るようになったことを受けて
+// PPZ8列(11-18)もクリックミュート/ホバー枠の対象にした(html/pmd-app.js
+// LEVEL_COLUMN_HIT_CONFIG.columnCount、channelForLevelColumn()の第2引数、
+// mutedColumnsFromChannels()の第2引数に渡す)。MUCOM88側(html/mucom-app.js)は
+// PPZ8という概念自体を持たないため、LEVEL_COLUMN_CHANNELS(0-10列)のまま変えない。
+export const PMD_LEVEL_COLUMN_CHANNELS = [...LEVEL_COLUMN_CHANNELS, ...PPZ8_CHANNELS];
+
+// PPZ8用マスク値の組み立て(pmdweb/src/PmdCore.c pmdweb_set_ppz8_mask()へそのまま
+// 渡す)。出典: upstream/98fmplayer/fmdriver/ppz8.c ppz8_mix() 200-208行、
+// `for (int p = 0; p < 8; p++) { ... if ((1u << p) & (ppz8->mask)) continue; ... }`。
+// pはppz8->channel[8]の配列indexそのもので、PPZ8_CHANNELS[p]='PPZ8_'+(p+1)と
+// 1:1対応する(pmdweb/src/PmdCore.c build_levels()のlevels[11+p]/
+// FMDRIVER_TRACK_PPZ8_1+pも同じp)。buildPmdChannelMask()のADPCM/リズムのような
+// シフト・特殊ビット位置は無い、8bitフラットなマスクなのでビット位置=配列index。
+// mutedSet: Set<string>(PPZ8_CHANNELSの文字列を含む集合。mutedChannelsをそのまま
+// 渡してよい。PPZ8_CHANNELS以外の要素は無視される)。
+export function buildPpz8Mask(mutedSet) {
+  let mask = 0;
+  PPZ8_CHANNELS.forEach((ch, i) => { if (mutedSet.has(ch)) mask |= (1 << i); });
+  return mask >>> 0;
+}
 
 // usedChannelsを、レベルメーター描画用のSet<number>(未使用の列index)へ変換する。
 //
