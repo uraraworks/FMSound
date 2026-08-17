@@ -163,6 +163,12 @@ export async function init(ctx) {
     fileInput, sampleLinksEl, enginePaneEl, footerCreditsEl, rescale,
   } = ctx;
 
+  // 【不具合修正・2026-08-17、利用者報告その2】net-load.js watchShareFragmentHashChange()
+  // コメント参照。「共有リンクを処理済み」の記憶を捨てる関数。watchShareFragmentHashChange()
+  // 呼び出し(このinit()の末尾)より前にresetTransientMessages()から参照されるため、
+  // 呼び出し前はno-opの仮の関数を入れておき、実体は末尾で差し替える。
+  let forgetHandledShareFragmentHash = () => {};
+
   // --- footer credits ---
   // 課題C: 上流の出典表示(ライセンス上の要求のため削除しない)に加えて、
   // FMSound自身のリポジトリへの導線を末尾に足す。
@@ -824,10 +830,18 @@ export async function init(ctx) {
   // 呼び出しどころ: applyMmlBytes()(URL/ファイル/書庫/サンプル/ライブラリ選択/
   // 共有リンク読み込み、すべての曲読み込みが通る唯一の窓口)+ btnNewMml(新規作成、
   // applyMmlBytes()を経由しないため個別に呼ぶ)。
-  function resetTransientMessages() {
+  //
+  // 【不具合修正・2026-08-17、利用者報告その2】上の一覧に「共有リンクを処理済みとして
+  // 覚えている記憶(net-load.js watchShareFragmentHashChange()のlastHandledHash)」も
+  // 加える。曲が変わったのに前の状態が残る、という同じ形の不具合の4件目
+  // (net-load.jsのコメント参照)。ただし共有リンク自身の読み込み経由(applyMmlBytes()の
+  // opts.viaShareLink)のときだけは捨てない: そこで捨てると、直後に同じhashchangeが
+  // (ブラウザの都合等で)重複して飛んできたときの重複排除が効かなくなるため。
+  function resetTransientMessages(opts = {}) {
     setNetStatus('', false);
     clearCompileStatus();
     shareControls.markDirty();
+    if (!opts.viaShareLink) forgetHandledShareFragmentHash();
   }
 
   function updateMmlCaveat(mmlText) {
@@ -1297,7 +1311,7 @@ export async function init(ctx) {
     // コピー結果等)を全部まとめて消す。applyMmlBytes()は課題D(下のコメント)の
     // とおり読み込み経路の唯一の窓口なので、ここ1箇所で足りる
     // (resetTransientMessages()コメント参照)。
-    resetTransientMessages();
+    resetTransientMessages({ viaShareLink: Boolean(opts.viaShareLink) });
     // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
     // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
     updateMmlCaveat(text);
@@ -1641,7 +1655,10 @@ export async function init(ctx) {
       return false;
     }
     if (bytes === null) return false; // 共有リンクではない通常のアクセス
-    applyMmlBytes(bytes, { name: SHARE_LINK_FILEBAR_NAME, forceEncoding: 'utf-8' });
+    // viaShareLink: true — resetTransientMessages()コメント参照。この経路自身の呼び出しでは
+    // 「共有リンクを処理済み」の記憶を捨てない(watchShareFragmentHashChange()側の重複
+    // 排除と競合させないため)。
+    applyMmlBytes(bytes, { name: SHARE_LINK_FILEBAR_NAME, forceEncoding: 'utf-8', viaShareLink: true });
     setNetStatus(t('net.loadedFromShareLink'), false);
     // 自動取り込み: URL/ファイルからの読み込みと同様にライブラリへ残す。出所がURLでも
     // ローカルファイルでもない(URL自体が曲データを丸ごと運ぶ)ため kind: 'local' +
@@ -1667,8 +1684,8 @@ export async function init(ctx) {
   // 【不具合修正・2026-08-17】同じタブのアドレスバーに共有リンクを貼り付けても
   // 読み込まれない不具合の対処(net-load.js watchShareFragmentHashChange()コメント参照)。
   // 起動時と同じloadSongFromShareFragment()をそのまま渡す(処理を2箇所に書かない)。
-  watchShareFragmentHashChange({
+  ({ forgetHandledHash: forgetHandledShareFragmentHash } = watchShareFragmentHashChange({
     isDirty: () => mmlDirty && mmlTextarea.value.trim().length > 0,
     load: loadSongFromShareFragment,
-  });
+  }));
 }

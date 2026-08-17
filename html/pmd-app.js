@@ -87,6 +87,12 @@ export async function init(ctx) {
     fileInput, sampleLinksEl, enginePaneEl, footerCreditsEl, rescale,
   } = ctx;
 
+  // 【不具合修正・2026-08-17、利用者報告その2】net-load.js watchShareFragmentHashChange()
+  // コメント参照。「共有リンクを処理済み」の記憶を捨てる関数。watchShareFragmentHashChange()
+  // 呼び出し(このinit()の末尾)より前にresetTransientMessages()から参照されるため、
+  // 呼び出し前はno-opの仮の関数を入れておき、実体は末尾で差し替える。
+  let forgetHandledShareFragmentHash = () => {};
+
   // --- footer credits ---
   // 課題C: 上流の出典表示(ライセンス上の要求のため削除しない)に加えて、
   // FMSound自身のリポジトリへの導線を末尾に足す。
@@ -502,10 +508,18 @@ export async function init(ctx) {
   // サンプル読み込み(エディタモード)+ loadSongFromShareFragment()(共有リンク)。
   // 後の3つはplayBytes()を経由しない(MMLソースを直接編集欄へ入れるだけの経路の
   // ため)ので個別に呼ぶ。
-  function resetTransientMessages() {
+  //
+  // 【不具合修正・2026-08-17、利用者報告その2】上の一覧に「共有リンクを処理済みとして
+  // 覚えている記憶(net-load.js watchShareFragmentHashChange()のlastHandledHash)」も
+  // 加える。曲が変わったのに前の状態が残る、という同じ形の不具合の4件目
+  // (net-load.jsのコメント参照)。ただし共有リンク自身の読み込み(loadSongFromShareFragment()
+  // からのopts.viaShareLink)のときだけは捨てない: そこで捨てると、直後に同じhashchangeが
+  // (ブラウザの都合等で)重複して飛んできたときの重複排除が効かなくなるため。
+  function resetTransientMessages(opts = {}) {
     setNetStatus('', false);
     clearCompileStatus();
     shareControls.markDirty();
+    if (!opts.viaShareLink) forgetHandledShareFragmentHash();
   }
 
   applyUiMode(currentUiMode());
@@ -1508,7 +1522,10 @@ export async function init(ctx) {
     // 共有可能カウンタ・netStatus・コンパイル結果: 曲(共有リンク)が変わったので
     // まとめて消す(resetTransientMessages()コメント参照)。カウンタはまだ
     // コンパイルしていない内容なので「未集計」のまま。
-    resetTransientMessages();
+    // viaShareLink: true — resetTransientMessages()コメント参照。この経路自身の呼び出しでは
+    // 「共有リンクを処理済み」の記憶を捨てない(watchShareFragmentHashChange()側の重複
+    // 排除と競合させないため)。
+    resetTransientMessages({ viaShareLink: true });
     pendingUrlSong = null;
     currentSongName = SHARE_LINK_FILEBAR_NAME;
     setNetStatus(t('net.loadedFromShareLink'), false);
@@ -1535,8 +1552,8 @@ export async function init(ctx) {
   // 【不具合修正・2026-08-17】同じタブのアドレスバーに共有リンクを貼り付けても
   // 読み込まれない不具合の対処(net-load.js watchShareFragmentHashChange()コメント参照)。
   // 起動時と同じloadSongFromShareFragment()をそのまま渡す(処理を2箇所に書かない)。
-  watchShareFragmentHashChange({
+  ({ forgetHandledHash: forgetHandledShareFragmentHash } = watchShareFragmentHashChange({
     isDirty: () => mmlDirty && mmlTextarea.value.trim().length > 0,
     load: loadSongFromShareFragment,
-  });
+  }));
 }

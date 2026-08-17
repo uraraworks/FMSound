@@ -425,10 +425,31 @@ export function clearShareFragmentFromAddressBar() {
  * 同じ)ため、ここでは正当性を検査しない。
  *
  * `location`/`window`が使えない環境(Node.jsのverifyスクリプト等)では何もしない。
+ *
+ * 【不具合修正・2026-08-17、利用者報告その2】上の(b)の重複排除(`lastHandledHash`)は
+ * 「一度処理したフラグメントを覚えたまま、別の曲へ移っても忘れない」欠陥を持っていた。
+ * 新規作成やライブラリの曲を表示した後に**同じ**共有リンクを貼り直しても、
+ * `lastHandledHash`がその値のままなので「既に処理済み」と誤判定され、読み込まれない
+ * (リロードでは起動時の経路を通るため読める。「貼り直しだけ効かない」という
+ * 分かりにくい壊れ方をしていた)。
+ *
+ * (b)自体(同じ値の連続貼り付けで無駄な読み直しをしない)は必要なので消さず、
+ * 「曲が共有リンク以外の手段で変わったら記憶を捨てる」`forgetHandledHash()`を
+ * 呼び出し元へ返す形にした。呼び出し側(html/mucom-app.js・html/pmd-app.js)は
+ * 既存の`resetTransientMessages()`(曲が変わるたびに必ず通る集約点。同ファイルの
+ * コメント参照)からこれを呼ぶ。ただし共有リンク自身の読み込み(`load()`の中)から
+ * 呼ばれたときは弾く(呼び出し側が`viaShareLink`相当のフラグで見分ける)。
+ * ここで無条件に捨ててしまうと、`load()`実行中に記憶が消え、直後に同じ
+ * `hashchange`が(ブラウザの都合等で)重複して飛んできた場合に(a)の重複排除が
+ * 効かなくなり、読み込みが二重に走ってしまうため。
  * @param {{ isDirty: () => boolean, load: () => Promise<boolean> }} handlers
+ * @returns {{ forgetHandledHash: () => void }}
  */
 export function watchShareFragmentHashChange({ isDirty, load }) {
-  if (typeof window === 'undefined' || typeof location === 'undefined') return;
+  const noop = { forgetHandledHash() {} };
+  if (typeof window === 'undefined' || typeof location === 'undefined') return noop;
+  // location.hashは常に文字列なので、Symbol()は「まだ何も処理していない」ことを
+  // 表す番兵として安全に使える(どんな文字列とも===で一致しない)。
   let lastHandledHash = location.hash;
   window.addEventListener('hashchange', () => {
     const newHash = location.hash;
@@ -438,6 +459,11 @@ export function watchShareFragmentHashChange({ isDirty, load }) {
     if (isDirty() && !window.confirm(t('confirm.shareLinkLoad'))) return;
     load();
   });
+  return {
+    forgetHandledHash() {
+      lastHandledHash = Symbol('share-fragment-forgotten');
+    },
+  };
 }
 
 /**

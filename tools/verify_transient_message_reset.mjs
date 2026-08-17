@@ -70,7 +70,7 @@ console.log('=== tools/verify_transient_message_reset.mjs: 一時メッセージ
 // --- A. resetTransientMessages() 自体の中身 ------------------------------------------
 
 for (const [label, src] of [['MUCOM(html/mucom-app.js)', mucomSrc], ['PMD(html/pmd-app.js)', pmdSrc]]) {
-  const body = extractBlock(src, /function resetTransientMessages\(\) \{/, '\n  }\n', `${label} resetTransientMessages()`);
+  const body = extractBlock(src, /function resetTransientMessages\(opts = \{\}\) \{/, '\n  }\n', `${label} resetTransientMessages()`);
   check(`A. ${label}: resetTransientMessages()がsetNetStatus('', ...)でnetStatusを消す`,
     /setNetStatus\(\s*['"]['"]\s*,/.test(body), body);
   check(`A. ${label}: resetTransientMessages()がclearCompileStatus()でコンパイル結果を消す`,
@@ -142,7 +142,7 @@ function collectRegistryStatus(sites) {
   const missing = [];
   for (const [name, spec] of Object.entries(sites)) {
     const body = stripComments(extractBlock(spec.src, spec.startRe, spec.endMarker, name));
-    const hasReset = /resetTransientMessages\(\)/.test(body);
+    const hasReset = /resetTransientMessages\(/.test(body);
     if (!hasReset) { allOk = false; missing.push(name); }
   }
   return { allOk, missing };
@@ -159,8 +159,8 @@ const realResult = collectRegistryStatus(SONG_CHANGE_SITES);
     '$1/* わざと呼ばない(陽性対照用) */',
   );
   check('C. [陽性対照の前提] 壊れたソースは実際にresetTransientMessages()呼び出しが1個少ない',
-    (mucomSrc.match(/resetTransientMessages\(\)/g) || []).length ===
-    (brokenMucomSrc.match(/resetTransientMessages\(\)/g) || []).length + 1);
+    (mucomSrc.match(/resetTransientMessages\(/g) || []).length ===
+    (brokenMucomSrc.match(/resetTransientMessages\(/g) || []).length + 1);
 
   const brokenSites = { ...SONG_CHANGE_SITES, 'MUCOM btnNewMml(新規作成、applyMmlBytes()を経由しない)': { ...SONG_CHANGE_SITES['MUCOM btnNewMml(新規作成、applyMmlBytes()を経由しない)'], src: brokenMucomSrc } };
   const brokenResult = collectRegistryStatus(brokenSites);
@@ -175,7 +175,7 @@ check('B. [本題] 本来のソースは全経路が配線済みでPASSする', 
 // --- D. 消してはいけないもの(常時表示)が巻き添えになっていないこと -------------------
 
 for (const [label, src] of [['MUCOM', mucomSrc], ['PMD', pmdSrc]]) {
-  const body = extractBlock(src, /function resetTransientMessages\(\) \{/, '\n  }\n', `${label} resetTransientMessages()`);
+  const body = extractBlock(src, /function resetTransientMessages\(opts = \{\}\) \{/, '\n  }\n', `${label} resetTransientMessages()`);
   check(`D. ${label}: resetTransientMessages()はcounterEl/shareCounter系のDOMを直接隠していない(markDirty()経由のみ)`,
     !/counterEl|shareCounter|gaugeEl/.test(body), body);
   check(`D. ${label}: resetTransientMessages()はencodingBadge/mmlCaveatに触れていない(常時表示、対象外)`,
