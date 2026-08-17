@@ -10,14 +10,36 @@
 // 将来のアプリ間データ受け渡し(README.ja.md「今後の予定」)に備え、レコードの形は
 // FMSound内部専用の符号化に閉じず、素直な構造(ドライバ種別・曲名・出所・生バイト列)
 // のままにしてある。`schemaVersion` を持たせ、将来のマイグレーションに備える。
+//
+// 【拡張・2026-08-18】voiceBank(MUCOM88の外部音色バンク)に続き、PMDのPCM参照
+// (pcmRefs)も曲レコードへ追加した。ただしvoiceBankと違い生バイト列そのものは
+// 埋め込まない(PPZ8バンクは実測でMSPCM3.PZIが2.3MB・mspcm4.pziが894KBあり、
+// 書庫内の全曲を一括取り込みするimportArchiveSongs()の仕様上、曲ごとに複製すると
+// ストレージ枠を破綻させるため)。実体は内容ハッシュキーの別ストア(PCM_STORE_NAME)へ
+// 1件だけ持ち、曲レコードには{name, hash, size}の参照だけを持たせて共有する。
+// voiceBankと同じく既存レコードへの追加フィールド(`?? []`で後方互換)のため
+// RECORD_SCHEMA_VERSIONは据え置き(=1のまま)。DBのオブジェクトストア構成自体は
+// IndexedDBのバージョニング機構(DB_VERSION 1→2、onupgradeneeded)で扱う。
 
 import { albumGroupPathFor, resolveTrackInfo } from './album-info.js';
 import { decodeMmlBytes } from './charset.js';
 import { findPairedVoiceBank } from './voice-bank.js';
+import { collectPmdPcmFiles } from './pmd-pcm.js';
 
-const DB_NAME = 'fmsound-library';
-const DB_VERSION = 1;
+// DB_NAME/STORE_NAME/PCM_STORE_NAMEはexportしてある。net/library.js自体を無改変で
+// 検証するtools/verify_library.mjsが、DBバージョン昇格(1→2)検証のために「昇格前の
+// 旧DB(曲ストアのみ・PCMストア無し)」をフェイクIndexedDB上に直接組み立てる必要が
+// あるため(openLibraryDb()経由では現在のDB_VERSION=2でしか開けない)。
+export const DB_NAME = 'fmsound-library';
+// 【拡張・2026-08-18】PMDのPCM(.PPC/.PZI/.PVI)をライブラリ選択後も再生できるようにする
+// ため、PCM専用ストアを追加した(1→2)。onupgradeneededは新ストアを作るだけで、
+// 既存の曲ストア(STORE_NAME)には一切触れない(既存レコードは保持されたまま)。
+const DB_VERSION = 2;
 const STORE_NAME = 'fmsound-songs';
+// PCMストア: キーは内容ハッシュ(hashBytes())。同じPCM(例: 共有音色バンクMSPCM3.PZI)を
+// 参照する曲が何十曲あっても実体は1件だけ保存する(書庫を開いた時点で全曲を一括取り込む
+// importArchiveSongs()の仕様上、曲ごとに複製するとストレージ枠を破綻させるため)。
+export const PCM_STORE_NAME = 'fmsound-pcm';
 export const RECORD_SCHEMA_VERSION = 1;
 
 /** @param {IDBRequest} request */
@@ -50,6 +72,11 @@ export function openLibraryDb(idbFactory) {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+      // DB_VERSION 1→2で追加。既存(v1)のDBを開いたときもここを通るが、既存の
+      // STORE_NAMEには触れないため曲は消えない(上のif文と同じ「無ければ作る」形)。
+      if (!db.objectStoreNames.contains(PCM_STORE_NAME)) {
+        db.createObjectStore(PCM_STORE_NAME, { keyPath: 'hash' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -115,13 +142,16 @@ export function hashBytes(bytes) {
  *   trackNumber: number | null,
  *   origin: { kind: 'url'|'local', url: string|null, archiveName: string|null, groupPath: string[]|null, entryPath: string|null },
  *   bytes: Uint8Array,
- * }} input
+ *   pcmFiles?: { name: string, data: Uint8Array }[],
+ * }} input pcmFiles(PMD専用、PPC/PZI/PVI)は省略時[]扱い(MUCOM側の呼び出しは
+ *   このフィールドを渡さないため一切影響しない)。
  * @returns {Promise<string>} 保存したレコードのid
  */
 export async function saveSong(db, input) {
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  const store = tx.objectStore(STORE_NAME);
-  const { id } = await upsertOne(store, input, Date.now());
+  const tx = db.transaction([STORE_NAME, PCM_STORE_NAME], 'readwrite');
+  const songStore = tx.objectStore(STORE_NAME);
+  const pcmStore = tx.objectStore(PCM_STORE_NAME);
+  const { id } = await upsertOne(songStore, pcmStore, input, Date.now());
   return id;
 }
 
@@ -142,14 +172,15 @@ export async function saveSong(db, input) {
  * @returns {Promise<{ ids: string[], addedCount: number, unchangedCount: number }>}
  */
 export async function saveSongs(db, inputs) {
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  const store = tx.objectStore(STORE_NAME);
+  const tx = db.transaction([STORE_NAME, PCM_STORE_NAME], 'readwrite');
+  const songStore = tx.objectStore(STORE_NAME);
+  const pcmStore = tx.objectStore(PCM_STORE_NAME);
   const now = Date.now();
   const ids = [];
   let addedCount = 0;
   let unchangedCount = 0;
   for (const input of inputs) {
-    const { id, wasWritten } = await upsertOne(store, input, now);
+    const { id, wasWritten } = await upsertOne(songStore, pcmStore, input, now);
     ids.push(id);
     if (wasWritten) addedCount++;
     else unchangedCount++;
@@ -158,18 +189,44 @@ export async function saveSongs(db, inputs) {
 }
 
 /**
+ * PCMファイル(PMDのPPC/PZI/PVI)を内容ハッシュキーでPCMストアへ書き込む。
+ * 既に同じハッシュのPCMが保存済みなら書き込みを省略する(=同じPCM(例: 共有音色
+ * バンク)を参照する曲が何十曲あっても実体は1件だけになる。importArchiveSongs()が
+ * 書庫内の全曲を一括取り込みする以上、複製するとストレージ枠を破綻させるため)。
+ * 曲レコードへ埋め込む参照(name/hash/size)だけを返す(生バイト列は曲レコードへ
+ * 複製しない)。
+ * @param {IDBObjectStore} pcmStore @param {{ name: string, data: Uint8Array }[]} pcmFiles
+ * @returns {Promise<{ name: string, hash: string, size: number }[]>}
+ */
+async function upsertPcmFiles(pcmStore, pcmFiles) {
+  const refs = [];
+  for (const pcm of pcmFiles) {
+    const hash = hashBytes(pcm.data);
+    const existing = await promisifyRequest(pcmStore.get(hash));
+    if (!existing) {
+      await promisifyRequest(pcmStore.put({ hash, data: pcm.data, size: pcm.data.length }));
+    }
+    refs.push({ name: pcm.name, hash, size: pcm.data.length });
+  }
+  return refs;
+}
+
+/**
  * saveSong()/saveSongs()共通の1件分の更新処理。同じstore(=同じトランザクション)を
  * 使い回せるよう、トランザクションの開始はここでは行わない(呼び出し側の責務)。
- * @param {IDBObjectStore} store @param {object} input @param {number} now
+ * @param {IDBObjectStore} songStore @param {IDBObjectStore} pcmStore @param {object} input @param {number} now
  * @returns {Promise<{ id: string, wasWritten: boolean }>}
  */
-async function upsertOne(store, input, now) {
+async function upsertOne(songStore, pcmStore, input, now) {
   const id = computeSongId(input.origin, input.fileName);
   const contentHash = hashBytes(input.bytes);
-  const existing = await promisifyRequest(store.get(id));
+  const existing = await promisifyRequest(songStore.get(id));
   if (existing && existing.contentHash === contentHash) {
     return { id: existing.id, wasWritten: false }; // 内容が変わっていない再取り込みは書き込みを省略する
   }
+  // PMDのPCM(.PPC/.PZI/.PVI)参照。importArchiveSongs()がdriver==='pmd'のときだけ
+  // pcmFilesを渡すため、MUCOM側の入力には常に存在せず[]になる(=一切影響しない)。
+  const pcmRefs = await upsertPcmFiles(pcmStore, input.pcmFiles ?? []);
   const record = {
     schemaVersion: RECORD_SCHEMA_VERSION,
     id,
@@ -189,12 +246,44 @@ async function upsertOne(store, input, now) {
     // 追加のみでマイグレーション不要、既存レコードは読み出し時に`?? null`で扱う)。
     voiceBank: input.voiceBank ?? null,
     voiceBankSource: input.voiceBankSource ?? null,
+    // PMDのPCM参照(上のpcmRefs参照)。voiceBankと同じ考え方で、対が無い曲(PPC等を
+    // 使わない曲、またはMUCOM側)は[]のまま。schemaVersion=1のまま(新規フィールドの
+    // 追加のみでマイグレーション不要、既存レコードは読み出し時に`?? []`で扱う)。
+    // 生バイト列そのものではなくPCMストアへの参照(name/hash/size)だけを持つ
+    // (内容ハッシュで共有するため。実体はPCM_STORE_NAME側)。
+    pcmRefs,
     contentHash,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
   };
-  await promisifyRequest(store.put(record));
+  await promisifyRequest(songStore.put(record));
   return { id, wasWritten: true };
+}
+
+/**
+ * 曲レコード(listSongs()/library-panel.jsのonSelect()が受け取るレコードそのもの)の
+ * pcmRefsを解決し、実際のPCMバイト列に戻す。playBytes()のpcmFilesへそのまま渡せる
+ * 形({name, data})で返す。
+ *
+ * 参照先のPCMがPCMストアに見つからない場合(部分的にDBが消えた等)はその要素を
+ * 黙って落とし、残りを返す(例外を投げて再生自体を止めない。無い参照を空データで
+ * 埋めることもしない=describePmdPcmStatus()による「PCM不足」の案内が自然に出る
+ * ようにするため)。
+ * @param {IDBDatabase} db @param {{ pcmRefs?: { name: string, hash: string, size: number }[] }} record
+ * @returns {Promise<{ name: string, data: Uint8Array }[]>}
+ */
+export async function loadPcmFilesForSong(db, record) {
+  const refs = record?.pcmRefs ?? [];
+  if (refs.length === 0) return [];
+  const tx = db.transaction(PCM_STORE_NAME, 'readonly');
+  const store = tx.objectStore(PCM_STORE_NAME);
+  const results = [];
+  for (const ref of refs) {
+    const entry = await promisifyRequest(store.get(ref.hash));
+    if (entry) results.push({ name: ref.name, data: entry.data });
+    // else: 参照先が見つからない要素は落とす(黙って空データを補わない)。
+  }
+  return results;
 }
 
 /**
@@ -263,6 +352,11 @@ export async function importArchiveSongs(db, input) {
     // 'pmd'の場合は対になるシステムディスクを探しにいかない(PMD側には一切影響
     // させない、という要求を型で保証する)。
     const pair = driver === 'mucom' ? findPairedVoiceBank(entries, c.entry.name, defaultVoiceNames) : null;
+    // PMDのPCM(.PPC/.PZI/.PVI)はPMD固有の仕組み(MUCOM88には存在しない)。driverが
+    // 'mucom'の場合は書庫内PCMを探しにいかない(MUCOM側には一切影響させない、という
+    // 要求を型で保証する。上の#voice分岐と対称: driver==='pmd'でのみvoiceBankを
+    // 探さないのと同じ考え方を逆方向にも適用する)。
+    const pcmFiles = driver === 'pmd' ? collectPmdPcmFiles(entries, c.entry.name) : [];
     return {
       driver,
       fileName: c.displayName,
@@ -273,6 +367,7 @@ export async function importArchiveSongs(db, input) {
       bytes: c.entry.data,
       voiceBank: pair ? pair.bytes : null,
       voiceBankSource: pair ? pair.sysDiskName : null,
+      pcmFiles,
     };
   });
   const { addedCount, unchangedCount } = await saveSongs(db, inputs);
@@ -287,16 +382,37 @@ export async function listSongs(db) {
   return all ?? [];
 }
 
-/** @param {IDBDatabase} db @param {string} id */
+/**
+ * 曲を削除する。削除後、その曲だけが参照していたPCM(孤児)をPCMストアから回収する
+ * (やらないと「削除したのに容量が減らない」ことになる。共有PCMを参照する他の曲が
+ * 残っていれば、そのPCMは消さない)。
+ * @param {IDBDatabase} db @param {string} id
+ */
 export async function deleteSong(db, id) {
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  await promisifyRequest(tx.objectStore(STORE_NAME).delete(id));
+  const tx = db.transaction([STORE_NAME, PCM_STORE_NAME], 'readwrite');
+  const songStore = tx.objectStore(STORE_NAME);
+  const pcmStore = tx.objectStore(PCM_STORE_NAME);
+  const target = await promisifyRequest(songStore.get(id));
+  await promisifyRequest(songStore.delete(id));
+  const targetRefs = target?.pcmRefs ?? [];
+  if (targetRefs.length === 0) return;
+  const remaining = await promisifyRequest(songStore.getAll());
+  const stillUsedHashes = new Set();
+  for (const song of remaining ?? []) {
+    for (const ref of song.pcmRefs ?? []) stillUsedHashes.add(ref.hash);
+  }
+  for (const ref of targetRefs) {
+    if (!stillUsedHashes.has(ref.hash)) {
+      await promisifyRequest(pcmStore.delete(ref.hash));
+    }
+  }
 }
 
 /** @param {IDBDatabase} db */
 export async function clearAllSongs(db) {
-  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const tx = db.transaction([STORE_NAME, PCM_STORE_NAME], 'readwrite');
   await promisifyRequest(tx.objectStore(STORE_NAME).clear());
+  await promisifyRequest(tx.objectStore(PCM_STORE_NAME).clear());
 }
 
 // --- アルバム/トラック表示 -------------------------------------------------------------

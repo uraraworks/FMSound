@@ -44,6 +44,7 @@ import { readFileSync } from 'node:fs';
 import {
   openLibraryDb, saveSong, listSongs, deleteSong, clearAllSongs,
   computeSongId, hashBytes, groupSongsIntoAlbums, importArchiveSongs,
+  loadPcmFilesForSong, DB_NAME, PCM_STORE_NAME,
 } from '../net/library.js';
 import { parseTrackList, albumGroupPathFor, albumLabelFor, resolveTrackInfo } from '../net/album-info.js';
 
@@ -127,6 +128,7 @@ class FakeDatabase {
   constructor() {
     this.stores = new Map(); // name -> Map(key->value)
     this.keyPaths = new Map(); // name -> keyPath
+    this.version = 0; // DBバージョン昇格(1→2)検証用(2026-08-18拡張)。
   }
   get objectStoreNames() {
     const stores = this.stores;
@@ -149,18 +151,47 @@ class FakeDatabase {
   }
 }
 
+// 【拡張・2026-08-18】DB_VERSION 1→2昇格の検証のため、open()にバージョン番号を渡せる
+// ようにした(以前は常に「初回だけonupgradeneeded」という単純化だった)。
+// requestedVersion > db.version のときだけonupgradeneededを呼び、その後db.versionを
+// 更新する(実IndexedDBの「onupgradeneededはoldVersion<newVersionのときだけ発火する」
+// 仕様を最小限模す)。
 class FakeIDBFactory {
   constructor() {
     this.databases = new Map();
   }
-  open(name) {
+  /**
+   * テスト専用: net/library.jsのopenLibraryDb()を経由せず、「昇格前(DB_VERSION=1)の
+   * 既存DB」を直接組み立てて登録する(旧DBからの昇格で曲が消えないことを検証するため。
+   * net/library.js自体は無改変のまま検証する、という方針を保つため、この組み立てヘルパは
+   * net/library.jsが公開しているDB_NAME/PCM_STORE_NAME定数とkeyPath('id'/'hash'、
+   * net/library.jsのcreateObjectStore呼び出しと同じ値)だけを使う)。
+   * @param {string} dbName @param {object[]} songs 事前に入れておく曲レコード配列
+   */
+  seedLegacyV1Database(dbName, songs) {
+    const db = new FakeDatabase();
+    db.version = 1;
+    const store = db.createObjectStore('fmsound-songs', { keyPath: 'id' });
+    for (const song of songs) store.put(song);
+    this.databases.set(dbName, db);
+    return db;
+  }
+  open(name, version) {
     const req = new FakeRequest();
-    const isNew = !this.databases.has(name);
-    if (isNew) this.databases.set(name, new FakeDatabase());
-    const db = this.databases.get(name);
+    const requestedVersion = version ?? 1;
+    let db = this.databases.get(name);
+    if (!db) {
+      db = new FakeDatabase();
+      this.databases.set(name, db);
+    }
+    const oldVersion = db.version;
+    const needsUpgrade = requestedVersion > oldVersion;
     setTimeout(() => {
       req.result = db;
-      if (isNew && req.onupgradeneeded) req.onupgradeneeded({ target: req });
+      if (needsUpgrade) {
+        db.version = requestedVersion;
+        if (req.onupgradeneeded) req.onupgradeneeded({ target: req, oldVersion, newVersion: requestedVersion });
+      }
       if (req.onsuccess) req.onsuccess({ target: req });
     }, 0);
     return req;
@@ -499,6 +530,221 @@ async function testBulkArchiveImport() {
     `${synthAlbum?.songs.length ?? 0}/${candidates.length}`);
 }
 
+// --- (k) PMDのPCM(pcmRefs/PCM_STORE_NAME)の共有保存・解決・削除時の孤児回収 ------------
+//
+// 不具合(利用者報告): 書庫を開いた直後はcollectPmdPcmFiles()が拾ったPCMが
+// writeSongWithPcm()と同居して鳴るが、importArchiveSongs()は曲の生バイト列だけを
+// 保存しておりPCMを保存していなかった。そのため曲ライブラリから選び直すとPCM無しで
+// 再生され無音になる。
+//
+// バイト列の比較は必ず内容(byte-for-byte)で行う(長さの比較へ弱めない、利用者指示)。
+
+function bytesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** 決定的な合成PCMバイト列を作る(実データを使わず、テストごとに違う内容にする)。 @param {number} seed @param {number} len */
+function makeSyntheticPcm(seed, len) {
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = (seed * 31 + i * 7) & 0xff;
+  return bytes;
+}
+
+async function testPmdPcmSharing() {
+  const sharedPcm = makeSyntheticPcm(1, 4096); // 実データのPPZ8バンク(数百KB〜数MB)を模した合成データ(サイズは検証時間短縮のため縮小)
+  const pcmName = 'SHARED.PPC';
+
+  // 2曲が同じディレクトリの同じPCMを参照する書庫を合成する。
+  const entries = [
+    { name: 'DISK/song01.M', data: new TextEncoder().encode('song01-body') },
+    { name: 'DISK/song02.M', data: new TextEncoder().encode('song02-body') },
+    { name: `DISK/${pcmName}`, data: sharedPcm },
+  ];
+  const candidates = [
+    { driver: 'pmd', displayName: 'song01.M', entry: entries[0] },
+    { driver: 'pmd', displayName: 'song02.M', entry: entries[1] },
+  ];
+  const archiveInput = { driver: 'pmd', url: 'https://example.com/pcmtest.zip', entries, archiveLabel: 'pcmtest.zip', candidates };
+
+  // --- [陽性対照] PCMを保存しない旧挙動(collectPmdPcmFiles()の結果をpcmFilesとして
+  // 渡さない = 修正前のimportArchiveSongs())では、ライブラリ選択後の解決が空になり
+  // (=無音になる症状そのもの)、この後の本題検査が実際にFAILすることを先に確認する。
+  {
+    const fakeIdb = new FakeIDBFactory();
+    const db = await openLibraryDb(fakeIdb);
+    // 修正前のimportArchiveSongs()を模す: pcmFilesを一切渡さずsaveSongsする。
+    const brokenInputs = candidates.map((c) => ({
+      driver: 'pmd',
+      fileName: c.displayName,
+      title: null,
+      composer: null,
+      trackNumber: null,
+      origin: { kind: 'url', url: archiveInput.url, archiveName: 'pcmtest.zip', groupPath: null, entryPath: c.entry.name },
+      bytes: c.entry.data,
+      // pcmFiles省略(=修正前の実装が持っていなかったフィールド)。
+    }));
+    for (const input of brokenInputs) await saveSong(db, input);
+    const brokenSongs = await listSongs(db);
+    const brokenSong1 = brokenSongs.find((s) => s.fileName === 'song01.M');
+    const resolvedBroken = await loadPcmFilesForSong(db, brokenSong1);
+    check(
+      '陽性対照: PCMを保存しない旧挙動では、ライブラリ選び直し後のPCM解決が空になる(=無音になる症状そのもの)',
+      resolvedBroken.length === 0,
+      `resolved=${resolvedBroken.length}件(期待は1件のSHARED.PPCとの不一致)`,
+    );
+  }
+
+  // --- 本題: 現在の実装 ------------------------------------------------------------
+  const fakeIdb = new FakeIDBFactory();
+  const db = await openLibraryDb(fakeIdb);
+  await importArchiveSongs(db, archiveInput);
+  const songs = await listSongs(db);
+  const song1 = songs.find((s) => s.fileName === 'song01.M');
+  const song2 = songs.find((s) => s.fileName === 'song02.M');
+  check('取り込んだ2曲がともにpcmRefsを1件持つ',
+    Boolean(song1) && Boolean(song2) && song1.pcmRefs?.length === 1 && song2.pcmRefs?.length === 1,
+    JSON.stringify({ ref1: song1?.pcmRefs, ref2: song2?.pcmRefs }));
+
+  // [本体] 元と同一のバイト列が返る(長さだけでなく内容で比較)。
+  const resolved1 = await loadPcmFilesForSong(db, song1);
+  check('loadPcmFilesForSong(): 元と同一のバイト列が返る(内容比較)',
+    resolved1.length === 1 && resolved1[0].name === pcmName && bytesEqual(resolved1[0].data, sharedPcm),
+    `件数=${resolved1.length}`);
+
+  // [本体] 同じPCMを参照する曲を複数取り込んでも、PCMストアの実体は1件だけ。
+  check('同じPCMを参照する2曲を取り込んでもPCMストアの実体は1件だけ(重複保存していない)',
+    db.stores.get(PCM_STORE_NAME).size === 1, `件数=${db.stores.get(PCM_STORE_NAME).size}`);
+
+  // [本体] 同名で中身が違うPCM(JSM/MF88PCM.PPC・YD/MF88PCM.PPC相当)が曲ごとに正しく
+  // 別のバイト列に解決される(コミット6de2839の同名解決規則: 曲と同じディレクトリを優先)。
+  const pcmA = makeSyntheticPcm(2, 512);
+  const pcmB = makeSyntheticPcm(3, 512);
+  check('陽性対照: 合成した2つの同名PCMは内容が違う(検査自体が意味を持つことの確認)', !bytesEqual(pcmA, pcmB));
+  const dupEntries = [
+    { name: 'JSM/song.M', data: new TextEncoder().encode('jsm-song') },
+    { name: 'JSM/MF88PCM.PPC', data: pcmA },
+    { name: 'YD/song.M', data: new TextEncoder().encode('yd-song') },
+    { name: 'YD/MF88PCM.PPC', data: pcmB },
+  ];
+  const dupCandidates = [
+    { driver: 'pmd', displayName: 'jsm-song.M', entry: dupEntries[0] },
+    { driver: 'pmd', displayName: 'yd-song.M', entry: dupEntries[2] },
+  ];
+  const dupFakeIdb = new FakeIDBFactory();
+  const dupDb = await openLibraryDb(dupFakeIdb);
+  await importArchiveSongs(dupDb, { driver: 'pmd', url: 'https://example.com/dup.zip', entries: dupEntries, archiveLabel: 'dup.zip', candidates: dupCandidates });
+  const dupSongs = await listSongs(dupDb);
+  const jsmSong = dupSongs.find((s) => s.fileName === 'jsm-song.M');
+  const ydSong = dupSongs.find((s) => s.fileName === 'yd-song.M');
+  const jsmResolved = await loadPcmFilesForSong(dupDb, jsmSong);
+  const ydResolved = await loadPcmFilesForSong(dupDb, ydSong);
+  check('同名PCM(JSM/MF88PCM.PPC)は曲ごとに正しく別のバイト列(自ディレクトリのもの)に解決される',
+    jsmResolved.length === 1 && bytesEqual(jsmResolved[0].data, pcmA) && !bytesEqual(jsmResolved[0].data, pcmB),
+    `jsm.hash=${jsmSong?.pcmRefs?.[0]?.hash}`);
+  check('同名PCM(YD/MF88PCM.PPC)は曲ごとに正しく別のバイト列(自ディレクトリのもの)に解決される',
+    ydResolved.length === 1 && bytesEqual(ydResolved[0].data, pcmB) && !bytesEqual(ydResolved[0].data, pcmA),
+    `yd.hash=${ydSong?.pcmRefs?.[0]?.hash}`);
+  check('同名でも中身が違うPCMはPCMストアで別レコード扱い(ハッシュが異なる)',
+    jsmSong.pcmRefs[0].hash !== ydSong.pcmRefs[0].hash);
+
+  // [本体] deleteSong(): その曲だけが参照していたPCMは消え、他の曲がまだ参照している
+  // PCMは残る。
+  check('削除前: PCMストアに1件ある(song1/song2が共有)', db.stores.get(PCM_STORE_NAME).size === 1);
+  await deleteSong(db, song1.id);
+  check('song1だけを削除しても、song2がまだ参照しているPCMは残る(孤児ではない)',
+    db.stores.get(PCM_STORE_NAME).size === 1, `件数=${db.stores.get(PCM_STORE_NAME).size}`);
+  await deleteSong(db, song2.id);
+  check('参照する曲が0件になったPCMは孤児として回収される(削除後にストレージが減る)',
+    db.stores.get(PCM_STORE_NAME).size === 0, `件数=${db.stores.get(PCM_STORE_NAME).size}`);
+
+  // [本体] clearAllSongs(): PCMストアも空になる。
+  await importArchiveSongs(dupDb, { driver: 'pmd', url: 'https://example.com/dup.zip', entries: dupEntries, archiveLabel: 'dup.zip', candidates: dupCandidates });
+  check('clearAllSongs()前: PCMストアに2件(pcmA/pcmB)ある', dupDb.stores.get(PCM_STORE_NAME).size === 2);
+  await clearAllSongs(dupDb);
+  check('clearAllSongs(): PCMストアも空になる', dupDb.stores.get(PCM_STORE_NAME).size === 0);
+
+  // [本体] 参照先PCMが存在しない場合、loadPcmFilesForSong()はその要素を落として残りを
+  // 返す(例外を投げて再生自体を止めない)。
+  const missingFakeIdb = new FakeIDBFactory();
+  const missingDb = await openLibraryDb(missingFakeIdb);
+  await importArchiveSongs(missingDb, archiveInput);
+  const missingSongs = await listSongs(missingDb);
+  const missingSong1 = missingSongs.find((s) => s.fileName === 'song01.M');
+  const missingHash = missingSong1.pcmRefs[0].hash;
+  missingDb.stores.get(PCM_STORE_NAME).delete(missingHash); // DBが部分的に消えた状況を模す
+  let threw = false;
+  let resolvedAfterLoss;
+  try {
+    resolvedAfterLoss = await loadPcmFilesForSong(missingDb, missingSong1);
+  } catch {
+    threw = true;
+  }
+  check('参照先PCMが無い場合、loadPcmFilesForSong()は例外を投げずその要素を落とす(空データで埋めない)',
+    !threw && Array.isArray(resolvedAfterLoss) && resolvedAfterLoss.length === 0,
+    `threw=${threw}, resolved=${JSON.stringify(resolvedAfterLoss)}`);
+
+  // [本体] DB_VERSION 1で作った既存DB(曲レコードあり・PCMストアなし)を開いたとき、
+  // 曲が消えずに新ストアが作られること(利用者からの実際の退行報告を避けるための検証)。
+  const legacyFakeIdb = new FakeIDBFactory();
+  const legacySong = {
+    schemaVersion: 1,
+    id: 'local:legacy.muc',
+    driver: 'mucom',
+    fileName: 'legacy.muc',
+    title: null,
+    composer: null,
+    trackNumber: null,
+    origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    bytes: new TextEncoder().encode('A T120 cdefg'),
+    voiceBank: null,
+    voiceBankSource: null,
+    contentHash: hashBytes(new TextEncoder().encode('A T120 cdefg')),
+    addedAt: 1000,
+    updatedAt: 1000,
+    // pcmRefsフィールド自体を持たない(v1のレコード形そのもの)。
+  };
+  const legacyDbRaw = legacyFakeIdb.seedLegacyV1Database(DB_NAME, [legacySong]);
+  check('前提: フェイクDBの直接組み立て時点でPCMストアはまだ存在しない(v1相当)',
+    !legacyDbRaw.objectStoreNames.contains(PCM_STORE_NAME));
+  const upgradedDb = await openLibraryDb(legacyFakeIdb);
+  const songsAfterUpgrade = await listSongs(upgradedDb);
+  check('DB_VERSION 1→2への昇格後も既存の曲レコードは消えない',
+    songsAfterUpgrade.length === 1 && songsAfterUpgrade[0].id === 'local:legacy.muc',
+    `件数=${songsAfterUpgrade.length}`);
+  check('DB_VERSION 1→2への昇格でPCMストアが新設される',
+    upgradedDb.objectStoreNames.contains(PCM_STORE_NAME));
+  // 昇格後のDBでも通常のCRUDが機能すること(新ストアが使い物になることの確認)。
+  const afterUpgradeSave = await saveSong(upgradedDb, {
+    driver: 'pmd', fileName: 'new-after-upgrade.M', title: null, composer: null, trackNumber: null,
+    origin: { kind: 'local', url: null, archiveName: null, groupPath: null, entryPath: null },
+    bytes: new TextEncoder().encode('new-song-body'),
+    pcmFiles: [{ name: 'X.PPC', data: makeSyntheticPcm(9, 128) }],
+  });
+  const songsAfterUpgradeSave = await listSongs(upgradedDb);
+  check('昇格後のDBでも新規保存(PCM付き)が正常に機能する',
+    songsAfterUpgradeSave.length === 2 && upgradedDb.stores.get(PCM_STORE_NAME).size === 1,
+    `id=${afterUpgradeSave}`);
+}
+
+// --- (l) [結線] html/pmd-app.jsのライブラリ選択経路が解決したPCMをplayBytes()へ渡すこと ---
+// (文字列検査。DOM無しでpmd-app.js全体を評価するのは重いため、他ファイルと同じく
+// tools/verify_pmd_pcm_missing.mjs等の作法(文字列検査)に倣う)。
+
+function testPmdAppLibraryWiring() {
+  const src = readFileSync(new URL('../html/pmd-app.js', import.meta.url), 'utf-8');
+  check('html/pmd-app.js: loadPcmFilesForSong()をimportしている',
+    /import\s*\{\s*loadPcmFilesForSong\s*\}\s*from\s*['"]\.\/net\/library\.js['"]/.test(src));
+  const onSelectMatch = /onSelect:\s*async\s*\(song\)\s*=>\s*\{[\s\S]*?\n\s{4}\},/.exec(src);
+  check('html/pmd-app.js: library-panelのonSelectブロックが見つかる', Boolean(onSelectMatch));
+  const onSelectBody = onSelectMatch ? onSelectMatch[0] : '';
+  check('html/pmd-app.js: onSelect内でloadPcmFilesForSong()を呼んでいる',
+    /loadPcmFilesForSong\(/.test(onSelectBody));
+  check('html/pmd-app.js: onSelect内で解決したpcmFilesをplayBytes()へ渡している',
+    /playBytes\(\s*song\.bytes\s*,\s*song\.fileName\s*,\s*undefined\s*,\s*pcmFiles\s*\)/.test(onSelectBody));
+}
+
 // --- 実行 --------------------------------------------------------------------------
 
 await testStorageLayer();
@@ -508,6 +754,8 @@ testGroupSongsIntoAlbums();
 testParseTrackListSynthetic();
 testAlbumLabelExtensionStrip();
 await testBulkArchiveImport();
+await testPmdPcmSharing();
+testPmdAppLibraryWiring();
 await testRealArchiveIfAvailable();
 
 console.log('---');

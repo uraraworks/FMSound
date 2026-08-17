@@ -70,6 +70,12 @@ import { createLibraryPanel } from './ui/library-panel.js';
 // fmplayer_fileread()のディレクトリ走査(opendir("")失敗)でPCMが絶対に見つからない
 // (net/pmd-pcm.js冒頭コメント参照)ため、曲を仮想FSへ書き込む経路は必ずこれを通す。
 import { collectPmdPcmFiles, collectUnsupportedPmdPcmFiles, describePmdPcmStatus, writeSongWithPcm } from './net/pmd-pcm.js';
+// 曲ライブラリから選び直したときにPCM(pcmRefs、net/library.js)を解決するための窓口
+// (2026-08-18新設)。以前はimportArchiveSongs()が拾ったPCMが曲レコードに保存されて
+// おらず、ライブラリ選択から再生するとPCM無し(ADPCM/PPZ8が無音)になっていた不具合の
+// 修正。net-load.jsは薄いラッパーに徹する設計方針のため(net-load.js冒頭コメント参照)、
+// DB本体の読み出しはnet/library.jsを直接importする(net-load.jsのsaveSong等と同じ経路)。
+import { loadPcmFilesForSong } from './net/library.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -215,12 +221,22 @@ export async function init(ctx) {
   const libraryPanel = createLibraryPanel({
     driver: 'pmd',
     getDb: getLibraryDb,
-    onSelect: (song) => {
+    onSelect: async (song) => {
       // 修正1: ライブラリから選んだ曲もURL由来ではないので、残っている
       // `?mml=` はここで取り除く(net-load.js clearLoadedUrlFromAddressBar()参照)。
       clearLoadedUrlFromAddressBar();
       clearShareFragmentFromAddressBar();
-      playBytes(song.bytes, song.fileName);
+      // 不具合修正(2026-08-18): 曲ライブラリから選び直すとPCM(ADPCM/PPZ8)が無音に
+      // なっていた。書庫を開いた時点ではcollectPmdPcmFiles()が拾ったPCMがplayBytes()の
+      // pcmFilesへ渡っていたが、importArchiveSongs()側はそのPCMを保存しておらず、
+      // ライブラリ選択(=このonSelect)経由の再生だけPCM無しで再生していた。
+      // song.pcmRefs(net/library.js、内容ハッシュで共有される別ストアへの参照)を
+      // 曲データと同じDBから解決してplayBytes()へ渡す。参照先が見つからなくても
+      // loadPcmFilesForSong()は例外を投げず該当分を落として返す(=既存の
+      // describePmdPcmStatus()によるPCM不足案内が自然に出る。新しい文言は作らない)。
+      const db = await getLibraryDb();
+      const pcmFiles = db ? await loadPcmFilesForSong(db, song) : [];
+      playBytes(song.bytes, song.fileName, undefined, pcmFiles);
     },
   });
   // 「曲を開く」メニュー(ui/open-menu.js)のポップオーバー制御。btnLibrary側の
