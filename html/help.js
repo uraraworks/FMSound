@@ -10,7 +10,7 @@
 // 本文そのもの(長文)は辞書に入れず、html/help.html側に2言語ぶん並べて持たせる
 // (利用者指示: 段落ごとに辞書キーを切ると辞書が肥大するため)。
 
-import { initLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from '../ui/i18n.js';
+import { initLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from './ui/i18n.js';
 
 const lang = initLang();
 document.getElementById('htmlRoot').lang = lang;
