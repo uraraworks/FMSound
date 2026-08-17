@@ -85,6 +85,31 @@ if (NOT RHYTHM_PATH_PATCH_ALREADY_APPLIED EQUAL 0)
     endif()
 endif()
 
+# CMucom::GetTextLine()(cmucom.cpp)がCMucomメンバ配列linebuf[512]へ範囲チェック
+# 無しに書き込んでおり、3種類のMMLを跨いで繰り返しコンパイルすると(実測440回目)
+# メモリ破壊でクラッシュする不具合への対症療法。原因(なぜ終端されていないデータを
+# 踏むか)は未解明のまま、範囲チェックだけを足して「メモリ破壊」を「行の切り詰め」
+# という安全な壊れ方に変える。詳細はpatches/0005-cmucom-gettextline-bounds.patchの
+# コメントとdocs/参照。0001-0003と同じ冪等適用の仕組み。
+set(GETTEXTLINE_BOUNDS_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/0005-cmucom-gettextline-bounds.patch")
+execute_process(
+    COMMAND git apply --reverse --check "${GETTEXTLINE_BOUNDS_PATCH}"
+    WORKING_DIRECTORY "${MUCOM88_DIR}"
+    RESULT_VARIABLE GETTEXTLINE_BOUNDS_PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET)
+if (NOT GETTEXTLINE_BOUNDS_PATCH_ALREADY_APPLIED EQUAL 0)
+    execute_process(
+        COMMAND git apply "${GETTEXTLINE_BOUNDS_PATCH}"
+        WORKING_DIRECTORY "${MUCOM88_DIR}"
+        RESULT_VARIABLE GETTEXTLINE_BOUNDS_PATCH_APPLY_RESULT)
+    if (NOT GETTEXTLINE_BOUNDS_PATCH_APPLY_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "0005-cmucom-gettextline-bounds.patch を ${MUCOM88_DIR} に適用できませんでした。"
+            "upstream/MucomWeb/mucom88/src/cmucom.cpp が想定と異なる可能性があります。"
+            "手動確認してください（警告で済ませず失敗させています）。")
+    endif()
+endif()
+
 # #voice(外部音色バンク)対応。CompileMML()がProcessHeader()を呼ばないと
 # CMucom::Compile()のGetInfoBufferByName("voice")が常に空を見て#voiceタグが
 # 無視される(詳細はpatches/0004-compilemml-processheader.patchのコメントと

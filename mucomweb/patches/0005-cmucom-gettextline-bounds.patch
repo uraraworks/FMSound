@@ -1,0 +1,151 @@
+# FMSound patch: stop CMucom::GetTextLine() / CMucom::strpick_spc() from
+# writing past their fixed-size buffers.
+#
+# Why (symptom, measured 2026-08-17): repeatedly calling compileMML() with
+# 3 different MML sources rotated in sequence (a "new file" template, a
+# library sample, and a share-link-like source) crashes the wasm module --
+# on a headless repro harness this reliably happened at the 440th call
+# (tools/verify_mucom_repeat_compile_crash.mjs). A real-device report hit
+# what looked like the same crash after a much shorter, different operation
+# sequence (new/play/stop, library-load/stop, new/play/stop, url-paste/
+# play/stop, library-load). A -sSAFE_HEAP=1 debug build pinpointed the
+# crash inside CMucom::Play() -> LoadFMVoiceFromTAG() -> GetInfoBufferByName()
+# -> GetTextLine()/strpick_spc(), both of which live in cmucom.cpp and
+# operate on the same pair of fixed CMucom member buffers:
+#   unsigned char linebuf[MUCOM_LINE_MAXSTR];   // 512 bytes (cmucom.h)
+#   char infoname[64];                           // 64 bytes (cmucom.h)
+#
+# TWO independent, real bugs were found in this pair of functions, and this
+# patch fixes both:
+#
+# 1) CMucom::GetTextLine() writes into `linebuf` one byte at a time with NO
+#    bounds check at all, stopping only when it hits a line terminator
+#    (LF/CR/0) in the source text. If handed text without a terminator
+#    within 512 bytes, it walks straight past the end of the array.
+#
+# 2) CMucom::strpick_spc() (called right after GetTextLine(), to pull a tag
+#    name out of `linebuf` into `infoname`) has an inner loop:
+#        while (mulchr > 0) { *dst++ = *p++; len++; }
+#    that NEVER DECREMENTS `mulchr`. `mulchr` is 2 whenever the byte being
+#    copied is a Shift-JIS multi-byte lead byte. Once that inner loop is
+#    entered with mulchr==2, it never exits on its own (`mulchr` stays 2
+#    forever) and the outer loop's `len >= strmax` bound is never reached
+#    either, because control never returns to the outer loop to check it.
+#    The loop just keeps copying forward -- `dst` (the 64-byte `infoname`
+#    buffer) and `p` both walk off the end of their objects and into
+#    unrelated heap memory until a wasm bounds trap aborts the process.
+#    This was confirmed directly: an instrumented debug build showed `dst`
+#    traveling more than 600KB past `infoname` in the crashing call, from
+#    a single `mulchr` value, before the trap fired. This is almost
+#    certainly the actual proximate cause of the crash: it only triggers
+#    when a Shift-JIS multi-byte character (e.g. a Japanese comment/title)
+#    ends up as (or before) the first byte of whatever text
+#    GetInfoBufferByName()/strpick_spc() is scanning as a candidate tag
+#    name, which is plausibly why mixing multiple MML sources (some with
+#    Japanese text in tag-adjacent positions, some without) was needed to
+#    reproduce it, rather than any single source repeated alone.
+#
+# Bug (1) alone does not explain the crash (verified: patching only
+# GetTextLine() still crashed at the same iteration, in strpick_spc(), once
+# instrumented). Bug (2) is very likely sufficient to explain the crash by
+# itself. Both are fixed here because they sit in the same tag-parsing
+# call chain this investigation is about, both are add-only bounds/loop
+# fixes with no behavior change for well-formed input, and leaving (1)
+# unfixed would still leave GetTextLine() free to write past linebuf for
+# any future caller that hits it a different way.
+#
+# WHY THIS CRASHES ONLY AFTER MANY REPEATED COMPILES, AND ANY DEEPER "WHY"
+# ABOUT WHICH TAG CONTENT TRIGGERS strpick_spc'S MULTI-BYTE PATH, REMAINS
+# UNDERSTOOD ONLY AT THE LEVEL DESCRIBED ABOVE -- NOT FULLY ROOT-CAUSED.
+# In particular it is not yet confirmed exactly which field/source text
+# supplies the multi-byte lead byte that strpick_spc() trips over, nor
+# whether CMemBuf (Put/PutStr/GetBuffer/GetSize) has any separate off-by-one
+# that also contributes. See docs/ for the fuller investigation notes and
+# what's left to check.
+#
+# Scope of the change itself:
+#  - GetTextLine(): add a `mptr < MUCOM_LINE_MAXSTR - 1` guard before each
+#    of the two `linebuf[mptr++] = ...` write sites and the final null
+#    terminator write. For any line that already fit within 512 bytes (the
+#    normal case, verified against the existing verify_*.mjs suite and
+#    real sample/library MML), this produces byte-for-byte identical output
+#    to before the patch. When a line doesn't fit, it is now truncated to
+#    511 bytes + a null terminator instead of overrunning, and a
+#    `#GetTextLine: line truncated to 511 bytes.` message is emitted
+#    through the existing PRINTF/vm->Msgf channel so truncation is visible.
+#  - strpick_spc(): restore the missing `mulchr--;` (a straightforward
+#    correctness fix -- the loop already intended to decrement mulchr each
+#    pass, per the `while (mulchr > 0)` condition) and additionally add a
+#    `len < strmax` guard to the same loop so it can never write past
+#    `dest` even if handed an unexpected mulchr value in the future. Both
+#    changes are no-ops for the common case where a tag name is plain
+#    ASCII (mulchr==1 the whole way through).
+#
+# Applied automatically by mucomweb/CMakeLists.txt at build time (same
+# idempotent apply-if-not-applied mechanism as 0001/0002/0003).
+#
+# Apply against upstream/MucomWeb/mucom88 (nested submodule at
+# upstream/MucomWeb/mucom88), e.g.:
+#   git -C upstream/MucomWeb/mucom88 apply mucomweb/patches/0005-cmucom-gettextline-bounds.patch
+diff --git a/src/cmucom.cpp b/src/cmucom.cpp
+index afecb18..753077b 100644
+--- a/src/cmucom.cpp
++++ b/src/cmucom.cpp
+@@ -81,9 +81,21 @@ int CMucom::strpick_spc(char *target, char *dest, int strmax)
+ 			len++;
+ 			continue;
+ 		}
+-		while (mulchr > 0) {
++		// FMSound patch (mucomweb/patches/0005-cmucom-gettextline-bounds.patch):
++		// the upstream loop here never decremented `mulchr`, so once a
++		// multi-byte (SJIS) lead byte was seen this became an infinite copy
++		// that ignored `strmax`/`len` entirely and walked `dst` (the fixed
++		// 64-byte `infoname` member) and `p` forward without bound until a
++		// wasm out-of-bounds trap. Confirmed by instrumented debug build:
++		// dst was observed to travel >600KB past infoname before crashing
++		// (see patch file header comment for the investigation this
++		// belongs to). Restoring the decrement fixes the runaway; the
++		// `len < strmax` guard is added as well so this loop can never
++		// write past `dest` even if handed an unexpected mulchr value.
++		while (mulchr > 0 && len < strmax) {
+ 			*dst++ = *p++;
+ 			len++;
++			mulchr--;
+ 		}
+ 	}
+ 	*dst++ = 0;
+@@ -1015,18 +1027,32 @@ const char *CMucom::GetTextLine(const char *text)
+ 		}
+ 		if (a1 == 9) {					// TAB->space
+ 			a1 = 32;
+-			linebuf[mptr++] = a1;
++			// FMSound patch (mucomweb/patches/0005-cmucom-gettextline-bounds.patch):
++			// bounds check before writing into the fixed-size linebuf. See the
++			// patch file header comment for why this exists.
++			if (mptr < MUCOM_LINE_MAXSTR - 1) linebuf[mptr++] = a1;
+ 			p++;
+ 			continue;
+ 		}
+
+ 		mulchr = GetMultibyteCharacter(p);
+ 		while (mulchr>0) {
+-			linebuf[mptr++] = *p++;
++			// FMSound patch (mucomweb/patches/0005-cmucom-gettextline-bounds.patch):
++			// same bounds check as above, applied per byte of the (possibly
++			// multi-byte) character so a character straddling the limit cannot
++			// write partially past the end either.
++			if (mptr < MUCOM_LINE_MAXSTR - 1) linebuf[mptr++] = *p;
++			p++;
+ 			mulchr--;
+ 		}
+
+ 	}
++	if (mptr >= MUCOM_LINE_MAXSTR - 1) {
++		// FMSound patch (mucomweb/patches/0005-cmucom-gettextline-bounds.patch):
++		// the line was truncated to fit linebuf; report it so this is visible
++		// instead of silently losing data (helps future root-cause work).
++		PRINTF("#GetTextLine: line truncated to %d bytes.\r\n", MUCOM_LINE_MAXSTR - 1);
++	}
+ 	linebuf[mptr++] = 0;
+ 	return (const char *)p;
+ }
