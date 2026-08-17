@@ -124,6 +124,25 @@
     </div>
   </section>
 
+  <section class="help-section" data-help-section="share">
+    <div data-lang="ja" data-help-section="share">
+      <h2>曲を共有する</h2>
+      <p>ツールバーの「リンクをコピー」ボタン(鎖のアイコン)を押すと、いま編集中の曲そのものを含んだURLがクリップボードにコピーされます。どこにもアップロードしません。曲データはURLの<code>#</code>以降(フラグメント)に載せているだけで、フラグメントはブラウザがサーバーへ送らないため、GitHub Pagesのようなサーバーレスのホスティングのままで完結します。</p>
+      <p>ボタンの隣には、いまのリンクの文字数(例 <code>2344 / 4000</code>)とゲージが常に表示されます。打鍵のたびではなくコンパイル&再生のタイミングで集計し、編集中(未反映の変更がある間)は「未集計」と表示されます。共有ボタンを押した瞬間には必ず再集計されます。</p>
+      <p><strong>上限は4,000字です。</strong> 超えるとボタンが無効化され、何字ぶん超えているかが表示されます。この上限がある理由は、Xなどが4,000字を超えるURLを通常のリンクとして扱わないためです(超えるとリンクとして扱われず、投稿の文字数を大きく消費してしまいます)。</p>
+      <p>受け取った側は、リンクを開くだけで曲が読み込まれます(同じタブのアドレスバーに貼り付けても読み込まれます)。共有できるのは曲(MMLテキスト)1本だけで、ディスクイメージは対象外です。</p>
+      <p>MUCOM88で、曲がディスク固有の外部音色バンクを使っている場合は、受け取った側で音色が変わります(共有時にUIが警告します)。詳しくは下記の「制約と注意」を参照してください。</p>
+    </div>
+    <div data-lang="en" data-help-section="share">
+      <h2>Sharing a song</h2>
+      <p>The toolbar's "Copy link" button (the chain icon) copies a URL that contains the song you're currently editing, right in the link itself. Nothing is uploaded anywhere. The song data lives in the URL's fragment (the part after <code>#</code>), and browsers never send the fragment to a server, so this stays fully compatible with serverless hosting like GitHub Pages.</p>
+      <p>Next to the button, a counter (e.g. <code>2344 / 4000</code>) and a gauge always show the current link's length. It's recalculated at compile & play time rather than on every keystroke, and shows "pending" while there are unplayed edits. Pressing the share button always recalculates it first.</p>
+      <p><strong>The limit is 4,000 characters.</strong> Going over disables the button and shows how many characters over you are. The reason for this limit: services like X don't treat a URL longer than 4,000 characters as a real link (past that, it's counted as plain text instead, eating deeply into the post's character budget).</p>
+      <p>Whoever receives the link just opens it and the song loads (pasting it into the same tab's address bar works too). Only a single song (the MML text) can be shared this way — disk images are not included.</p>
+      <p>For MUCOM88, if the song uses a disk-specific external voice bank, the recipient hears different voices (the UI warns about this when sharing). See "Limitations and caveats" below for details.</p>
+    </div>
+  </section>
+
   <section class="help-section" data-help-section="screen">
     <div data-lang="ja" data-help-section="screen">
       <h2>画面の見かた</h2>
