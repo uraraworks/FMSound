@@ -1,0 +1,120 @@
+{
+  "generatedAt": "2026-08-17T22:15:42.302Z",
+  "cases": {
+    "pmdadpc": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.030303030303030304
+    },
+    "pmdbasic": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.06493506493506493
+    },
+    "pmddet": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.04054054054054054
+    },
+    "pmdgate": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0
+    },
+    "pmdlfo": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.07246376811594203
+    },
+    "pmdmulti": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.08823529411764706
+    },
+    "pmdpan": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.029850746268656716
+    },
+    "pmdporta": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0
+    },
+    "pmdrelv": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0
+    },
+    "pmdssg": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.06944444444444445
+    },
+    "pmdton2": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.03076923076923077
+    },
+    "pmdtone": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.0273972602739726
+    },
+    "pmdtrans": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.0273972602739726
+    },
+    "pmdunimp": {
+      "status": "compile_error",
+      "errorCount": 5,
+      "errorFeatures": [
+        "未対応のパート指定: 'K'",
+        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\b\\c\"",
+        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\h\\s\\h\\t\"",
+        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\s\\t\\c\\b\""
+      ]
+    },
+    "pmdvar": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0
+    },
+    "pmdwhole": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 0,
+      "totalParts": 11,
+      "byteMatchRate": 0.025
+    }
+  }
+}
