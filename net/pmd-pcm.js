@@ -108,6 +108,24 @@ function trimPcmName(name) {
 export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
   const messages = [];
 
+  const p86Names = (unsupportedFiles || [])
+    .filter((f) => f.ext === '.P86')
+    .map((f) => f.name);
+
+  // 実測(2026-08-17, PMD 4.8でコンパイルした曲13本中12本)で確定した事実:
+  // work->pcmname[]は拡張子を含まず8文字・空白詰めで格納される
+  // (fmdriver_common.h fmdriver_fillpcmname())。そのため「PPC不足」として
+  // 表示される名前がPMD86(.P86)の実体と一致することが多い(例: MBE86PCM)。
+  // これは upstream 未実装の .P86 を「.PPCが足りない」と誤案内してしまう
+  // (入れても鳴らない)ため、basenameが一致するスロットは不足メッセージから
+  // 除外し、PMD86未対応メッセージだけを出す。
+  // 一致判定は先頭8文字・大文字小文字無視で行う: pcmnameは8文字で切られるため、
+  // 9文字以上のbasenameは末尾が落ちて比較対象にならない(同じくfillpcmname()仕様)。
+  const p86Bases8 = p86Names.map((n) => n.replace(/\.[^.]*$/, '').slice(0, 8).toUpperCase());
+  function matchesP86(name) {
+    return p86Bases8.includes(name.slice(0, 8).toUpperCase());
+  }
+
   const missingNames = [];
   const ppsNames = [];
   for (const slot of slots || []) {
@@ -119,6 +137,7 @@ export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
       continue;
     }
     if (slot.error) {
+      if (matchesP86(name)) continue; // 実体は.P86(PMD86)。「.PPCが足りない」は誤案内
       const ext = PCM_TYPE_TO_EXT[type] || '';
       missingNames.push(`${name}${ext}`);
     }
@@ -131,9 +150,6 @@ export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
     messages.push({ key: 'pmd.pcm.ppsUnsupported', params: { files: ppsNames.join(', ') } });
   }
 
-  const p86Names = (unsupportedFiles || [])
-    .filter((f) => f.ext === '.P86')
-    .map((f) => f.name);
   if (p86Names.length > 0) {
     messages.push({ key: 'pmd.pcm.p86Unsupported', params: { files: p86Names.join(', ') } });
   }
