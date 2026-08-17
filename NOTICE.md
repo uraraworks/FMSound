@@ -97,11 +97,21 @@ MUCOM88由来のデータ。CC BY-NC-SA 4.0。
   `upstream/MucomWeb/mucom88/src/voiceformat.h` の `MUCOM88_VOICEFORMAT.name[6]` と対応)
 - 生成器: `tools/gen_mucom_voice_names.py`
 
-## `html/rhythm/2608_BD.WAV` ほか5本(MUCOM88リズム(G)パート用の代替波形)
+## `html/rhythm/2608_BD.WAV` ほか5本(MUCOM88・PMD共通、リズム(G)パート用の代替波形)
 
-MUCOM88のリズム(G)パートを鳴らすために同梱している6本のPCMサンプル
+MUCOM88・PMD両方のリズム(G)パートを鳴らすために同梱している6本のPCMサンプル
 (`2608_BD.WAV` / `2608_SD.WAV` / `2608_TOP.WAV` / `2608_HH.WAV` / `2608_TOM.WAV` /
-`2608_RIM.WAV`)。
+`2608_RIM.WAV`)。MUCOM88側はこのWAVをそのまま読み込んで再生する。PMD側は
+音源コア(libopna)がYM2608実機同様のROM形式でしかリズム波形を受け取れないため、
+`tools/gen_rhythm_rom.py` でこのWAVをYM2608リズムROM形式(8KB、ADPCM-A)へ変換し、
+`pmdweb/src/rhythm_rom.c`(このWAVの派生物としてリポジトリに含まれる生成済みソース)
+として `opna_drum_set_rom()` に渡している。変換はリサンプル・トリム・ADPCM-A符号化
+であり、実機ROMから吸い出したデータではないという事実は変わらない(詳細な根拠は
+`tools/gen_rhythm_rom.py` 冒頭のコメント参照)。ROMの各音の領域サイズが固定なため
+元の尺のままでは収まらず、詰めて(トリムして)いる(BD 149→48.4ms / SD 142→69.1ms /
+TOP 653→643.7ms / HH 92→41.4ms / TOM 182→138.2ms / RIM 99→27.5ms)。MUCOM88側は
+WAVを直読みするため尺を詰めておらず、同じ素材でも両エンジンで完全に同一の音には
+ならない。
 
 - 原題: 「YM2608風リズム音源音色データ Ver.2.0」
 - 作者: メモル (Takanori YOSHIMURA)
