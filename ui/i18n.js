@@ -497,6 +497,24 @@ export function computeLangSyncUrl(currentUrl, decidedLang) {
   return currentUrl;
 }
 
+/**
+ * アプリ内ナビゲーション用リンク(html/app.jsのヘルプボタン、html/help.htmlの
+ * 「アプリに戻る」リンク)にだけ使う。「?lang=はURLに足さない」という方針
+ * (このファイル冒頭のコメント参照)は共有される・アドレスバーに残るURL向けであり、
+ * 別ページへ移動した瞬間に表示言語が(記憶にもURLにも無いnavigator.language頼みへ
+ * フォールバックして)食い違うのを防ぐための例外。渡す lang は呼び出し側の
+ * getLang()相当の実効値(記憶 > ?lang= > navigator.languageで決まった結果)であること。
+ * href に既存のクエリが無い前提の単純な連結(このリポジトリ内の呼び出し元は
+ * './help.html' '/index.html' 等、疑問符を含まない相対パスのみ)。
+ * @param {string} href
+ * @param {string} lang
+ * @returns {string}
+ */
+export function withLangParam(href, lang) {
+  const sep = href.includes('?') ? '&' : '?';
+  return `${href}${sep}lang=${lang}`;
+}
+
 let currentLang = null;
 
 /**

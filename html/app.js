@@ -21,7 +21,7 @@ import { setupFullscreen, setupPopover } from './ui/shell.js';
 import { FMSOUND_VERSION_FOOTER, FMSOUND_BUILD_ID } from './ui/version.js';
 import { EXTENSION_DRIVER_TABLE } from './net/song-select.js';
 import { urlBaseName } from './net-load.js';
-import { initLang, getLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from './ui/i18n.js';
+import { initLang, getLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel, withLangParam } from './ui/i18n.js';
 
 // --- 言語決定・固定ラベルの流し込み(他の処理より先に行う。他の初期化コードが
 // 作るボタン等のtitleにt()を使うため)。決定順は(1)記憶した選択(2)?lang=ja/en
@@ -193,7 +193,10 @@ const btnFullscreen = iconButton(ICONS.fullscreen, t('toolbar.fullscreen'));
 // このページ自体ではなく別ページへの遷移なので<a>で作る(iconLink()、rel="noopener"必須)。
 // エンジン固有ボタンより後ろ・ツールバー末尾に置く(「まず触ってから、必要なら読む」の
 // 導線として最後尾が自然、という判断。他ボタンのようにinsertBeforeで割り込まれない)。
-const btnHelp = iconLink(ICONS.help, t('toolbar.help'), './help.html');
+// ?lang=で今表示している言語を引き継ぐ(withLangParam()、共有リンクとは別の例外。
+// ui/i18n.js側のコメント参照)。付けないと、記憶なし+?lang=でアプリを開いた利用者が
+// ヘルプへ移動した瞬間だけnavigator.language頼みの判定に落ちて表示言語が食い違う。
+const btnHelp = iconLink(ICONS.help, t('toolbar.help'), withLangParam('./help.html', lang));
 btnHelp.target = '_blank';
 btnHelp.rel = 'noopener';
 // エンジン固有ボタン(MUCOM88のエディタモード切替等)はこのボタンの手前に挿し込む。

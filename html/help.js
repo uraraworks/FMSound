@@ -10,12 +10,19 @@
 // 本文そのもの(長文)は辞書に入れず、html/help.html側に2言語ぶん並べて持たせる
 // (利用者指示: 段落ごとに辞書キーを切ると辞書が肥大するため)。
 
-import { initLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel } from './ui/i18n.js';
+import { initLang, t, applyStaticI18n, storeLang, otherLang, langToggleLabel, withLangParam } from './ui/i18n.js';
 
 const lang = initLang();
 document.getElementById('htmlRoot').lang = lang;
 document.title = `${t('help.pageTitle')} — FMSound`;
 applyStaticI18n();
+
+// --- 「← アプリに戻る」リンク(html/help.html、上下2箇所)にも今表示している言語を
+// 引き継がせる(withLangParam()、html/app.js側のヘルプボタンと対で直す。ここも
+// 直さないとヘルプ→アプリの往復で今度は逆向きに言語が食い違う)。
+document.querySelectorAll('.help-back a').forEach((a) => {
+  a.href = withLangParam('./index.html', lang);
+});
 
 // --- 本文(data-lang="ja"/"en")の表示切替 ---
 // アプリ本体はキーごとに辞書を引くが、ここは「長文の2言語ブロックを両方DOMに置き、
