@@ -42,6 +42,32 @@
   - **したがって、Google Drive / Dropbox / OneDrive の実リンクでの取得確認は未実施のまま。**
     次にこれらのホストを使う場合は、実物の共有リンクを1本用意したうえで再検証すること。
 
+### 2026-08-18 追記: Dropboxは実リンクでの検証が完了した
+
+`net/fetch.js` に `rewriteDropboxUrl()` を追加し、取得直前に `www.dropbox.com` /
+`dropbox.com` を `dl.dropboxusercontent.com` へ置換する対応を入れた。これに伴い、
+上記「Dropboxは実物の共有リンクでの検証を実施していない」は**解消された**。
+
+- 実物の `/scl/fi/...` 形式のファイル共有リンク1本で、**ブラウザで**以下を確認した:
+  - `www.dropbox.com` のまま: `dl=0` / `dl=1` いずれも `TypeError: Failed to fetch`
+    (ACAOが無くCORSで落ちる)。
+  - `dl.dropboxusercontent.com` へ置換: `200` / `content-type: application/zip` /
+    1,631,914バイト / CORS通過。`dl=1` は不要(付けても同じ)。
+  - アプリ自身の `fetchSongBytes()` を、中継(`NET_PROXY_BASE`)を空にした状態で通し、
+    `dl=0` のままの `www.dropbox.com` 共有リンクから 1,631,914バイトのzipを
+    端から端まで取得できることを確認した。
+- **この判定はブラウザでしか測れない。** curl や Node の `fetch()` はCORSを強制しない
+  実装のため、`www.dropbox.com` のままでも成功してしまい、上の失敗を再現できない
+  (このドキュメントの趣旨である「観測系そのものが壊れていないか」を疑うべき典型例で、
+  curl/Nodeで検証したつもりになると「取れたふり」になる)。
+- 検証したのは `/scl/fi/...` 形式のファイル共有リンク1本のみ。**旧 `/s/...` 形式・
+  フォルダ単位の共有・パスワード付きリンクは未検証**であり、検証済みだと書かない。
+  これらは置換で救えない可能性があるが、直接取得が失敗した場合は従来どおり
+  中継(`NET_PROXY_BASE`)へフォールバックする(中継へ渡すのは利用者が入力した
+  元のURL)ため、中継が設定されていれば従来どおり取得できる想定。
+- **Google Drive / OneDrive は依然として実リンクでの取得確認は未実施のまま**
+  (上記の記述のとおり、変更なし)。
+
 ## 3. その他の既知の限界
 
 - ZIPの日本語ファイル名判定は general purpose flag の bit11(UTF-8フラグ)を見て

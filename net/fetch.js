@@ -18,7 +18,51 @@ export { NET_PROXY_BASE };
 // 即座に案内を出すためのホスト一覧。
 const ONEDRIVE_HOSTS = ['1drv.ms', 'onedrive.live.com', 'sharepoint.com'];
 // 中継を使えば取得できる(=中継未設定時のみ「直接取得できません」と案内する)配信元のホスト一覧。
+// DropboxはrewriteDropboxUrlで直接取得できるようになったが、置換が効かない旧形式の
+// 共有リンク(下記コメント参照)向けの案内としてここには残す。
 const PROXY_CAPABLE_HOSTS = ['drive.google.com', 'docs.google.com', 'www.dropbox.com', 'dropbox.com'];
+// 直接fetchしてもHTML閲覧ページしか返らず、ホスト置換でも救えないため中継が必須の配信元。
+// Dropboxはrewriteドロップボックスurl側の置換で直接取得できるためここには含めない
+// (skipDirectの判定にのみ使う。案内文言の判定はPROXY_CAPABLE_HOSTSを使い続ける)。
+const PROXY_ONLY_HOSTS = ['drive.google.com', 'docs.google.com'];
+
+// Dropbox共有リンクのホスト名一覧(置換対象)と、置換先の直接ダウンロード用ホスト。
+const DROPBOX_HOSTS = ['www.dropbox.com', 'dropbox.com'];
+const DROPBOX_DIRECT_HOST = 'dl.dropboxusercontent.com';
+
+/**
+ * Dropbox共有リンクのホスト名を dl.dropboxusercontent.com に置換し、中継を挟まず
+ * ブラウザから直接取得できるようにする。パスとクエリ(共有リンクのアクセス鍵 rlkey を
+ * 含む)はそのまま保持し、ホスト名だけを差し替える(rlkeyを落とすと権限エラーになるため)。
+ *
+ * 実測(2026-08-18、ブラウザのfetchで確認。curl/Node fetchはCORSを強制しないため
+ * この判定には使えない): `www.dropbox.com` のままだと `dl=0`/`dl=1` いずれも
+ * ACAOが無くCORSで失敗する(`TypeError: Failed to fetch`)。ホストを
+ * `dl.dropboxusercontent.com` に置換すると、パス・クエリそのままで200・
+ * content-type: application/zip・CORS通過で取得できる(`dl=1`への書き換えは不要、
+ * 付けても結果は同じ)。実測したのは `/scl/fi/...` 形式のファイル共有リンク1本のみで、
+ * 旧`/s/...`形式・フォルダ単位の共有・パスワード付き共有は未検証。それらは
+ * この置換では救えない可能性があるが、fetchSongBytes側で直接取得の失敗を検知して
+ * 中継(NET_PROXY_BASE)へ自動フォールバックするため、中継が設定されていれば
+ * 従来どおり取得できる想定(中継が未設定でもDropboxが直接取得で通るようになる点は
+ * この関数のみで完結し、中継設定の有無に依存しない)。
+ *
+ * `dl.dropboxusercontent.com` が既に指定されている場合はDROPBOX_HOSTSに一致しないため
+ * 何もせず返す(冪等)。Dropbox以外のホストには一切触らない。
+ * @param {string} url
+ * @returns {string}
+ */
+export function rewriteDropboxUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!hostMatches(parsed.hostname, DROPBOX_HOSTS)) return url;
+  parsed.hostname = DROPBOX_DIRECT_HOST;
+  return parsed.toString();
+}
 
 /** URLのホスト名を取り出す。パース不可なら空文字を返す(呼び出し側は「一致なし」として扱う)。 @param {string} url */
 function urlHostname(url) {
@@ -149,10 +193,14 @@ async function fetchViaProxy(url, progress, fallbackError, onHeaders) {
  * 即座に専用の案内を出し、中継が未設定の場合はGoogle Drive/Dropboxのみ
  * 「直接取得できません」と案内する(それ以外は従来どおりCORS未対応の可能性を伝える)。
  *
- * Google Drive/Dropbox(PROXY_CAPABLE_HOSTS)の共有ページURLは、直接fetchしても
- * 中身ではなくHTML閲覧ページが200で返ってくることが実測で判明している。そのため
- * 中継が設定されている場合、これらのホストは直接fetchを試さず最初から中継を使う。
- * それでも(直接fetch成功時・中継利用時のいずれでも)取得結果がHTML/XMLに見える場合は
+ * Google Drive(PROXY_ONLY_HOSTS)の共有ページURLは、直接fetchしても中身ではなく
+ * HTML閲覧ページが200で返ってくることが実測で判明している。そのため中継が設定されている
+ * 場合、このホストは直接fetchを試さず最初から中継を使う(skipDirect)。
+ * Dropboxはホスト名をrewriteDropboxUrlで dl.dropboxusercontent.com に置換すれば
+ * 直接取得できることが実測できたため、skipDirectの対象からは外し、置換後のURLへ
+ * 直接fetchを試みる(中継に渡すURLは利用者が入力した元のURL。中継はサーバ側から
+ * 取得するため置換不要で、元の共有URLで実績がある)。
+ * (直接fetch成功時・中継利用時のいずれでも)取得結果がHTML/XMLに見える場合は
  * looksLikeHtml で検出し、曲データではないと案内する。
  *
  * 取得に使ったレスポンスのHTTPヘッダ(`Content-Disposition`のファイル名取得に使う想定)を
@@ -173,15 +221,16 @@ export async function fetchSongBytes(url, onProgress, onHeaders) {
     throw netError('fetch.oneDriveUnsupported', { url });
   }
 
-  const skipDirect = Boolean(NET_PROXY_BASE) && hostMatches(hostname, PROXY_CAPABLE_HOSTS);
+  const skipDirect = Boolean(NET_PROXY_BASE) && hostMatches(hostname, PROXY_ONLY_HOSTS);
 
   let directError;
   let directWasHtml = false;
   if (!skipDirect) {
+    const directUrl = rewriteDropboxUrl(url);
     try {
-      const response = await fetch(url);
+      const response = await fetch(directUrl);
       if (!response.ok) {
-        throw netError('fetch.httpError', { url, status: response.status });
+        throw netError('fetch.httpError', { url: directUrl, status: response.status });
       }
       const bytes = await readResponseWithProgress(response, progress);
       if (!looksLikeHtml(bytes, response.headers.get('content-type'))) {
@@ -190,7 +239,7 @@ export async function fetchSongBytes(url, onProgress, onHeaders) {
       }
       directWasHtml = true;
     } catch (err) {
-      directError = err instanceof Error && err.code ? err : netError('fetch.networkError', { url });
+      directError = err instanceof Error && err.code ? err : netError('fetch.networkError', { url: directUrl });
     }
   }
 

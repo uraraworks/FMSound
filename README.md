@@ -36,7 +36,17 @@ real driver's output.
    already loaded. Pointing it at a ZIP/LZH archive extracts the contents so
    you can pick a song from inside (loading only — it won't autoplay, since
    browsers require a user gesture before audio can play, so press play
-   yourself).
+   yourself). For a PMD song that needs PCM (one using `.PPC`/`.PZI`/`.PVI`),
+   there's no way to supply a PCM file alongside a standalone song file, so
+   pack the song and its PCM files together into one archive (ZIP/LZH) and
+   point the URL at that (PCM loading follows the same conditions described
+   under "Usage" below). Dropbox share links can be pasted as-is — no need to
+   rewrite them with `dl=1`; the app rewrites the host automatically (only
+   per-file share links have been verified this way; folder shares and
+   password-protected links haven't been tested). Google Drive links only
+   work through the relay server, so they won't load on a build where no
+   relay server URL is configured (see "Publishing to GitHub Pages" below for
+   how the relay is configured).
 5. Keyboard shortcuts: `⌘/Ctrl+Enter` to compile & play, `Esc` to stop.
 6. Click a part's row on the FMDSP screen to mute just that part (click again
    to unmute — there's no solo function). A muted row keeps its original
