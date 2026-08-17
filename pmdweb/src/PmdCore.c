@@ -16,6 +16,7 @@
 #include "libopna/opna.h"
 #include "libopna/opnaadpcm.h"
 #include "libopna/opnatimer.h"
+#include "rhythm_rom.h"
 
 enum {
   SAMPLE_RATE = 55467,
@@ -379,7 +380,14 @@ static void mix_ppz8(void *user, int16_t *buffer, unsigned frames) {
 
 static void initialize_synth(void) {
   opna_reset(&g_player.opna);
-  /* No rhythm ROM: libopna treats null waveform pointers as silent. */
+  /* リズムROM(rhythm_rom.c, 2026-08-18): 実機ROMは未使用。
+   * html/rhythm/2608_*.WAV(自作波形、出自はNOTICE.md参照)を
+   * tools/gen_rhythm_rom.py がopnadrum.cのADPCM-A復号アルゴリズムの
+   * 逆写像でエンコードしたもの。opna_reset() は内部で opna_drum_reset()
+   * を呼び drums[].data を null に戻すため、set_rom は必ず reset の後に
+   * 呼ぶこと(順序を逆にすると無音のまま build/testを通過する)。
+   * MUCOM側はこのROMを共有せずWAVを直接読む別実装。 */
+  opna_drum_set_rom(&g_player.opna.drum, (void *)rhythm_rom);
   opna_adpcm_set_ram_256k(&g_player.opna.adpcm, g_player.adpcm_ram);
   opna_timer_reset(&g_player.timer, &g_player.opna);
   ppz8_init(&g_player.ppz8, SAMPLE_RATE, PPZ8_MIX_VOLUME);
@@ -527,6 +535,24 @@ int pmdweb_test_load_ppc_file(const char *path) {
   bool ok = pmd_ppc_load(&g_player.work, buf, read_bytes);
   free(buf);
   return ok ? 1 : 0;
+}
+
+// 検証専用(tools/verify_pmd_rhythm.mjs)。opna_writereg()(libopna/opna.c)を
+// フロントエンド(pmd_cmdxx系のドライバコマンド)を経由せず直接叩く。リズム音源
+// (opna_drum_writereg, libopna/opnadrum.c)のレジスタ0x10(キーオン/オフ、
+// bit0-5=BD/SD/TOP/HH/TOM/RIM, bit7=1でオフ)・0x11(total level)・
+// 0x18-0x1d(各音のパン/レベル、bit7=left,bit6=right,bit0-4=level)を
+// 直接叩いて6音を個別に鳴らし分けるために使う。製品UIからは呼ばれない。
+void pmdweb_test_write_opna_reg(unsigned reg, unsigned val) {
+  opna_writereg(&g_player.opna, reg, val);
+}
+
+// 検証専用(tools/verify_pmd_rhythm.mjs 陽性対照)。opna_drum_reset()だけを
+// 呼び直し、opna_drum_set_rom()を呼ばない状態(=結線前のPmdCore.cが実際に
+// 置かれていた状態。drums[].dataがnullのまま)を再現する。initialize_synth()
+// が呼ぶopna_reset()の直後の状態そのもの。
+void pmdweb_test_reset_drum_no_rom(void) {
+  opna_drum_reset(&g_player.opna.drum);
 }
 
 // --- コメント欄(曲名・作曲者・編曲者・メモ) ---

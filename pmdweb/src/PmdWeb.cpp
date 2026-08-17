@@ -28,6 +28,8 @@ int pmdweb_get_level_count(void);
 int pmdweb_get_level_field_count(void);
 void pmdweb_set_channel_mask(unsigned mask);
 int pmdweb_test_load_ppc_file(const char *path);
+void pmdweb_test_write_opna_reg(unsigned reg, unsigned val);
+void pmdweb_test_reset_drum_no_rom(void);
 }
 
 namespace {
@@ -73,6 +75,10 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("setChannelMask", &pmdweb_set_channel_mask);
   // 検証専用(tools/verify_pmd_channel_mute.mjs)。製品UIからは呼ばれない。
   emscripten::function("testLoadPpcFile", &TestLoadPpcFile);
+  // 検証専用(tools/verify_pmd_rhythm.mjs)。製品UIからは呼ばれない。
+  emscripten::function("testWriteOpnaReg", &pmdweb_test_write_opna_reg);
+  // 検証専用(tools/verify_pmd_rhythm.mjs 陽性対照)。製品UIからは呼ばれない。
+  emscripten::function("testResetDrumNoRom", &pmdweb_test_reset_drum_no_rom);
   // PCM(.PPC/.PZI/.PVI/.P86/.PPS)状態。net/pmd-pcm.jsのdescribePmdPcmStatus()が
   // 利用者向けメッセージを組み立てるための材料(fmdriver.h参照)。
   emscripten::function("getPcmCount", &pmdweb_get_pcm_count);

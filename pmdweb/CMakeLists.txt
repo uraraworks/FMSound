@@ -8,6 +8,7 @@ set(UPSTREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/98fmplayer")
 set(PMDWEB_SOURCES
     src/PmdWeb.cpp
     src/PmdCore.c
+    src/rhythm_rom.c
     ${UPSTREAM_DIR}/libopna/opna.c
     ${UPSTREAM_DIR}/libopna/opnaadpcm.c
     ${UPSTREAM_DIR}/libopna/opnadrum.c
