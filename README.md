@@ -105,6 +105,10 @@ The player currently has a few honest limitations worth stating up front.
 - **The PMD compiler (this project's own MML→binary converter) only
   supports the v1 basic command set** — PPZ8, LFO, portamento, and similar
   are out of scope. See `docs/pmd-compiler-spec.md` for details.
+- **On MUCOM88's K (ADPCM) part, setting the volume command to `v255` (the
+  maximum) makes it go nearly silent instead.** Volume rises normally up to
+  around `v200`, but the maximum value `v255` drops it sharply — avoid using
+  the maximum.
 - **The right-pane FMDSP counters CPU POWER COUNT, VOLUME DOWN, and PGM
   NUMBER can't show a value** (shown dimmed instead of a live number).
   CPU POWER COUNT is permanently unobtainable — browsers have no API for a
