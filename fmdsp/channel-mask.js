@@ -204,27 +204,58 @@ export function unusedRowsFromChannels(usedChannels) {
 const PPZ8_LEVEL_COLUMN_START = 11;
 const PPZ8_LEVEL_COLUMN_COUNT = 8;
 
+// レベルメーター列11-18(PPZ8 1-8)個別の論理チャンネル名。
+// LEVEL_COLUMN_CHANNELS(0-10列。クリックミュート対応チャンネルのみ)には
+// 含めない(PPZ8はクリックミュート未対応のまま。上のLEVEL_COLUMN_CHANNELS
+// コメント参照)。unusedColumnsFromChannelsの第2引数(ppz8UsedChannels)専用。
+export const PPZ8_CHANNELS = [
+  'PPZ8_1', 'PPZ8_2', 'PPZ8_3', 'PPZ8_4', 'PPZ8_5', 'PPZ8_6', 'PPZ8_7', 'PPZ8_8',
+];
+
 // usedChannelsを、レベルメーター描画用のSet<number>(未使用の列index)へ変換する。
 //
-// PPZ8列(11-18)の扱い(2026-08-17追加。利用者指摘: 「レベルメーターの右側が
-// 鍵盤の数より多いが、右側は使われることがあるのか」):
-// PPZ8(PMDのPCM 8ch)は、このWeb版では構造的に絶対に鳴らない。
-//   - MUCOM88には元々PPZ8の概念自体が存在しない(fmgenにPPZ8相当の実装が無い)。
-//   - PMD側はppz8_init()やミキサー配線こそ存在するが、本Web版はPPZ8の
-//     サンプルバンク(.PPC/.PVI)をUIから一切読み込まない
-//     (pmdweb/src/PmdCore.c:503 コメント参照)。バンクが無ければ鳴らしようが
-//     ない。
-// これはusedChannelsFromMucomCompileLog/usedChannelsFromPmdMmlPartsのような
-// 「曲ごとに変わる使用状況」の判定とは性質が違う(常に不使用と確定できる、
-// エンジン側の構造の話)。そのためusedChannels(曲固有・null=判定不能もあり得る)
-// の中身に関わらず、PPZ8列は常にunused扱いにする(=呼び出し元がnullを渡しても
-// この8列だけは暗く表示される。他の0-10列はnull時に何も暗くしない従来どおりの
-// 挙動を維持する)。
-// 将来PPZ8バンクの読み込みに対応したら、この一律unused判定をやめて曲ごとの
-// 使用状況判定に差し替える必要がある。
-export function unusedColumnsFromChannels(usedChannels) {
+// PPZ8列(11-18)の扱い(2026-08-17に一律unused判定として追加、2026-08-18に
+// 曲ごとの判定へ差し替え):
+//
+// 2026-08-17時点では「本Web版はPPZ8のサンプルバンク(.PPC/.PVI)をUIから一切
+// 読み込まない」という前提で、PPZ8列は常にunused固定にしていた。その後
+// PPZ8バンク(.PZI/.PVI)を書庫から読み込めるようになり(該当コミット以降)、
+// 実データで絶対値和が0から非0(2,525,364,434)へ変わることを確認済みで、
+// この前提はもう成立しない。ただしMUCOM88側は今も無関係(fmgenにPPZ8相当の
+// 実装が無く、概念自体が存在しない)なので、MUCOM側の呼び出し(第2引数省略)
+// は従来どおり一律unusedのままにする。
+//
+// PMD側の判定材料(第2引数ppz8UsedChannels、Set<string>|null|undefined):
+// 当初はPmdCore.c/fmdriver.hにある track_status[...].info と
+// FMDRIVER_TRACK_INFO_PPZ8 の比較(PmdCore.c 209-211行、pmdweb/src/PmdCore.c)
+// で判定できると想定していたが、実測(tools配下のwasmハーネスでPPZ8バンク無しの
+// .M最小バイナリを再生し、ADPCMパートから0xB4=ppz8_init拡張コマンドで
+// PPZ1chを起動)したところ:
+//   - track_status[FMDRIVER_TRACK_PPZ8_1].info は起動有無に関わらず常に0
+//     (FMDRIVER_TRACK_INFO_NORMAL)のまま。上流(upstream/98fmplayer/fmdriver/
+//     fmdriver_pmd.c)を読むと、FMDRIVER_TRACK_INFO_PPZ8を実際にセットしている
+//     のは fmdriver_fmp.c(このアプリが使わない別系統のドライバ)側のみで、
+//     fmdriver_pmd.c の pmd_work_status_update() はPPZ8トラックにも常に
+//     FMDRIVER_TRACK_INFO_NORMALを書く(5831行)。よってinfoでは判定不能
+//     (推測が誤りだったことが実測で判明)。
+//   - 一方 track_status[FMDRIVER_TRACK_PPZ8_1].playing はppz8_init起動前は0、
+//     起動後は1に切り替わる(PPZ8バンクが読み込めていなくても切り替わる。
+//     playingはPCMが実際に鳴っているかではなく「そのPPZ8チャンネルがpartとして
+//     アクティブか」を表す駆動系の状態だから)。この値は既にflatten()経由で
+//     JS側へ渡っている(fmdsp/trackrow.js FIELD.PLAYING=0、追加exportは不要)。
+// そのため採用した規則: 曲の再生開始からこれまでの間に一度でも
+// track_status[PPZ8_x].playing===trueを観測したチャンネルを「曲が使っている」と
+// みなす(sticky。一度trueを観測したら曲が変わるまで使用中のまま。html/pmd-app.js
+// が毎フレーム蓄積しppz8UsedChannelsとして渡す)。ppz8UsedChannelsがnull/undefined
+// (MUCOM側、またはPMD側で意図的に判定不能とした場合)なら安全側で一律unusedへ
+// フォールバックする。
+export function unusedColumnsFromChannels(usedChannels, ppz8UsedChannels) {
   const columns = new Set();
-  for (let i = 0; i < PPZ8_LEVEL_COLUMN_COUNT; i += 1) columns.add(PPZ8_LEVEL_COLUMN_START + i);
+  if (ppz8UsedChannels) {
+    PPZ8_CHANNELS.forEach((ch, i) => { if (!ppz8UsedChannels.has(ch)) columns.add(PPZ8_LEVEL_COLUMN_START + i); });
+  } else {
+    for (let i = 0; i < PPZ8_LEVEL_COLUMN_COUNT; i += 1) columns.add(PPZ8_LEVEL_COLUMN_START + i);
+  }
   if (!usedChannels) return columns;
   LEVEL_COLUMN_CHANNELS.forEach((ch, col) => { if (!usedChannels.has(ch)) columns.add(col); });
   return columns;

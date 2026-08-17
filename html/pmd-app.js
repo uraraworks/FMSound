@@ -37,6 +37,7 @@ import {
   buildPmdChannelMask, mutedRowsFromChannels, mutedColumnsFromChannels,
   channelForRow, channelForLevelColumn, LEVEL_COLUMN_CHANNELS,
   usedChannelsFromPmdMmlParts, unusedRowsFromChannels, unusedColumnsFromChannels,
+  PPZ8_CHANNELS,
 } from './fmdsp/channel-mask.js';
 import { canvasPointFromClientClick, trackRowIndexAt, levelColumnIndexAt } from './fmdsp/track-click.js';
 import { trackRowHoverRect, levelColumnHoverRect, drawHoverOutline, COLOR_HOVER } from './fmdsp/hover.js';
@@ -605,6 +606,15 @@ export async function init(ctx) {
   // 「曲を開く」で読み込んだ.M/.mバイナリは判定手段が無いためnullのまま。
   // でっち上げない)。
   let pmdUsedChannels = null;
+  // PPZ8列(11-18)専用の「曲が使っている」集合(Set<string>、PPZ8_CHANNELSの
+  // 部分集合)。上のpmdUsedChannelsとは判定材料が違う(fmdsp/channel-mask.js
+  // unusedColumnsFromChannels()冒頭コメント参照): MMLソース解析ではなく、
+  // ドライバのtrack_status[...].playingを毎フレーム観測し、trueを一度でも
+  // 観測したチャンネルをsticky(曲が変わるまで使用中のまま)に記録する。
+  // .M/.mバイナリ直接再生でもMMLコンパイル再生でも同じ仕組みで判定できる
+  // (info経由の判定と違い、MMLソースの有無に依存しない)。曲を読み込み直す
+  // たびに空へ戻す(下のmutedChannels.clear()と同じ箇所)。
+  const pmdPpz8UsedChannels = new Set();
   function toggleMutedChannel(channel) {
     if (!channel) return;
     if (mutedChannels.has(channel)) mutedChannels.delete(channel); else mutedChannels.add(channel);
@@ -745,6 +755,12 @@ export async function init(ctx) {
   const invalidIndex = 0xffffffff;
   const trackCount = Module.getTrackCount();
   const fieldCount = Module.getFieldCount();
+  // entryTracks配列のindex 13-20がPPZ8_1-8(upstream/98fmplayer/fmdriver/fmdriver.h
+  // enum FMDRIVER_TRACK_*の並び順。FM1-6(0-8、FM3拡張3ch込み)+SSG1-3(9-11)+
+  // ADPCM(12)+PPZ8_1-8(13-20)=NUM(21)。pmdweb/src/PmdCore.c
+  // `_Static_assert(TRACK_COUNT == 21, ...)`と一致。flatten()はこの順のまま
+  // JSへ渡すので追加exportは不要)。
+  const PPZ8_TRACK_START = 13;
   // frameに続くヘッダ(timerb_cnt/timerb/loop_cnt/timerb_cnt_loop/loop_timerb_cnt)。
   // mucomweb/html/mucom-app.js の SNAPSHOT_HEADER と同じ作法(PmdCore.c参照)。
   const snapshotHeaderWordCount = Module.getSnapshotHeaderWordCount();
@@ -828,6 +844,13 @@ export async function init(ctx) {
         snapshotHeaderWordCount + track * fieldCount,
         snapshotHeaderWordCount + (track + 1) * fieldCount);
       entryTracks.push(data);
+      // PPZ8列(11-18)の曲ごとの使用判定(fmdsp/channel-mask.js
+      // unusedColumnsFromChannels()冒頭コメント参照)。data[0]=FIELD.PLAYING。
+      // 一度でもtrueを観測したら曲が変わるまでsticky(=lastEntryTracksでなく
+      // pmdPpz8UsedChannelsへ蓄積、単一フレームの瞬間値だけで判定しない)。
+      if (track >= PPZ8_TRACK_START && track < PPZ8_TRACK_START + 8 && data[0] !== 0) {
+        pmdPpz8UsedChannels.add(PPZ8_CHANNELS[track - PPZ8_TRACK_START]);
+      }
       const cells = tbody.rows[track].cells;
       cells[1].textContent = data[0];
       cells[2].textContent = data[6];
@@ -885,7 +908,7 @@ export async function init(ctx) {
 
       const { fft, levels } = readRightPaneData(entry);
       rightpane.drawSpectrumBars(vram, fft, fftPeakState);
-      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels), unusedColumnsFromChannels(pmdUsedChannels));
+      rightpane.drawLevelMeters(vram, levels, levelPeakState, mutedColumnsFromChannels(mutedChannels), unusedColumnsFromChannels(pmdUsedChannels, pmdPpz8UsedChannels));
       rightpane.drawFileBar(vram, currentSongName);
       drawHover(vram);
 
@@ -1047,6 +1070,7 @@ export async function init(ctx) {
     // 次の曲へ持ち越さない)。
     mutedChannels.clear();
     applyChannelMask();
+    pmdPpz8UsedChannels.clear(); // 新しい曲のsticky観測をゼロから始める
     // 2026-08-17: 「曲が使っていないパート」判定(利用者指示B)。このアプリの
     // v1コンパイラでMMLをコンパイルした場合のみ、どのパートに実際にイベントが
     // あるかが分かる(fmdsp/channel-mask.js usedChannelsFromPmdMmlParts参照。
@@ -1271,6 +1295,11 @@ export async function init(ctx) {
     // usedChannelsFromPmdMmlParts()冒頭コメント参照)。でっち上げずnull
     // (判定不能=未使用暗色化なし)に戻す。
     pmdUsedChannels = null;
+    // PPZ8列(0-10列とは別の判定材料。track_status[...].playingのsticky観測)も
+    // 新しい曲のぶんへ差し替える。この経路(.M直接再生)こそがPPZ8列が実際に
+    // 暗いまま鳴らなかった不具合の対象だったため、MMLソースの有無に関わらず
+    // ここでもクリアする(下のdraw()が毎フレーム加算していく)。
+    pmdPpz8UsedChannels.clear();
     let pcmMessages = [];
     if (error) {
       alert(error);
