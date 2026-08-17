@@ -11,13 +11,17 @@
 // MUCOM88との違いは「コンパイラがwasm側(Module.compileMML)ではなくJS側」という点だけ:
 // PMDの`.M`コンパイラは compiler/pmd_mml_compiler.mjs(旧tools/、ブラウザ実行できるよう
 // 移設した。詳細はcompiler/内のコメントとREADME参照)にあり、ここでMMLテキストから
-// `.M`バイト列を作ってから Module.FS.writeFile()+Module.playMusic() でwasm側へ渡す。
-// エラーは{line, message}の構造化配列で返ってくる(compiler/pmd_mml_parser.mjs)ので、
-// MUCOM側のようなテキスト正規表現での行番号抽出は不要。
+// `.M`バイト列を作ってから net/pmd-pcm.js writeSongWithPcm()+Module.playMusic() で
+// wasm側へ渡す。エラーは{line, message}の構造化配列で返ってくる
+// (compiler/pmd_mml_parser.mjs)ので、MUCOM側のようなテキスト正規表現での
+// 行番号抽出は不要。
 //
 // 「曲を開く」(.m/.M バイナリファイルを開く/ドラッグ&ドロップ)は元々コンパイラを
 // 経由しない機能なので、エディタモードの有無に関わらず従来通りバイナリを直接
-// Module.FS.writeFile()+Module.playMusic()する(このパスは変更していない)。
+// 渡す。ただし書き込み先は【拡張・2026-08-17】ルート直下ではなく曲ごとの専用
+// ディレクトリになった(net/pmd-pcm.js writeSongWithPcm())。PMD側PCM(.PPC/.PZI/.PVI)の
+// 探索(fmplayer_fileread())が「.Mと同じディレクトリ」をopendir/readdirで走査する
+// ため、ルート直下だとdirpathが空文字になり必ず失敗する(実測済み)。
 //
 // 一時停止はMUCOM側と同じ方式: wasm側にpause APIが無いため、
 // AudioContext.suspend()/resume() だけで音声レンダリングを止める/再開する
@@ -62,6 +66,10 @@ import {
   ARCHIVE_EXTENSIONS,
 } from './net-load.js';
 import { createLibraryPanel } from './ui/library-panel.js';
+// PMD側PCM(.PPC/.PZI/.PVI)の配置窓口(2026-08-17新設)。MEMFSのルート直下に書くと
+// fmplayer_fileread()のディレクトリ走査(opendir("")失敗)でPCMが絶対に見つからない
+// (net/pmd-pcm.js冒頭コメント参照)ため、曲を仮想FSへ書き込む経路は必ずこれを通す。
+import { collectPmdPcmFiles, writeSongWithPcm } from './net/pmd-pcm.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -986,8 +994,12 @@ export async function init(ctx) {
       updateTransportButtonUI();
       return;
     }
-    Module.FS.writeFile('/edited.M', file);
-    const error = Module.playMusic('/edited.M');
+    // コンパイル済みMMLの再生も、他の経路(playBytes())と同じくwriteSongWithPcm()の
+    // 窓口を通す(入力源ごとに別配線を作らない。過去に押下表示だけ別配線にして
+    // 漏れた事故がある)。このコンパイラはADPCM/リズムパートを出力しない(v1範囲外)
+    // のでpcmFilesは常に空。
+    const editedPath = writeSongWithPcm(Module, { songName: 'edited.M', songBytes: file, pcmFiles: [] });
+    const error = Module.playMusic(editedPath);
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
     mutedChannels.clear();
@@ -1027,9 +1039,9 @@ export async function init(ctx) {
       return;
     }
     if (pendingUrlSong && uiMode !== 'editor') {
-      const { bytes, name, fileName } = pendingUrlSong;
+      const { bytes, name, fileName, pcmFiles } = pendingUrlSong;
       pendingUrlSong = null;
-      playBytes(bytes, name, fileName);
+      playBytes(bytes, name, fileName, pcmFiles);
       return;
     }
     const audioState = globalThis.pmdAudioState;
@@ -1185,7 +1197,7 @@ export async function init(ctx) {
   // ファイル名だけを渡したいため、両者を分離できるよう引数を分けた。省略時は
   // nameをそのまま使う(sample_fur_elise.M・ローカルファイルのFile.name等、
   // 元々ファイル名そのものである呼び出しはこれで正しい)。
-  async function playBytes(bytes, name, fileNameForBar = name) {
+  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = []) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
@@ -1198,8 +1210,11 @@ export async function init(ctx) {
     resetTransientMessages();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     currentSongName = fileNameForBar;
-    Module.FS.writeFile('/' + name, bytes);
-    const error = Module.playMusic('/' + name);
+    // 曲ごとに専用ディレクトリへ配置する窓口(net/pmd-pcm.js)を必ず通す。
+    // ルート直下へ直接書くと.PPC等のPCM探索(opendir/readdir)が失敗するため
+    // (詳細は同ファイルの冒頭コメント参照)。
+    const songPath = writeSongWithPcm(Module, { songName: name, songBytes: bytes, pcmFiles });
+    const error = Module.playMusic(songPath);
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
     mutedChannels.clear();
@@ -1315,8 +1330,9 @@ export async function init(ctx) {
       }
       // 「曲を開く」/D&Dはそれ自体が利用者操作(ユーザージェスチャー)なので、URL経路の
       // ようにpendingUrlSongへ保持して再生ボタン待ちにはせず、従来の単体ファイルと
-      // 同じくplayBytes()で即座に再生する。
-      await playBytes(chosen.entry.data, chosen.displayName);
+      // 同じくplayBytes()で即座に再生する。書庫内の.PPC/.PZI/.PVIも同じ書庫の
+      // entriesから拾ってそのまま渡す(collectPmdPcmFiles()、net/pmd-pcm.js)。
+      await playBytes(chosen.entry.data, chosen.displayName, undefined, collectPmdPcmFiles(resolved.entries));
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
       return;
     }
@@ -1430,7 +1446,13 @@ export async function init(ctx) {
       // 効かず再生ボタンが有効化されないため、読み込み時にプレイヤーモードへ切り替える
       // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。
       if (uiMode === 'editor') setUiMode('player');
-      pendingUrlSong = { bytes: chosen.entry.data, name: chosen.displayName };
+      // 書庫内の.PPC/.PZI/.PVIも同じ書庫のentriesから拾って一緒に保持する
+      // (playBytes()呼び出し時にpcmFilesとして渡される。上のbtnPlayPauseハンドラ参照)。
+      pendingUrlSong = {
+        bytes: chosen.entry.data,
+        name: chosen.displayName,
+        pcmFiles: collectPmdPcmFiles(resolved.entries),
+      };
       currentSongName = chosen.displayName;
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
       updateTransportButtonUI();
