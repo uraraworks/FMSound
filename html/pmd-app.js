@@ -125,9 +125,10 @@ export async function init(ctx) {
       mmlTextarea.value = text;
       mmlEditorApi.render();
       mmlDirty = false;
-      // 共有可能カウンタ: 内容が変わったので集計をやり直す(この直後のcompileAndPlay()
-      // 成功時にmarkCompiled()で実際の数字に置き換わる。失敗時は「未集計」のまま残す)。
-      shareControls.markDirty();
+      // 共有可能カウンタ・netStatus・コンパイル結果: 曲(サンプル)が変わったので
+      // まとめて消す(resetTransientMessages()コメント参照)。カウンタはこの直後の
+      // compileAndPlay()成功時にmarkCompiled()で実際の数字に置き換わる。
+      resetTransientMessages();
       compileAndPlay();
       return;
     }
@@ -424,7 +425,10 @@ export async function init(ctx) {
     }
     mmlEditorApi.render();
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
-    clearCompileStatus();
+    // 【不具合修正・2026-08-17】このハンドラはplayBytes()を経由しないため、
+    // netStatus(「共有リンクから読み込みました」等)もここで個別に消す
+    // (resetTransientMessages()コメント参照)。
+    resetTransientMessages();
     // 【不具合修正・2026-08-16】新規作成しても`?mml=<URL>`がアドレスバーに残ったままだと、
     // リロード時に「編集欄は新規の雛形なのに消したはずの書庫を読みに行ってしまう」
     // (net-load.js clearLoadedUrlFromAddressBar()冒頭コメント参照。利用者報告)。
@@ -473,6 +477,35 @@ export async function init(ctx) {
     netStatusEl.textContent = message;
     netStatusEl.classList.toggle('net-status-error', Boolean(isError));
     netStatusEl.classList.toggle('hidden', !message);
+  }
+
+  // 【不具合修正・2026-08-17、利用者報告】「共有リンクから読み込みました」のような
+  // netStatusの表示が、新規作成やライブラリから選択しても消えずに残っていた。
+  // 同じ形の不具合が今日これで3件目(1件目=共有可能カウンタ、e64ea91・2件目=
+  // 「コピーしました」等、7c3ebda)で、いずれも「読み込み経路のどれか1つだけ配線
+  // し忘れる」形だった。今回は個別対処ではなく、曲が変わる契機で必ずここを通す
+  // 「1つの入口」を作る(html/mucom-app.js resetTransientMessages()と同じ設計)。
+  //
+  // 対象(操作の結果として出て、次の操作まで残ってしまうもの):
+  //   - netStatusEl(setNetStatus()。「読み込みました」「共有リンクから読み込みました」等)
+  //   - #result/#mmlStatus(コンパイル結果・エラー表示。clearCompileStatus()に委譲)
+  //   - 共有リンクのコピー結果メッセージ/フォールバックURL欄/音色バンク警告
+  //     (shareControls.markDirty()に委譲。ui/share-controls.js resetShareResult()
+  //     参照。7c3ebdaで既に4項目を1箇所へ集約済みのものを、そのまま呼ぶだけ)
+  // 対象外(常時表示の情報。ここでは消さない):
+  //   - 共有可能カウンタの数値・ゲージという表示領域自体(shareControls.markDirty()は
+  //     数値を「未集計」に戻すだけで領域は消えない)
+  //   - #voice/#pcm等の注意書き(mmlCaveatEl相当がPMD側に無いため対象なし)
+  //
+  // 呼び出しどころ: playBytes()(URL/ファイル/書庫/ライブラリ選択、コンパイル済み
+  // バイナリを直接再生する経路すべてが通る唯一の窓口)+ btnNewMml(新規作成)+
+  // サンプル読み込み(エディタモード)+ loadSongFromShareFragment()(共有リンク)。
+  // 後の3つはplayBytes()を経由しない(MMLソースを直接編集欄へ入れるだけの経路の
+  // ため)ので個別に呼ぶ。
+  function resetTransientMessages() {
+    setNetStatus('', false);
+    clearCompileStatus();
+    shareControls.markDirty();
   }
 
   applyUiMode(currentUiMode());
@@ -1142,13 +1175,13 @@ export async function init(ctx) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
-    clearCompileStatus();
     // 実機報告(2026-08-17): 「曲を開く」で別の曲(バイナリ)を読み込んでも、直前に
-    // コピーした共有リンク/カウンタがそのまま残っていた。この経路はmmlTextareaを
-    // 触らない(MMLソースを経由しないバイナリ直接再生)ため他のmarkDirty()呼び出しの
-    // 対象に自然には入らないが、「別の曲を開いた」という事実自体がクリップボードの
-    // 内容を古くするので、この唯一の窓口(playBytes())でも明示的に無効化する。
-    shareControls.markDirty();
+    // コピーした共有リンク/カウンタ、netStatus(「共有リンクから読み込みました」等)が
+    // そのまま残っていた。この経路はmmlTextareaを触らない(MMLソースを経由しない
+    // バイナリ直接再生)ため他のmarkDirty()呼び出しの対象に自然には入らないが、
+    // 「別の曲を開いた」という事実自体がこれらの表示を古くするので、この唯一の窓口
+    // (playBytes())でresetTransientMessages()をまとめて呼ぶ(上のコメント参照)。
+    resetTransientMessages();
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     currentSongName = fileNameForBar;
     Module.FS.writeFile('/' + name, bytes);
@@ -1472,10 +1505,11 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     mmlDirty = false;
-    // 共有可能カウンタ: まだコンパイルしていない内容なので「未集計」のまま。
-    shareControls.markDirty();
+    // 共有可能カウンタ・netStatus・コンパイル結果: 曲(共有リンク)が変わったので
+    // まとめて消す(resetTransientMessages()コメント参照)。カウンタはまだ
+    // コンパイルしていない内容なので「未集計」のまま。
+    resetTransientMessages();
     pendingUrlSong = null;
-    clearCompileStatus();
     currentSongName = SHARE_LINK_FILEBAR_NAME;
     setNetStatus(t('net.loadedFromShareLink'), false);
     updateTransportButtonUI();

@@ -800,6 +800,36 @@ export async function init(ctx) {
     netStatusEl.classList.toggle('hidden', !message);
   }
 
+  // 【不具合修正・2026-08-17、利用者報告】「共有リンクから読み込みました」のような
+  // netStatusの表示が、新規作成やライブラリから選択しても消えずに残っていた。
+  // 同じ形の不具合が今日これで3件目(1件目=共有可能カウンタ、e64ea91・2件目=
+  // 「コピーしました」等、7c3ebda)で、いずれも「読み込み経路のどれか1つだけ配線
+  // し忘れる」形だった。今回は個別対処ではなく、曲が変わる契機で必ずここを通す
+  // 「1つの入口」を作る。
+  //
+  // 対象(操作の結果として出て、次の操作まで残ってしまうもの):
+  //   - netStatusEl(setNetStatus()。「読み込みました」「共有リンクから読み込みました」等)
+  //   - #result/#mmlStatus(コンパイル結果・エラー表示。clearCompileStatus()に委譲)
+  //   - 共有リンクのコピー結果メッセージ/フォールバックURL欄/音色バンク警告
+  //     (shareControls.markDirty()に委譲。ui/share-controls.js resetShareResult()
+  //     参照。7c3ebdaで既に4項目を1箇所へ集約済みのものを、そのまま呼ぶだけ)
+  // 対象外(常時表示の情報。ここでは消さない):
+  //   - 共有可能カウンタの数値・ゲージという表示領域自体(shareControls.markDirty()は
+  //     数値を「未集計」に戻すだけで領域は消えない。常時表示のまま)
+  //   - 文字コードバッジ(encodingBadgeEl)・#voice/#pcm等の注意書き(mmlCaveatEl)。
+  //     どちらもapplyMmlBytes()自身がupdateEncodingBadge()/updateMmlCaveat()で
+  //     読み込むたびに最新化するため、「前の曲の表示が残る」問題がそもそも起きない
+  //     (=「操作の結果として出て残るもの」ではなく「今の状態を指す常時表示」)。
+  //
+  // 呼び出しどころ: applyMmlBytes()(URL/ファイル/書庫/サンプル/ライブラリ選択/
+  // 共有リンク読み込み、すべての曲読み込みが通る唯一の窓口)+ btnNewMml(新規作成、
+  // applyMmlBytes()を経由しないため個別に呼ぶ)。
+  function resetTransientMessages() {
+    setNetStatus('', false);
+    clearCompileStatus();
+    shareControls.markDirty();
+  }
+
   function updateMmlCaveat(mmlText) {
     const message = formatMmlCaveatMessage(detectMmlCaveats(mmlText));
     mmlCaveatEl.textContent = message ?? '';
@@ -1232,7 +1262,10 @@ export async function init(ctx) {
     currentVoiceBank = null;
     currentVoiceBankSource = null;
     // 課題A: 編集内容を消した(新規作成した)ときも前回のエラー表示を残さない。
-    clearCompileStatus();
+    // 【不具合修正・2026-08-17】このハンドラはapplyMmlBytes()を経由しないため、
+    // netStatus(「共有リンクから読み込みました」等)もここで個別に消す
+    // (resetTransientMessages()コメント参照)。
+    resetTransientMessages();
     // 課題D: 新規作成の雛形には#voice/#pcm/リズムが無いため、告知も消す。
     updateMmlCaveat('');
     // 【不具合修正・2026-08-16】新規作成しても`?mml=<URL>`がアドレスバーに残ったままだと、
@@ -1260,10 +1293,11 @@ export async function init(ctx) {
     mmlTextarea.value = text;
     mmlEditorApi.render();
     updateEncodingBadge();
-    // 共有可能カウンタ: 読み込んだMMLはまだコンパイルしていないので「未集計」に戻す。
-    // applyMmlBytes()は課題D(下のコメント)のとおり読み込み経路の唯一の窓口なので、
-    // ここ1箇所で足りる。
-    shareControls.markDirty();
+    // 利用者に見せる一時的なメッセージ(netStatus・コンパイル結果・共有リンクの
+    // コピー結果等)を全部まとめて消す。applyMmlBytes()は課題D(下のコメント)の
+    // とおり読み込み経路の唯一の窓口なので、ここ1箇所で足りる
+    // (resetTransientMessages()コメント参照)。
+    resetTransientMessages();
     // 課題D: 読み込んだMMLがある限り常にここを通る(曲を開く/D&D/サンプル/URL/
     // 書庫読み込みのすべてがapplyMmlBytes()を経由するため、ここ1箇所で足りる)。
     updateMmlCaveat(text);
