@@ -531,20 +531,28 @@ export function parseToneDefBlock(lines, li, lineNo) {
     ops.push(parseToneOperatorLine(cleaned, curLineNo, ops.length));
     cur++;
   }
+  // MML記述順(op1,op2,op3,op4)と、音色テーブルのインデックスs(buildToneEntry()の
+  // 第2引数、レジスタオフセット選択 0x30+ch+s*4)が対応する物理スロット順は 1,3,2,4
+  // (YM2608のレジスタ配置。upstream/98fmplayer/libopna/opnafm.c:536-539の
+  // `s = ((reg&8)>>3)|((reg&4)>>1)` で確認: オフセット0→スロット1, 4→スロット3,
+  // 8→スロット2, 12→スロット4)。実データ3曲(単一定義15件、うち1件は複数回定義の
+  // 「後勝ち」定義)すべてで、テーブルへ[op1,op3,op2,op4]の順に書き込むと参照`.M`と
+  // 完全一致することを確認済み(docs/pmd-compiler-spec-v2.md 3.11節参照)。
+  const orderedOps = [ops[0], ops[2], ops[1], ops[3]];
   const tone = {
     tonenum: header.tonenum,
     fb: header.fb,
     alg: header.alg,
-    ar: ops.map((o) => o.ar),
-    d1r: ops.map((o) => o.dr),
-    d2r: ops.map((o) => o.sr),
-    rr: ops.map((o) => o.rr),
-    sl: ops.map((o) => o.sl),
-    tl: ops.map((o) => o.tl),
-    ks: ops.map((o) => o.ks),
-    mul: ops.map((o) => o.ml),
-    dt1: ops.map((o) => o.dt),
-    am: ops.map((o) => o.ams),
+    ar: orderedOps.map((o) => o.ar),
+    d1r: orderedOps.map((o) => o.dr),
+    d2r: orderedOps.map((o) => o.sr),
+    rr: orderedOps.map((o) => o.rr),
+    sl: orderedOps.map((o) => o.sl),
+    tl: orderedOps.map((o) => o.tl),
+    ks: orderedOps.map((o) => o.ks),
+    mul: orderedOps.map((o) => o.ml),
+    dt1: orderedOps.map((o) => o.dt),
+    am: orderedOps.map((o) => o.ams),
   };
   return { tone, nextLi: cur - 1 }; // 呼び出し元のfor(li++)で+1されるので-1しておく
 }
