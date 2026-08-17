@@ -17,6 +17,10 @@ int pmdweb_get_sample_rate(void);
 int pmdweb_get_comment_mode_pmd(void);
 int pmdweb_get_comment_length(int line);
 uint32_t pmdweb_get_comment_pointer(void);
+int pmdweb_get_pcm_count(void);
+const char *pmdweb_get_pcm_name(int i);
+const char *pmdweb_get_pcm_type(int i);
+int pmdweb_get_pcm_error(int i);
 uint32_t pmdweb_get_snapshot_fft_offset(void);
 uint32_t pmdweb_get_snapshot_level_offset(void);
 int pmdweb_get_fft_bin_count(void);
@@ -30,6 +34,10 @@ namespace {
 std::string PlayMusic(const std::string &path) { return pmdweb_play_music(path.c_str()); }
 // 検証専用(tools/verify_pmd_channel_mute.mjs)。PmdCore.c のコメント参照。
 bool TestLoadPpcFile(const std::string &path) { return pmdweb_test_load_ppc_file(path.c_str()) != 0; }
+// pcmname/pcmtypeはASCII限定(コメント欄と違いCP932考慮不要。PmdCore.c参照)
+// なのでstd::stringでそのまま返す。
+std::string GetPcmName(int i) { return pmdweb_get_pcm_name(i); }
+std::string GetPcmType(int i) { return pmdweb_get_pcm_type(i); }
 }
 
 int main() { return 0; }
@@ -65,4 +73,10 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("setChannelMask", &pmdweb_set_channel_mask);
   // 検証専用(tools/verify_pmd_channel_mute.mjs)。製品UIからは呼ばれない。
   emscripten::function("testLoadPpcFile", &TestLoadPpcFile);
+  // PCM(.PPC/.PZI/.PVI/.P86/.PPS)状態。net/pmd-pcm.jsのdescribePmdPcmStatus()が
+  // 利用者向けメッセージを組み立てるための材料(fmdriver.h参照)。
+  emscripten::function("getPcmCount", &pmdweb_get_pcm_count);
+  emscripten::function("getPcmName", &GetPcmName);
+  emscripten::function("getPcmType", &GetPcmType);
+  emscripten::function("getPcmError", &pmdweb_get_pcm_error);
 }

@@ -69,7 +69,7 @@ import { createLibraryPanel } from './ui/library-panel.js';
 // PMD側PCM(.PPC/.PZI/.PVI)の配置窓口(2026-08-17新設)。MEMFSのルート直下に書くと
 // fmplayer_fileread()のディレクトリ走査(opendir("")失敗)でPCMが絶対に見つからない
 // (net/pmd-pcm.js冒頭コメント参照)ため、曲を仮想FSへ書き込む経路は必ずこれを通す。
-import { collectPmdPcmFiles, writeSongWithPcm } from './net/pmd-pcm.js';
+import { collectPmdPcmFiles, collectUnsupportedPmdPcmFiles, describePmdPcmStatus, writeSongWithPcm } from './net/pmd-pcm.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -491,6 +491,33 @@ export async function init(ctx) {
     netStatusEl.textContent = message;
     netStatusEl.classList.toggle('net-status-error', Boolean(isError));
     netStatusEl.classList.toggle('hidden', !message);
+  }
+
+  // Module.playMusic()が成功した直後、必ずここを通してPCM(.PPC/.PZI/.PVI/.P86/.PPS)の
+  // 読み込み状態を利用者へ知らせる唯一の窓口(net/pmd-pcm.js describePmdPcmStatus()。
+  // 入力源ごとに別配線を作らない、というplayBytes()/collectPmdPcmFiles()と同じ設計)。
+  // 表示先はnetStatusEl(setNetStatus())を流用する: pmd.pcm.*はnet.*名前空間では
+  // ないが、「曲読み込み直後に出る1行の案内」という枠の性質は同じで、専用の表示先を
+  // 新設するほどの理由が無いという判断。resetTransientMessages()がsetNetStatus('')を
+  // 呼ぶため、この表示も同じタイミングで消える。
+  // 戻り値は表示したメッセージ配列(空なら「対応が要る参照は無かった」)。呼び出し側が
+  // この直後さらにsetNetStatus()で上書きするかどうかの判断に使う
+  // (例: 書庫から即再生するopenPmdFile()。下のplayBytes()呼び出し箇所参照)。
+  function reportPmdPcmStatus(unsupportedFiles = []) {
+    const count = Module.getPcmCount();
+    const slots = [];
+    for (let i = 0; i < count; i += 1) {
+      slots.push({
+        type: Module.getPcmType(i),
+        name: Module.getPcmName(i),
+        error: Module.getPcmError(i) !== 0,
+      });
+    }
+    const messages = describePmdPcmStatus({ slots, unsupportedFiles });
+    if (messages.length > 0) {
+      setNetStatus(messages.map((m) => t(m.key, m.params)).join(' '), true);
+    }
+    return messages;
   }
 
   // 【不具合修正・2026-08-17、利用者報告】「共有リンクから読み込みました」のような
@@ -1018,6 +1045,10 @@ export async function init(ctx) {
     lastCompiledBytes = file;
     mmlDirty = false;
     hasCompiled = true;
+    // PCM読み込み状態の案内。playBytes()と同じ窓口(reportPmdPcmStatus())を通す
+    // (入力源ごとに別配線を作らない、という上のコメントの続き)。このコンパイラは
+    // PCMを出力しないため実質常に空配列になるが、経路は分けない。
+    reportPmdPcmStatus([]);
     // 共有可能カウンタ: 「コンパイル(再生)時に集計する」(利用者指示)。打鍵のたびではなく、
     // 実際にコンパイルが成功したこの1箇所でだけ集計する。
     shareControls.markCompiled(source);
@@ -1039,9 +1070,9 @@ export async function init(ctx) {
       return;
     }
     if (pendingUrlSong && uiMode !== 'editor') {
-      const { bytes, name, fileName, pcmFiles } = pendingUrlSong;
+      const { bytes, name, fileName, pcmFiles, unsupportedFiles } = pendingUrlSong;
       pendingUrlSong = null;
-      playBytes(bytes, name, fileName, pcmFiles);
+      playBytes(bytes, name, fileName, pcmFiles, unsupportedFiles);
       return;
     }
     const audioState = globalThis.pmdAudioState;
@@ -1197,7 +1228,7 @@ export async function init(ctx) {
   // ファイル名だけを渡したいため、両者を分離できるよう引数を分けた。省略時は
   // nameをそのまま使う(sample_fur_elise.M・ローカルファイルのFile.name等、
   // 元々ファイル名そのものである呼び出しはこれで正しい)。
-  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = []) {
+  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = [], unsupportedFiles = []) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
@@ -1224,13 +1255,19 @@ export async function init(ctx) {
     // usedChannelsFromPmdMmlParts()冒頭コメント参照)。でっち上げずnull
     // (判定不能=未使用暗色化なし)に戻す。
     pmdUsedChannels = null;
+    let pcmMessages = [];
     if (error) {
       alert(error);
     } else {
       lastCompiledBytes = bytes; // 課題D: 「曲を開く」で読み込んだ.Mもダウンロード対象にする
+      // PCM(.PPC/.PZI/.PVI/.P86/.PPS)読み込み状態の案内(reportPmdPcmStatus()参照)。
+      // 呼び出し元がこの直後に別のsetNetStatus()で上書きする場合は戻り値を見て
+      // 判断すること(下のopenPmdFile()内、書庫を即再生する箇所参照)。
+      pcmMessages = reportPmdPcmStatus(unsupportedFiles);
     }
     commentOffset = 0;
     setAudioPaused(false);
+    return pcmMessages;
   }
 
   // 「曲を開く」のメニュー化(ファイルから開く/URLから開く)。「ファイルから開く」は
@@ -1332,8 +1369,21 @@ export async function init(ctx) {
       // ようにpendingUrlSongへ保持して再生ボタン待ちにはせず、従来の単体ファイルと
       // 同じくplayBytes()で即座に再生する。書庫内の.PPC/.PZI/.PVIも同じ書庫の
       // entriesから拾ってそのまま渡す(collectPmdPcmFiles()、net/pmd-pcm.js)。
-      await playBytes(chosen.entry.data, chosen.displayName, undefined, collectPmdPcmFiles(resolved.entries));
-      setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
+      // upstream未対応の.P86/.PPSも同じentriesから拾い、reportPmdPcmStatus()経由の
+      // 案内に使う(collectUnsupportedPmdPcmFiles())。
+      const pcmMessages = await playBytes(
+        chosen.entry.data,
+        chosen.displayName,
+        undefined,
+        collectPmdPcmFiles(resolved.entries),
+        collectUnsupportedPmdPcmFiles(resolved.entries),
+      );
+      // playBytes()内でPCM不足等の案内を既にsetNetStatus()済みなら、それを
+      // 「読み込みました」で上書きしない(唯一の窓口を通しつつ、後勝ちで警告が
+      // 消える事故を避ける)。
+      if (pcmMessages.length === 0) {
+        setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
+      }
       return;
     }
 
@@ -1446,12 +1496,14 @@ export async function init(ctx) {
       // 効かず再生ボタンが有効化されないため、読み込み時にプレイヤーモードへ切り替える
       // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。
       if (uiMode === 'editor') setUiMode('player');
-      // 書庫内の.PPC/.PZI/.PVIも同じ書庫のentriesから拾って一緒に保持する
-      // (playBytes()呼び出し時にpcmFilesとして渡される。上のbtnPlayPauseハンドラ参照)。
+      // 書庫内の.PPC/.PZI/.PVI(・upstream未対応の.P86/.PPS)も同じ書庫のentriesから
+      // 拾って一緒に保持する(playBytes()呼び出し時にpcmFiles/unsupportedFilesとして
+      // 渡される。上のbtnPlayPauseハンドラ参照)。
       pendingUrlSong = {
         bytes: chosen.entry.data,
         name: chosen.displayName,
         pcmFiles: collectPmdPcmFiles(resolved.entries),
+        unsupportedFiles: collectUnsupportedPmdPcmFiles(resolved.entries),
       };
       currentSongName = chosen.displayName;
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);

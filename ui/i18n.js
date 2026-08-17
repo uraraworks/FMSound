@@ -116,6 +116,13 @@ const ja = {
   'mml.caveatMissingRefsPcm': 'この曲は {files} を参照していますが読み込めません。ドラム(ADPCM)が本来と異なります。',
   'mml.caveatMissingRefsBoth': 'この曲は {files} を参照していますが読み込めません。音色とドラムが本来と異なります。',
 
+  // --- PMDのPCM(.PPC/.PZI/.PVI/.P86/.PPS)読み込み状態。net/pmd-pcm.jsの
+  // describePmdPcmStatus()が生成キーを決め、html/pmd-app.jsがnet.*と同じ
+  // setNetStatus()経由で表示する(net.*ではないがこの表示枠を流用しているだけ)。
+  'pmd.pcm.missing': 'この曲は {files} を必要としますが読み込めていません。PCMパートは鳴りません。PCMファイルを曲と同じ書庫(zip等)に入れて開いてください。',
+  'pmd.pcm.ppsUnsupported': 'この曲はPPSDRV({files})を使いますが未対応です。そのパートは鳴りません。',
+  'pmd.pcm.p86Unsupported': 'この曲はPMD86のPCM({files})を使いますが未対応です。PCMパートは鳴りません。',
+
   'confirm.newFile': '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?',
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
   'confirm.shareLinkLoad': '編集中のMMLを共有リンクの内容で置き換えます。よろしいですか?',
@@ -305,6 +312,10 @@ const en = {
   'mml.caveatMissingRefsVoice': 'This song references {files}, which cannot be loaded. The instrument tones will differ from the original.',
   'mml.caveatMissingRefsPcm': 'This song references {files}, which cannot be loaded. The drums (ADPCM) will differ from the original.',
   'mml.caveatMissingRefsBoth': 'This song references {files}, which cannot be loaded. The instrument tones and drums will differ from the original.',
+
+  'pmd.pcm.missing': 'This song requires {files}, which could not be loaded. Its PCM parts will be silent. Put the PCM file in the same archive (zip, etc.) as the song and open it again.',
+  'pmd.pcm.ppsUnsupported': 'This song uses PPSDRV ({files}), which is not supported. That part will be silent.',
+  'pmd.pcm.p86Unsupported': 'This song uses PMD86 PCM ({files}), which is not supported. Its PCM parts will be silent.',
 
   'confirm.newFile': 'This clears the MML you are editing and starts a new file. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',

@@ -558,3 +558,28 @@ int pmdweb_get_comment_length(int line) {
 uint32_t pmdweb_get_comment_pointer(void) {
   return (uint32_t)(uintptr_t)g_comment_buf;
 }
+
+// --- PCM(.PPC/.PZI/.PVI/.P86/.PPS)状態 ---
+// fmdriver.h の pcmtype/pcmname/pcmerror を export する。コメント欄と違い
+// 中身は常にASCII(ドライバ名・ファイル名は7bit文字のみ)なので、CP932考慮の
+// 「ポインタ+バイト長」方式にする必要はなく、embind の std::string でそのまま
+// 返してよい(PmdWeb.cpp側もstd::stringにしている)。
+int pmdweb_get_pcm_count(void) {
+  return FMDRIVER_PCMCOUNT;
+}
+
+// 範囲外・曲未ロード時は空文字を返す(該当スロットなし扱い)。
+const char *pmdweb_get_pcm_name(int i) {
+  if (!g_player.active || i < 0 || i >= FMDRIVER_PCMCOUNT) return "";
+  return g_player.work.pcmname[i];
+}
+
+const char *pmdweb_get_pcm_type(int i) {
+  if (!g_player.active || i < 0 || i >= FMDRIVER_PCMCOUNT) return "";
+  return g_player.work.pcmtype[i];
+}
+
+int pmdweb_get_pcm_error(int i) {
+  if (!g_player.active || i < 0 || i >= FMDRIVER_PCMCOUNT) return 0;
+  return g_player.work.pcmerror[i] ? 1 : 0;
+}

@@ -38,6 +38,109 @@ export function collectPmdPcmFiles(entries) {
     .map((entry) => ({ name: baseNameOf(entry.name), data: entry.data }));
 }
 
+// upstreamが未実装の拡張子(.P86=PMD86, .PPS=PPSDRV)。PMD_PCM_EXTENSIONSには
+// 加えない(供給しても鳴らないので供給対象を増やす意味がない)。ここで拾うのは
+// あくまで「使われているが対応していない」ことを利用者に伝えるため。
+const PMD_PCM_UNSUPPORTED_EXTENSIONS = ['.P86', '.PPS'];
+const PMD_PCM_UNSUPPORTED_EXTENSION_RE = new RegExp(
+  `\\.(${PMD_PCM_UNSUPPORTED_EXTENSIONS.map((ext) => ext.slice(1)).join('|')})$`,
+  'i',
+);
+
+/**
+ * 書庫展開エントリ配列からupstream未実装のPCM系ファイル(.P86/.PPS)だけを拾う
+ * 純関数。collectPmdPcmFiles()と対になるが、こちらはMEMFSへ書き込むためではなく
+ * 「供給しても鳴らない」ことを利用者へ知らせるための情報収集用。
+ * @param {{name: string, data: Uint8Array}[]} entries
+ * @returns {{name: string, ext: string}[]}
+ */
+export function collectUnsupportedPmdPcmFiles(entries) {
+  if (!entries) return [];
+  return entries
+    .filter((entry) => PMD_PCM_UNSUPPORTED_EXTENSION_RE.test(entry.name))
+    .map((entry) => {
+      const base = baseNameOf(entry.name);
+      const m = PMD_PCM_UNSUPPORTED_EXTENSION_RE.exec(base);
+      return { name: base, ext: `.${m[1].toUpperCase()}` };
+    });
+}
+
+/**
+ * pcmtype→表示用拡張子の対応。表示用の名前復元にのみ使う(実ファイル探索には
+ * 使わない。探索はwriteSongWithPcm()が既に済ませた後の話で、ここは「何が
+ * 足りなかったか」の文言を組み立てるだけ)。
+ * PPZ1/PPZ2は".PZI / .PVI"と両方示す(断定しない。describePmdPcmStatus()の
+ * コメント参照)。PPCは".PPC"固定でよい(loadppc()が.PPCしか試さないため)。
+ */
+const PCM_TYPE_TO_EXT = { PPC: '.PPC', PPZ1: '.PZI / .PVI', PPZ2: '.PZI / .PVI' };
+
+/**
+ * work.pcmname[i]はfmdriver_fillpcmname()により8文字・空白詰めで格納される
+ * (拡張子は含まない)。表示用に末尾の空白を取り除く。
+ * @param {string} name
+ */
+function trimPcmName(name) {
+  return (name || '').replace(/\s+$/, '');
+}
+
+/**
+ * PMD再生後のPCM状態から、利用者に見せるべきメッセージのキーと引数だけを
+ * 返す純関数(文言そのものはui/i18n.jsに置く。ここでは決めない)。
+ *
+ * 判定規則(利用者指示の通り、決め打ちしない部分はコメントで明示する):
+ *  - type===''(そのドライバに存在しないスロット)、またはnameが空白のみ
+ *    (使っていないスロット)は無視する。
+ *  - type==='PPS' はupstream未実装。PPSDRVは「必要だが読み込めない」のではなく
+ *    「そもそもこのプレイヤーが対応していない」ので専用メッセージにする
+ *    (errorは常にtrueなので条件に使わない。fmdriver_pmd.c pmd_init()参照)。
+ *  - それ以外(PPC/PPZ1/PPZ2)でerrorが真なら「必要だが読み込めていない」。
+ *    ファイル名は拡張子をtypeから補って表示する。PPZ1/PPZ2は work.pcmtype/pcmname
+ *    だけでは実ファイルが.PZIか.PVIかを区別できないため、どちらか一方に断定せず
+ *    「NAME.PZI / .PVI」の形で両方示す(PCM_TYPE_TO_EXT参照)。この文言は利用者に
+ *    「探して同じ書庫に入れる」よう促すものなので、外れた拡張子を1つだけ提示すると
+ *    探せない。upstream の loadpmdppz()(common/fmplayer_file.c)自身が.PVI/.PZIを
+ *    両方試す実装になっており、両方示すのはその実装と整合する判断。
+ *    PPCは.PPC固定でよい(loadppc()が.PPCしか試さないため断定して正しい)。
+ *  - unsupportedFilesに.P86があれば「PMD86は未対応」も追加する。
+ * @param {{ slots: {type: string, name: string, error: boolean}[], unsupportedFiles?: {name: string, ext: string}[] }} args
+ * @returns {{ key: string, params: { files: string } }[]}
+ */
+export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
+  const messages = [];
+
+  const missingNames = [];
+  const ppsNames = [];
+  for (const slot of slots || []) {
+    const type = slot.type || '';
+    const name = trimPcmName(slot.name);
+    if (!type || !name) continue; // 未使用スロット
+    if (type === 'PPS') {
+      ppsNames.push(name);
+      continue;
+    }
+    if (slot.error) {
+      const ext = PCM_TYPE_TO_EXT[type] || '';
+      missingNames.push(`${name}${ext}`);
+    }
+  }
+
+  if (missingNames.length > 0) {
+    messages.push({ key: 'pmd.pcm.missing', params: { files: missingNames.join(', ') } });
+  }
+  if (ppsNames.length > 0) {
+    messages.push({ key: 'pmd.pcm.ppsUnsupported', params: { files: ppsNames.join(', ') } });
+  }
+
+  const p86Names = (unsupportedFiles || [])
+    .filter((f) => f.ext === '.P86')
+    .map((f) => f.name);
+  if (p86Names.length > 0) {
+    messages.push({ key: 'pmd.pcm.p86Unsupported', params: { files: p86Names.join(', ') } });
+  }
+
+  return messages;
+}
+
 /**
  * 前回このModuleへ書き込んだ曲ディレクトリの中身を削除する。
  * 同じディレクトリを使い回すと前の曲の.PPCが残ってしまい、たまたま名前が一致した
