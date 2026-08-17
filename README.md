@@ -90,14 +90,20 @@ The player currently has a few honest limitations worth stating up front.
 - **The rhythm part plays through substitute samples that differ from a real
   YM2608.** The bundled sound core doesn't carry the real chip's ROM-derived
   PCM, so it plays free substitute drum samples instead
-  (`html/rhythm/2608_*.WAV`; see `NOTICE.md` for the source). The author of
-  the original driver has stated plainly that these substitutes are
-  "fundamentally different in waveform from the real YM2608's rhythm sound,"
-  and this project inherits that same caveat. (The UI used to show a notice
-  about this, same as it does for `#voice`/`#pcm`, but as of 2026-08-16 it no
-  longer does: rhythm went from "silent" to "audible but different," which
-  is a smaller gap than a completely missing part, so it's no longer called
-  out on every screen. The limitation itself is unchanged.)
+  (`html/rhythm/2608_*.WAV`; see `NOTICE.md` for the source; **no real chip
+  ROM is used anywhere**). The author of the original driver has stated
+  plainly that these substitutes are "fundamentally different in waveform
+  from the real YM2608's rhythm sound," and this project inherits that same
+  caveat. (The UI used to show a notice about this, same as it does for
+  `#voice`/`#pcm`, but as of 2026-08-16 it no longer does: rhythm went from
+  "silent" to "audible but different," which is a smaller gap than a
+  completely missing part, so it's no longer called out on every screen. The
+  limitation itself is unchanged.) PMD now plays the same substitute samples
+  too (it used to be silent). PMD's sound core, however, requires rhythm
+  samples in the real chip's fixed-capacity ROM format, so unlike MUCOM88 —
+  which plays the WAV files as-is — the samples had to be trimmed to fit
+  during conversion. **So even though both engines share the same source
+  material, the rhythm doesn't sound identical between MUCOM88 and PMD.**
 - **MUCOM88 compile error messages are always in Japanese, regardless of the
   page's language setting.** They come from a Japanese error table built
   into the wasm module, so even with the UI set to English, the error text
@@ -118,14 +124,25 @@ The player currently has a few honest limitations worth stating up front.
   it reads from. FRAMES PER SECOND, by contrast, *is* implemented — it just
   counts the host draw loop's own frequency, no driver data needed. See
   `docs/right-pane-data.md` §8 for the source-level detail.
-- **The rightmost 8 columns of the level meter (PPZ8 1-8) are always shown
-  dimmed as "unused" and never light up.** PPZ8 is PMD's 8-channel PCM
-  engine. MUCOM88 has no concept of PPZ8 at all, and while PMD's driver code
-  does wire up a PPZ8 mixer, this web build never lets you load a PPZ8
-  sample bank (.PPC/.PVI) from the UI, so those channels can never produce
-  sound in either engine. They're excluded from mute-click and hover
-  targets for the same reason. See `fmdsp/channel-mask.js`
-  `unusedColumnsFromChannels()` for the source-level detail.
+- **The rightmost 8 columns of the level meter (PPZ8 1-8) only light up when
+  a PMD song actually uses a PPZ8 bank (`.PZI`/`.PVI`, up to two banks).**
+  PPZ8 is PMD's 8-channel PCM engine. Loading a song together with its bank
+  file from the same archive (zip, etc.) makes the used channels light up;
+  they stay dark if no bank was supplied, or if the song doesn't use PPZ8 at
+  all. **MUCOM88 has no concept of PPZ8 at all, so these columns always stay
+  dark there** (unlike PMD, this never changes for MUCOM88). **The PPZ
+  columns still don't support muting**, on either engine. See
+  `fmdsp/channel-mask.js` `unusedColumnsFromChannels()` and
+  `docs/pmd-pcm-support.md` for the source-level detail.
+- **PMD's PCM (`.PPC` = ADPCM, `.PZI`/`.PVI` = PPZ8 banks) only loads when
+  you open the song from the same archive (zip/lzh/etc.) as its PCM
+  files.** Dropping a standalone `.M`/`.m` file gives no way to supply a PCM
+  file alongside it, so PCM never loads in that case. If a song references
+  PCM that can't be found, the UI shows a notice naming the missing file.
+  **`.P86` (PMD86) and `.PPS` (PPSDRV) aren't supported** — the upstream
+  sound core doesn't implement them, so neither does this web build (if the
+  archive happens to bundle the matching file anyway, the missing-PCM notice
+  is suppressed to avoid a misleading warning).
 - **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
 - **Sharing a MUCOM88 song that depends on a disk-specific external voice bank
   changes its sound for the recipient.** The share link (`?driver=` +

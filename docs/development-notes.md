@@ -34,6 +34,9 @@ FMSound/
     98fmplayer/              # PMD/FMP をネイティブCで再実装 + libopna + FMDSP可視化
     pmdmini/                 # PMD の小型実装（参考のみ。GPL なのでリンクしない）
   net/                     # URL指定の曲データ取得層（ZIP/LZH展開・SJISファイル名・HTML誤取得検出）
+    pmd-pcm.js             # PMD側PCM(.PPC/.PZI/.PVI)をMEMFSへ配置する窓口。曲ごとの
+                            #   専用ディレクトリへ書く(ルート直下だとupstreamのPCM探索が
+                            #   opendir("")失敗で必ず外れるため。docs/pmd-pcm-support.md §1参照)
 ```
 
 ## 各プロジェクトの要点
@@ -258,3 +261,20 @@ FMDSP タイトル欄の `Ver YY.MM.DD` とページフッターの識別子は�
 `ui/version.js`、ビルド時刻は使わないので同じコミットなら常に同じ文字列になる）。
 更新したい場合は該当コミットを作るだけでよく、直接編集する場所は無い
 （詳細: `docs/fmdsp-layout.md` §11）。
+
+## 生成物ファイル一覧
+
+以下は**手で編集しないこと**。元データを変更したら生成スクリプトを再実行する。
+
+| 生成物 | 生成元 | 生成スクリプト |
+|---|---|---|
+| `ui/version.js` | gitのコミット日時・ハッシュ | `tools/gen_version.py` |
+| `html/sample_fur_elise_mucom.muc` | `tools/sample_fur_elise_mucom.mml` | `tools/gen_sample_fur_elise.mjs` |
+| `pmdweb/src/rhythm_rom.c` / `pmdweb/src/rhythm_rom.h` | `html/rhythm/2608_*.WAV`（自作リズム波形。実機ROM不使用） | `tools/gen_rhythm_rom.py` |
+
+`pmdweb/src/rhythm_rom.c` は `html/rhythm/2608_*.WAV` をYM2608リズムROM形式
+(8KB・ADPCM-A圧縮)へ変換したもので、**WAVファイルを差し替えても
+`tools/gen_rhythm_rom.py` を再実行するまでビルドへ反映されない**
+（`pmdweb`のビルド自体はWAVファイルを直接参照しない）。領域表・変換方式の
+詳細は `docs/pmd-pcm-support.md` §4参照。決定論性（同じ入力から常に同じ
+バイト列が出ること）は `tools/verify_rhythm_rom.mjs` が検証している。
