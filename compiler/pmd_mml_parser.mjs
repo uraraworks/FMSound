@@ -702,6 +702,36 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
     return notes;
   }
 
+  // 擬似エコー('W'、PMDMML.MAN §12-2)展開。state.echoが設定されている間、後続の
+  // プレーンな音符トークン(c/d/e/f/g/a/b。タイ圧縮・ポルタメント経由の音符は対象外。
+  // 実測データにこの組み合わせの実例が無いため未対応のまま)を seg ティックずつに
+  // 分割し、切れ目ごとに0xdd(d<0)/0xde(d>0)コマンドを挟んだ複数のnoteイベント列へ
+  // 展開する。2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPW.MML/PW2.MML/
+  // PW3.MMLで実測して確定した仕様(tools/pmd-reference/追加分・FINDINGS.md参照):
+  //   - 音符を seg ティックずつに分割して並べる(最後の断片は端数、合計は元の音長)。
+  //   - 分割の切れ目ごとに、k番目(1始まり、音符ごとにリセット)の切れ目で
+  //     min(|d|*k, 15) * 4 を引数に0xdd/0xdeを挟む。
+  //   - d=0 は分割だけ行いコマンドを出さない(解除ではない)。
+  function pushEchoAwareNote(octave, noteIndex, clocks) {
+    const echo = state.echo;
+    if (!echo) { events.push({ type: 'note', line, octave, noteIndex, clocks }); return; }
+    const { seg, d } = echo;
+    let remaining = clocks;
+    let k = 0;
+    while (remaining > 0) {
+      const segClocks = Math.min(seg, remaining);
+      events.push({ type: 'note', line, octave, noteIndex, clocks: segClocks });
+      remaining -= segClocks;
+      if (remaining > 0) {
+        k++;
+        if (d !== 0) {
+          const value = Math.min(Math.abs(d) * k, 15) * 4;
+          events.push({ type: 'pseudoEcho', line, sign: d < 0 ? -1 : 1, value });
+        }
+      }
+    }
+  }
+
   while (i < n) {
     const c = body[i];
     if (/\s/.test(c)) { i++; continue; }
@@ -785,7 +815,22 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (clocks < 1 || clocks > 255) {
         throw new ParseError(line, `音長クロック値が1byteに収まりません: ${clocks}`);
       }
-      events.push({ type: 'note', line, octave, noteIndex, clocks });
+      pushEchoAwareNote(octave, noteIndex, clocks);
+      continue;
+    }
+
+    if (c === 'W') {
+      // 擬似エコー本体('W'、PMDMML.MAN §12-2)。純粋なコンパイル時ディレクティブ
+      // (.M側に'W'自体のバイトは無い。以降の音符へpushEchoAwareNote()経由で作用する)。
+      // 書式: W<seg>,<d>。segは分割幅(ティック、1-255)、dは減衰の符号付き係数。
+      i++;
+      const m = /^(\d+)\s*,\s*(-?\d+)/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'W' の後に seg,d の2数値がありません(PMDMML.MAN §12-2)`);
+      i += m[0].length;
+      const seg = parseInt(m[1], 10);
+      const d = parseInt(m[2], 10);
+      if (seg < 1 || seg > 255) throw new ParseError(line, `'W'(擬似エコー)のseg(数値1)が範囲外です(1-255。音符分割幅のため): ${seg}`);
+      state.echo = { seg, d };
       continue;
     }
 
@@ -1034,16 +1079,16 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       //   書式2(5-6引数: AR,DR,SR,RR,SL,AL[省略時0]) → `.M`側 0xcd + 5byte
       //     (fmdriver_pmd.c:3410 pmd_cmdcd_env_new実測: AR/DR/SRは&0x1f、4byte目は
       //     上位nibble=(SL^0xf)・下位nibble=RR&0xf に詰めて1byte化、5byte目=AL&0xf)。
-      // [音源]SSG/PCM(AD,86,PPZ)専用(マニュアル明記)なのでFMパートでは未対応のまま
-      // 拒否する(範囲外の使用を黙って受理しない)。
+      // [音源]マニュアル(PMDMML.MAN §8-1)はSSG/PCM(AD,86,PPZ)専用と明記しているが、
+      // 2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPEFM.MMLで実測したところ
+      // FMパートでも拒否されず、SSGと同一のコマンドバイト(書式1: 0xf0 + 4byte)を
+      // そのまま出力することを確認した(tools/pmd-reference/追加分参照)。よって
+      // partKindによる拒否はやめ、全パート種別で受理する。
       {
         const m = /^(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)(?:\s*,\s*(-?\d+))?(?:\s*,\s*(-?\d+))?/.exec(body.slice(i));
         if (m) {
           i += m[0].length;
           const nums = [m[1], m[2], m[3], m[4], m[5], m[6]].filter((x) => x != null).map((x) => parseInt(x, 10));
-          if (partKind !== 'ssg' && partKind !== 'adpcm' && partKind !== 'ppz') {
-            throw new ParseError(line, `'E'(ソフトウエアエンベロープ)はSSG/PCM(AD,86,PPZ)専用です(PMDMML.MAN §8-1、FM系パートでは未対応): partKind=${partKind}`);
-          }
           if (nums.length === 4) {
             const [al, dd, sr, rr] = nums;
             if (al < 0 || al > 255) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式1)の数値1(AL)が範囲外です(0-255。PMDMML.MAN §8-1): ${al}`);
@@ -1108,6 +1153,24 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       const val = parseInt(m[0], 10);
       if (val < 0 || val > 3) throw new ParseError(line, `'p'(パン)の値が範囲外です(0-3): ${val}`);
       events.push({ type: 'pan', line, value: val });
+      continue;
+    }
+
+    if (c === 'w') {
+      // SSGノイズ周波数。`.M`側 0xee + 1byte(fmdriver_pmd.c:2686 pmd_cmdee_noise_freq
+      // 実測: 1byteをそのままssg_noise_freqへload。YM2149ノイズ周波数レジスタ(0x06)は
+      // 5bit幅なので範囲0-31とする)。2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sを
+      // PWL.MMLで実測して確定(tools/pmd-reference/追加分参照): `G o4 l4 w6 c` →
+      // パートG先頭が `ee 06`。SSG音源パート向けとして実装する(大文字'P'と同様、
+      // OPMのHパート向け用法は未対応のまま)。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'w' の後にノイズ周波数数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 0 || val > 31) throw new ParseError(line, `'w'(ノイズ周波数)の値が範囲外です(0-31): ${val}`);
+      if (partKind !== 'ssg') throw new ParseError(line, `'w'(ノイズ周波数)はSSG音源パート専用です(OPM Hパート向けは未対応): partKind=${partKind}`);
+      events.push({ type: 'ssgNoiseFreq', line, value: val });
       continue;
     }
 
@@ -1686,17 +1749,21 @@ function parseToneHeader(cleaned, line) {
 // raw 0-3=DT+0..+3、raw 4-7=DT -0..-3(下位2bitが絶対値、bit2が符号)という
 // 業界標準のテーブルに従う。よってv2では:
 //   入力が0以上ならそのまま生の3bit値として扱う(従来通り、0-7)。
-//   入力が負(-3〜-1)なら 4+|value| に変換する(-1→5, -2→6, -3→7)。
-// 有効な入力全体は -3〜7 (0-3は「符号無し生値」と「符号付き値」が同じ意味になるため重複)。
+//   入力が負なら 4 | (|value| & 3) に変換する(-1→5, -2→6, -3→7, -4→4, -5→5, -6→6, -7→7)。
+// 2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPDT.MML/PDT2.MMLで実測し、
+// -3〜-1だけでなく-4以下(実測は-7まで)も拒否されず、この式で生値が決まることを
+// 確認した(tools/pmd-reference/追加分参照)。よって負値側に下限は無い(マスク演算な
+// ので上のとおり4値ループする)。正値側は0-7のみ実測済み(未測定の8以上は従来通り
+// 拒否する)。
 function parseToneOperatorLine(cleaned, line, opIndex) {
   const nums = parseIntList(cleaned, line, 10, `音色定義オペレータ${opIndex + 1}行(AR DR SR RR SL TL KS ML DT AMS)`);
   if (!nums) {
     throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行の書式が不正です(AR DR SR RR SL TL KS ML DT AMSの10個の数値が必要): "${cleaned}"`);
   }
-  const [ar, dr, sr, rr, sl, tl, ks, ml, dtRaw, ams] = nums;
+  const [ar, dr, sr, rr, slRaw, tl, ks, ml, dtRaw, ams] = nums;
   const checks = [
     ['AR', ar, 0, 31], ['DR', dr, 0, 31], ['SR', sr, 0, 31], ['RR', rr, 0, 15],
-    ['SL', sl, 0, 15], ['TL', tl, 0, 127], ['KS', ks, 0, 3], ['ML', ml, 0, 15],
+    ['TL', tl, 0, 127], ['KS', ks, 0, 3], ['ML', ml, 0, 15],
     ['AMS', ams, 0, 1],
   ];
   for (const [name, val, lo, hi] of checks) {
@@ -1704,10 +1771,20 @@ function parseToneOperatorLine(cleaned, line, opIndex) {
       throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行の${name}が範囲外です(${lo}-${hi}): ${val}`);
     }
   }
-  if (dtRaw < -3 || dtRaw > 7) {
+  // SLが0-15の範囲外(実データで16〜31等が実在する)でも拒否せず、MC.EXEと同じ
+  // 4bitマスクを適用する。2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sを
+  // PSL.MML/PSL2.MMLで実測して確定(tools/pmd-reference/追加分参照):
+  // 17→1, 16→0, 31→15, 18→2 (value & 15。15への飽和ではない)。
+  const sl = slRaw & 15;
+  if (dtRaw > 7) {
     throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行のDTが範囲外です(-3〜3 または 0〜7。PMDMML.MAN §3-1): ${dtRaw}`);
   }
-  const dt = dtRaw < 0 ? 4 + (-dtRaw) : dtRaw; // 符号付き表記 -1〜-3 を生の3bit値5〜7へ変換(上のコメント参照)
+  // 符号付き表記の生値変換。2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sを
+  // PDT.MML/PDT2.MMLで実測して確定(tools/pmd-reference/追加分参照): -3〜-1の
+  // 範囲だけでなく-4以下(-4〜-7)も拒否されず、生値 = 4 | (|n| & 3) になる
+  // (-4→4, -5→5, -6→6, -7→7。従来の「4+|n|」は|n|<=3では同じ結果だが|n|>=4では
+  // 範囲外化してしまうため、3bitの下位2bitを取り出す式に一般化した)。
+  const dt = dtRaw < 0 ? (4 | ((-dtRaw) & 3)) : dtRaw;
   return { ar, dr, sr, rr, sl, tl, ks, ml, dt, ams };
 }
 
@@ -2056,11 +2133,11 @@ export function parseMml(source) {
         // 以降の行に同じパート文字が再度現れても一切コンパイルしない。
         if (trackInfo.state.terminated) continue;
         // FM3Extendパートは実体がFM3chの拡張(§2-20「FM音源3のパートを...拡張します」)
-        // なのでkind='fm'(FM用のv/V変換表・オクターブ範囲・Eコマンド禁止などが
-        // 通常のFMパートA-Fと同じに扱われる。実データ実測(MSO_FM_FS_PPZ.MML:108行の
-        // `y ... !e`)でも、FM系パートとして'E'(ソフトウエアエンベロープ)が
-        // 拒否されるのが正しい挙動だと確認できる=既存のFM系エラーメッセージが
-        // そのままyにも出るのが期待通り)。
+        // なのでkind='fm'(FM用のv/V変換表・オクターブ範囲などが通常のFMパートA-Fと
+        // 同じに扱われる)。2026-08-19のMC.EXE実測(バッチ5)で'E'(ソフトウエア
+        // エンベロープ)はFM系パートでも受理されると判明したため(partKindによる
+        // 拒否は撤去済み、tools/verify_pmd_ssg_misc_commands.mjs参照)、FM3Extend
+        // パートでもEはpartKindでは拒否されない。
         const kind = ppzExtendSet.has(p) ? 'ppz' : (fm3ExtendSet.has(p) ? 'fm' : PART_KIND[p]);
         tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState, p);
       }

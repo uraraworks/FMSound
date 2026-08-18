@@ -6,6 +6,8 @@
 //
 // 実行: node tools/verify_pmd_mml_lines_and_tone_ground_truth.mjs
 
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { compileMml } from '../compiler/pmd_mml_compiler.mjs';
 
 let passCount = 0;
@@ -80,14 +82,120 @@ function toneBytesFor(dtLine1) {
   }
 }
 {
-  // 陽性対照: -4は仕様上の範囲外(-3〜3 または 0〜7外)のまま拒否される(勝手に範囲を広げていない)。
-  const { errors } = toneBytesFor('31 0 0 0 0 0 0 1 -4 0');
-  check('[陽性対照] DT=-4(仕様範囲外)は引き続きエラーになる', errors.length === 1 && /DTが範囲外/.test(errors[0].message), JSON.stringify(errors));
+  // 2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPDT.MML/PDT2.MMLで実測し、
+  // マニュアル仕様の範囲(-3〜3 または 0〜7)を超える-4以下も拒否されず、
+  // 生値 = 4 | (|n| & 3) になると確定した(バッチ5、tools/pmd-reference/追加分・
+  // FINDINGS.md参照)。よって以前の「範囲外として拒否」は誤りだったため、
+  // 受理してrawDt=4になることを検査する形に更新する。
+  const { errors, layout } = toneBytesFor('31 0 0 0 0 0 0 1 -4 0');
+  check('DT=-4(実機実測で受理と判明)はエラーにならない', errors.length === 0, JSON.stringify(errors));
+  if (errors.length === 0) {
+    const toneOff = layout.toneOff;
+    const { file } = toneBytesFor('31 0 0 0 0 0 0 1 -4 0');
+    const byteDtMul = file[1 + toneOff + 1 + 0x00 + 0];
+    const rawDt = (byteDtMul >> 4) & 0x7;
+    check('DT=-4の生バイトが実測どおり(raw=4)', rawDt === 4, `actual raw=${rawDt}`);
+  }
+}
+{
+  // [陽性対照] -4→4への変換式そのものが効いていることを、変換式を壊すと検出できる
+  // ことで確認する(4|(|n|&3)ではなく従来の4+|n|に戻すと-4は範囲外エラーへ戻るはず)。
+  const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
+  const orig = fs.readFileSync(parserPath, 'utf8');
+  const NEEDLE = 'const dt = dtRaw < 0 ? (4 | ((-dtRaw) & 3)) : dtRaw;';
+  if (!orig.includes(NEEDLE)) {
+    throw new Error('陽性対照用のパッチ対象コードが見つかりません(製品コードが変更された可能性)');
+  }
+  const broken = orig.replace(NEEDLE, 'if (dtRaw < -3) throw new ParseError(line, "FORCED_REJECT_DT: " + dtRaw); const dt = dtRaw < 0 ? 4 + (-dtRaw) : dtRaw;');
+  if (broken === orig) throw new Error('陽性対照用のパッチが効いていません');
+  fs.writeFileSync(parserPath, broken, 'utf8');
+  try {
+    const compilerUrl = new URL('../compiler/pmd_mml_compiler.mjs', import.meta.url).href;
+    const script = `
+      import('${compilerUrl}').then(({ compileMml }) => {
+        const r = compileMml('@1 4 5\\n31 0 0 0 0 0 0 1 -4 0\\n31 0 0 0 0 0 0 1 0 0\\n31 0 0 0 0 0 0 1 0 0\\nA @1 o4 c4\\n', {});
+        process.stdout.write(JSON.stringify({ errors: r.errors }));
+      }).catch((e) => { process.stdout.write(JSON.stringify({ threw: String(e && e.message) })); });
+    `;
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    const parsed = JSON.parse(out);
+    const brokenDetected = parsed.threw || (parsed.errors && parsed.errors.some((e) => /FORCED_REJECT_DT/.test(e.message)));
+    check('[陽性対照] DT=-4受理の分岐を壊すと検出できる(検出器が機能している証拠)', !!brokenDetected, out);
+  } finally {
+    fs.writeFileSync(parserPath, orig, 'utf8');
+  }
 }
 {
   // 陽性対照: DT=8(0-7の範囲外)も引き続き拒否される。
   const { errors } = toneBytesFor('31 0 0 0 0 0 0 1 8 0');
   check('[陽性対照] DT=8(範囲外)は引き続きエラーになる', errors.length === 1 && /DTが範囲外/.test(errors[0].message), JSON.stringify(errors));
+}
+{
+  // DT=-5〜-7も-4と同じ式で受理される。2026-08-19、PDT2.MMLのMC.EXE実測
+  // (tools/pmd-reference/pmddt2.mml・pmddt2.M)で確定: -5→5, -6→6, -7→7。
+  const cases = [[-5, 5], [-6, 6], [-7, 7]];
+  for (const [dt, expectedRaw] of cases) {
+    const { errors, layout, file } = toneBytesFor(`31 0 0 0 0 0 0 1 ${dt} 0`);
+    check(`DT=${dt}(実機実測で受理と判明)はエラーにならない`, errors.length === 0, JSON.stringify(errors));
+    if (errors.length === 0) {
+      const toneOff = layout.toneOff;
+      const byteDtMul = file[1 + toneOff + 1 + 0x00 + 0];
+      const rawDt = (byteDtMul >> 4) & 0x7;
+      check(`DT=${dt} の生バイトが実測どおり(raw=${expectedRaw})`, rawDt === expectedRaw, `actual raw=${rawDt}`);
+    }
+  }
+}
+
+console.log('\n--- 3b. 音色定義SLが範囲外(16以上)でも4bitマスクで受理される(PMDMML.MAN §3-1) ---');
+function slByteFor(slLine1) {
+  const src = `@1 4 5\n31 0 0 0 0 0 0 1 0 0\n${slLine1}\n31 0 0 0 0 0 0 1 0 0\n31 0 0 0 0 0 0 1 0 0\nA @1 o4 c4\n`;
+  return compileMml(src);
+}
+{
+  // 2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPSL.MML/PSL2.MMLで実測し確定
+  // (バッチ5、tools/pmd-reference/pmdsl.mml・pmdsl2.mml参照): 15への飽和ではなく
+  // value & 15(4bitマスク)。17→1, 16→0, 31→15, 18→2, 2→2, 1→1, 15→15, 0→0。
+  const cases = [[17, 1], [16, 0], [31, 15], [18, 2], [2, 2], [1, 1], [15, 15], [0, 0]];
+  for (const [sl, expectedRaw] of cases) {
+    const { errors, layout, file } = slByteFor(`31 0 0 0 ${sl} 0 0 1 0 0`);
+    check(`SL=${sl}(§3-1の範囲0-15を超えていても)はエラーにならない`, errors.length === 0, JSON.stringify(errors));
+    if (errors.length === 0) {
+      // op2(MML2行目)はs=2に対応する(orderedOps=[op1,op3,op2,op4]、s=2がop2)。
+      // buildToneEntry: bytes[1+0x14+s]がSL<<4|RRのバイト。
+      const toneOff = layout.toneOff;
+      const byteSlRr = file[1 + toneOff + 1 + 0x14 + 2];
+      const rawSl = (byteSlRr >> 4) & 0xf;
+      check(`SL=${sl} の生バイトが実測どおり(4bitマスク、raw=${expectedRaw})`, rawSl === expectedRaw, `actual raw=${rawSl}`);
+    }
+  }
+}
+{
+  // [陽性対照] SLのマスク処理そのものが効いていることを、マスクを外すと検出できる
+  // ことで確認する(& 15を削って旧実装の範囲チェックへ戻すとSL=17は拒否されるはず)。
+  const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
+  const orig = fs.readFileSync(parserPath, 'utf8');
+  const NEEDLE = 'const sl = slRaw & 15;';
+  if (!orig.includes(NEEDLE)) {
+    throw new Error('陽性対照用のパッチ対象コードが見つかりません(製品コードが変更された可能性)');
+  }
+  const broken = orig.replace(NEEDLE, 'if (slRaw < 0 || slRaw > 15) throw new ParseError(line, "FORCED_REJECT_SL: " + slRaw); const sl = slRaw;');
+  if (broken === orig) throw new Error('陽性対照用のパッチが効いていません');
+  fs.writeFileSync(parserPath, broken, 'utf8');
+  try {
+    const compilerUrl = new URL('../compiler/pmd_mml_compiler.mjs', import.meta.url).href;
+    const script = `
+      import('${compilerUrl}').then(({ compileMml }) => {
+        const r = compileMml('@1 4 5\\n31 0 0 0 0 0 0 1 0 0\\n31 0 0 0 17 0 0 1 0 0\\n31 0 0 0 0 0 0 1 0 0\\n31 0 0 0 0 0 0 1 0 0\\nA @1 o4 c4\\n', {});
+        process.stdout.write(JSON.stringify({ errors: r.errors }));
+      }).catch((e) => { process.stdout.write(JSON.stringify({ threw: String(e && e.message) })); });
+    `;
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    const parsed = JSON.parse(out);
+    const brokenDetected = parsed.threw || (parsed.errors && parsed.errors.some((e) => /FORCED_REJECT_SL/.test(e.message)));
+    check('[陽性対照] SLの4bitマスクを削ると検出できる(検出器が機能している証拠)', !!brokenDetected, out);
+  } finally {
+    fs.writeFileSync(parserPath, orig, 'utf8');
+  }
 }
 
 console.log('\n--- 4. Kパートでもテンポ(T/t)が使える(fmdriver_pmd.c pmd_cmd_table_rhythmにpmd_cmdfc_tempoが存在) ---');

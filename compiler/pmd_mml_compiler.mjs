@@ -158,6 +158,9 @@ function sizeOfEvent(ev) {
     case 'ssgToneNoise': return 2; // P: 0xed + 1byte(PMDMML.MAN §6-5)
     case 'ssgEnvOld': return 5; // E書式1: 0xf0 + AL/DD/SR/RR(各1byte、PMDMML.MAN §8-1)
     case 'ssgEnvNew': return 6; // E書式2: 0xcd + AR/DR/SR/(RR|SL詰め)/AL(各1byte、§8-1)
+    // バッチ5(2026-08-19、MC.EXE ver4.8s実測)追加分。
+    case 'ssgNoiseFreq': return 2; // w: 0xee + 1byte(fmdriver_pmd.c:2686実測、PWL.MML実測)
+    case 'pseudoEcho': return 2; // W展開時の分割コマンド: 0xdd(d<0)/0xde(d>0) + 1byte(PW/PW2/PW3.MML実測)
 
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -439,6 +442,15 @@ function emitEvent(ev, out, offset) {
       out[offset + 3] = ev.sr & 0x1f;
       out[offset + 4] = (((ev.sl ^ 0xf) & 0xf) << 4) | (ev.rr & 0xf);
       out[offset + 5] = ev.al & 0xf;
+      return;
+    case 'ssgNoiseFreq': // SSGノイズ周波数(fmdriver_pmd.c:2686実測。0xee + 1byte)
+      out[offset] = 0xee;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'pseudoEcho': // W(擬似エコー)展開時の分割コマンド(PW/PW2/PW3.MML実測。
+      // 0xdd(d<0)/0xde(d>0) + 1byte(min(|d|*k,15)*4))
+      out[offset] = ev.sign < 0 ? 0xdd : 0xde;
+      out[offset + 1] = ev.value & 0xff;
       return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
