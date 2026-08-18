@@ -354,8 +354,12 @@ function testWiring() {
     /song\.mmlSource/.test(onSelectBody),
   );
   check(
+    // 2026-08-18(.FF結線タスクで追記): playBytes()に7引数目(ffFile)が増えたため、
+    // 末尾に`, ffFile`が続くのを許容するよう`\)`直前を`(,\s*\S+)?`で緩めた。
+    // mmlSourceTextが6引数目として渡されている、という本来の主張(コア部分)は
+    // そのまま変えていない。
     '[結線] (c) onSelectがplayBytes()へmmlSourceTextを渡している',
-    /playBytes\(song\.bytes,\s*song\.fileName,\s*undefined,\s*pcmFiles,\s*\[\],\s*mmlSourceText\)/.test(onSelectBody),
+    /playBytes\(song\.bytes,\s*song\.fileName,\s*undefined,\s*pcmFiles,\s*\[\],\s*mmlSourceText(,\s*\S+)?\)/.test(onSelectBody),
   );
 
   // サンプル曲(sample_fur_elise)はMMLソースを持つ扱いにすること(取り違えると

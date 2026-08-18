@@ -124,6 +124,21 @@ const ja = {
   'pmd.pcm.p86Unsupported': 'この曲はPMD86のPCM({files})を使いますが未対応です。PCMパートは鳴りません。',
   'pmd.editor.noMmlSource': 'この曲にはMMLソースが無いため編集できません。編集欄には別の曲のMMLが入っています。',
 
+  // --- 外部音色ファイル(.FF、`#FFFile`)の選択状態。net/pmd-ff.js
+  // describePmdFfStatus()が生成キーを決め、pmd.pcm.*と同じsetNetStatus()経由で表示する。
+  'pmd.ff.missing': 'この曲は外部音色ファイル({file})を必要としますが見つかりませんでした。音色(@)が本文で定義されていないパートはコンパイルできません。.FFファイルを曲と同じ書庫に入れて開いてください。',
+  'pmd.ff.nameMismatch': 'この曲が指定する外部音色ファイル({wanted})が見つからなかったため、代わりに{used}を使用しています。音色が本来と異なる可能性があります。',
+
+  // --- プレイヤーモードの再生案内。
+  // 再生できる対象が無いのに再生ボタンが押されたとき(例: 新規作成したMMLのまま
+  // プレイヤーモードに戻り、まだ一度もコンパイルしていない場合)の案内。
+  'pmd.player.noSongToPlay': '再生できる曲がありません。編集モードでMMLをコンパイルしてから再生してください。',
+  // 「編集を閉じていたら元のデータ」の原則により、プレイヤーモードでは同梱の.mを
+  // 再生する。コンパイル結果も手元にある(=一度でも編集モードでコンパイルした後)
+  // ときだけ、どちらが鳴っているかを案内する(html/pmd-app.js playBytes()参照。
+  // 常に出すと聴くだけの利用者の邪魔になるため、曖昧なときに限定している)。
+  'pmd.player.playingBundled': '同梱されている .m ファイルを再生します。',
+
   'confirm.newFile': '編集中のMMLを消して新規作成します。この操作の直後であればCmd/Ctrl+Zで元に戻せます。よろしいですか?',
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
   'confirm.songMmlReplace': '編集中のMMLを、選んだ曲のMMLで置き換えます。元の内容はこの操作で失われます。',
@@ -319,6 +334,12 @@ const en = {
   'pmd.pcm.ppsUnsupported': 'This song uses PPSDRV ({files}), which is not supported. That part will be silent.',
   'pmd.pcm.p86Unsupported': 'This song uses PMD86 PCM ({files}), which is not supported. Its PCM parts will be silent.',
   'pmd.editor.noMmlSource': "This song has no MML source, so it cannot be edited. The editor contains a different song's MML.",
+
+  'pmd.ff.missing': 'This song requires an external voice file ({file}), which could not be found. Parts whose voice (@) is not defined in the body cannot be compiled. Put the .FF file in the same archive as the song and open it again.',
+  'pmd.ff.nameMismatch': 'This song specifies an external voice file ({wanted}), which could not be found. Using {used} instead — the voices may differ from the original.',
+
+  'pmd.player.noSongToPlay': 'There is no song to play. Switch to editor mode and compile your MML first.',
+  'pmd.player.playingBundled': 'Playing the bundled .m file.',
 
   'confirm.newFile': 'This clears the MML you are editing and starts a new file. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',

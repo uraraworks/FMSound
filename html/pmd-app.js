@@ -83,6 +83,10 @@ import { loadPcmFilesForSong } from './net/library.js';
 // 一緒にentries/relatedを扱うhtml/pmd-app.js側の全読み込み経路(書庫/URL/
 // ライブラリ選択)がここを通す。
 import { extractMmlSourceText } from './net/pmd-mml-source.js';
+// 外部音色ファイル(.FF、`#FFFile`)選択の窓口(2026-08-18新設)。PCM
+// (collectPmdPcmFiles())・MMLソース(extractMmlSourceText())と同じ流儀で、
+// 書庫のentries+選ばれた曲のエントリ名+MMLソースから使う`.FF`を1つ決める。
+import { selectFfFileForSong, extractFfFileHeaderName, describePmdFfStatus } from './net/pmd-ff.js';
 
 // 課題B: 「Clear MML」(空にするだけ・英語のまま)を「新規作成」に置き換える雛形。
 // 押した直後にそのまま再生すると音が鳴ることを実測確認済み(FM1パートにALG7の
@@ -156,6 +160,10 @@ export async function init(ctx) {
       // まとめて消す(resetTransientMessages()コメント参照)。カウンタはこの直後の
       // compileAndPlay()成功時にmarkCompiled()で実際の数字に置き換わる。
       resetTransientMessages();
+      // PCM/.FF/元データ(2026-08-18): 直前に別の曲(書庫等)を読み込んでいた場合、
+      // そのPCM/.FF/元の.mをサンプルのコンパイルへ持ち越さない(btnNewMmlと同じ
+      // 「曲の識別が変わる箇所」)。
+      clearCurrentSongAudioAssets();
       compileAndPlay();
       return;
     }
@@ -254,7 +262,16 @@ export async function init(ctx) {
       // playBytes()のmmlSourceText引数を通す)。
       const mmlSourceText = song.mmlSource ?? null;
       if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
-      playBytes(song.bytes, song.fileName, undefined, pcmFiles, [], mmlSourceText);
+      // 外部音色ファイル(.FF)もPCMと同じ扱い(2026-08-18): 書庫取り込み時に
+      // net/library.js importArchiveSongs()がselectFfFileForSong()で選んだ結果を
+      // song.ffFile/ffFileSource/ffFileMatchedHeaderNameとしてレコードへ直接
+      // 埋め込んである(PCMと違い内容ハッシュ共有ストアを使わない、
+      // net/library.js saveSong()コメント参照)ため、DB参照の解決は不要でそのまま
+      // 組み立てるだけでよい。
+      const ffFile = song.ffFile
+        ? { data: song.ffFile, name: song.ffFileSource ?? null, matchedHeaderName: Boolean(song.ffFileMatchedHeaderName) }
+        : null;
+      playBytes(song.bytes, song.fileName, undefined, pcmFiles, [], mmlSourceText, ffFile);
     },
   });
   // 「曲を開く」メニュー(ui/open-menu.js)のポップオーバー制御。btnLibrary側の
@@ -313,6 +330,40 @@ export async function init(ctx) {
     applyUiMode(mode);
   }
 
+  // 課題(利用者提案、2026-08-18): 「聴く」ことを自作コンパイラの完成度から切り離す。
+  // 編集モードを閉じる(editor→player)ときに、保持していた元の.M/.m(書庫やURLから
+  // 読み込んだ、確実に鳴ることが分かっているバイナリ、currentSongOriginalBytes)へ
+  // 再生対象を戻す。編集モードのときだけ自作コンパイラの出力を鳴らし、プレイヤー
+  // モードでは常に元のファイルが鳴るようにする住み分け。
+  //
+  // 自動再生はしない(利用者指示): ここで即座にModule.playMusic()を呼ぶと、
+  // エディタを閉じただけで音が鳴り出して驚かせる。既存のpendingUrlSong機構
+  // (URL指定読み込み・同梱サンプルと同じ「読み込むだけ、再生はbtnPlayPauseへ
+  // 委ねる」仕組み)にそのまま合流させ、鳴らすかどうかは利用者の再生ボタン任せに
+  // する。
+  //
+  // 直前まで編集モードで再生していた(自作コンパイラ出力の)音は、頭出し停止する
+  // (player→editor遷移時のstopPlayback()と対称。止めないと「押せば元の曲が
+  // 鳴ります」という表示の裏で編集版がまだ鳴り続ける食い違いが起きるため)。
+  //
+  // 元の.mを保持していない場合(新規作成/共有リンク由来のMMLなど、そもそも書庫や
+  // ファイルから曲を読み込んでいない場合)は何もしない(コンパイル結果のままにする。
+  // 「戻す対象が無い」ことを無視するのではなく、この早期returnがその条件そのもの)。
+  function restoreOriginalSongOnExitEditor() {
+    if (!currentSongOriginalBytes) return; // 元データを保持していない場合は差し替えない
+    stopPlayback();
+    pendingUrlSong = {
+      bytes: currentSongOriginalBytes,
+      name: currentSongOriginalName,
+      fileName: currentSongOriginalFileNameForBar,
+      pcmFiles: currentSongPcmFiles,
+      unsupportedFiles: [],
+      ffFile: currentSongFfFile,
+    };
+    currentSongName = currentSongOriginalFileNameForBar;
+    updateTransportButtonUI();
+  }
+
   btnEditorMode.addEventListener('click', () => {
     const next = uiMode === 'editor' ? 'player' : 'editor';
     // 課題(MMLソース連動、2026-08-18、利用者報告「聞いていた曲と違うMMLが編集欄に
@@ -331,6 +382,13 @@ export async function init(ctx) {
     // クリックではModuleが無いのでstopPlayback()自体を呼ばない)。
     if (next === 'editor' && uiMode !== 'editor' && moduleReady) {
       stopPlayback();
+    }
+    // 課題(利用者提案、2026-08-18): editor→player の遷移で、保持していた元の.M/.mが
+    // あれば再生対象をそれへ戻す(上のrestoreOriginalSongOnExitEditor()コメント参照)。
+    // 元が無い場合(新規作成/共有リンク由来)は同関数内の早期returnで何もしない
+    // (=コンパイル結果のまま)。
+    if (next === 'player' && uiMode === 'editor' && moduleReady) {
+      restoreOriginalSongOnExitEditor();
     }
     setUiMode(next);
   });
@@ -498,6 +556,10 @@ export async function init(ctx) {
     // (=このテキスト自体が手元にある状態)。古い曲のcurrentSongMmlSourceTextが
     // 残ったままだと、後でエディタボタンを押したとき無関係な理由でブロックされうる。
     clearCurrentSongMmlSource();
+    // PCM/.FF/元データも同じ理由で捨てる(2026-08-18): 新規作成は「曲」を経由しない
+    // 操作なので、以前の曲のPCM/.FF/元の.mを次のコンパイルへ持ち越さない
+    // (currentSongMmlSourceTextと同じ「曲の識別が変わる箇所」の一つ)。
+    clearCurrentSongAudioAssets();
   });
 
   rescale();
@@ -555,6 +617,63 @@ export async function init(ctx) {
     currentSongMmlSourceText = null;
   }
 
+  // --- PCM/.FF/元データの結線(2026-08-18、利用者報告「編集モードで再生すると
+  // PCMが失われる」への対処+関連する一連の拡張)。
+  //
+  // 以前のコメント(削除): 「このコンパイラはADPCM/リズムパートを出力しない
+  // (v1範囲外)なのでpcmFilesは常に空」は、J(ADPCM)・K(リズム)・PPZ8対応後は
+  // 実態と合わなくなった。曲を読み込んだ時点のpcmFiles/ffFileを保持しておき、
+  // compileAndPlay()の経路(エディタで直接コンパイル&再生する場合)でも同じものを
+  // 使う。入力源(書庫・URL・ライブラリ選択)ごとに別配線を作らない、という
+  // playBytes()/collectPmdPcmFiles()と同じ設計を踏襲する。
+  //
+  // currentSongPcmFiles: playBytes()に渡されたpcmFiles({name,data}[])のコピー。
+  // currentSongFfFile: net/pmd-ff.js selectFfFileForSong()の戻り値
+  //   ({data,name,matchedHeaderName})|null。
+  // currentSongOriginalBytes/Name/FileNameForBar: 読み込んだ元の.M/.mそのもの
+  //   (利用者提案、2026-08-18: 「聴く」ことを自作コンパイラの完成度から切り離す。
+  //   編集モードを閉じたら書庫同梱の.mへ再生対象を戻すための保管場所)。
+  //   lastCompiledBytes(下方、ダウンロード用)とは目的が違う: lastCompiledBytesは
+  //   「編集モードでの直近のコンパイル結果」専用にし、ここは「読み込んだ元データ」
+  //   専用にする(1つの変数を2用途で共有すると、状況によって違うものが出てくる
+  //   事故になる。旧実装はlastCompiledBytesがまさにこれだった)。
+  let currentSongPcmFiles = [];
+  let currentSongFfFile = null;
+  let currentSongOriginalBytes = null;
+  let currentSongOriginalName = null;
+  let currentSongOriginalFileNameForBar = null;
+  // 曲の識別が変わる(=元の.mが無関係になる)箇所の唯一の書き込み窓口。playBytes()
+  // 自身は新しい引数でこれらを上書きするので個別に呼ぶ必要は無い。呼ぶのは
+  // 「曲を経由しない」箇所(新規作成・共有リンク読み込み・サンプルのエディタモード
+  // 直接コンパイル)だけ(currentSongMmlSourceTextのclearCurrentSongMmlSource()と
+  // 同じ理由・同じ呼び出しどころ)。
+  function clearCurrentSongAudioAssets() {
+    currentSongPcmFiles = [];
+    currentSongFfFile = null;
+    currentSongOriginalBytes = null;
+    currentSongOriginalName = null;
+    currentSongOriginalFileNameForBar = null;
+    lastCompiledBytes = null;
+  }
+
+  // pendingUrlSong(URL指定/共有曲読み込みで、まだPlayを押していない曲)を設定する
+  // 箇所で、currentSongPcmFiles/currentSongFfFile/currentSongOriginalBytes等の
+  // bookkeepingも同時に更新する窓口。playBytes()が実際に呼ばれるまで待つと、その間に
+  // 利用者がエディタへ切り替えてコンパイルした場合、古い(前に読み込んでいた別の)曲の
+  // PCM/.FFを使ってしまう(currentSongMmlSourceTextがsetCurrentSongMmlSource()で
+  // pendingUrlSong設定と同時に即時更新されているのと同じ理由・同じ考え方)。
+  // restoreOriginalSongOnExitEditor()はこの窓口を使わない(同じ曲への復帰であり、
+  // lastCompiledBytesを捨てたくないため、上のplayBytes()内の
+  // isReplayingSameOriginal判定に任せる)。
+  function markPendingSongAssets({ bytes, name, fileNameForBar, pcmFiles = [], ffFile = null }) {
+    currentSongPcmFiles = pcmFiles;
+    currentSongFfFile = ffFile;
+    currentSongOriginalBytes = bytes;
+    currentSongOriginalName = name;
+    currentSongOriginalFileNameForBar = fileNameForBar ?? name;
+    lastCompiledBytes = null; // 新しい曲を選んだので、以前のコンパイル結果は対応しない
+  }
+
   // 見つかったMMLソースを編集欄へ静かに反映する(dlSampleFurElise クリックハンドラの
   // プレイヤーモード分岐・loadDefaultSample()と同じ「プレイヤーモードでも編集欄を
   // 静かに更新しておく」作法)。ただしこちらは利用者が明示的に別の曲を選ぶ操作
@@ -605,7 +724,13 @@ export async function init(ctx) {
   // 戻り値は表示したメッセージ配列(空なら「対応が要る参照は無かった」)。呼び出し側が
   // この直後さらにsetNetStatus()で上書きするかどうかの判断に使う
   // (例: 書庫から即再生するopenPmdFile()。下のplayBytes()呼び出し箇所参照)。
-  function reportPmdPcmStatus(unsupportedFiles = []) {
+  // extraMessages: PCM以外の「同じ枠(曲読み込み直後の1行案内)」に合流させたい
+  // 追加分。2026-08-18、compileAndPlay()の.FF不足/取り違え案内
+  // (net/pmd-ff.js describePmdFfStatus())がここへ合流する(pmd.pcm.*と同じく
+  // エラー扱いの案内なので、この関数のisError=true前提と揃う)。誤って警告扱いに
+  // したくない案内(pmd.player.playingBundled、エラーではない)はここに混ぜず、
+  // 呼び出し側で個別にsetNetStatus(…, false)する(playBytes()参照)。
+  function reportPmdPcmStatus(unsupportedFiles = [], extraMessages = []) {
     const count = Module.getPcmCount();
     const slots = [];
     for (let i = 0; i < count; i += 1) {
@@ -615,7 +740,7 @@ export async function init(ctx) {
         error: Module.getPcmError(i) !== 0,
       });
     }
-    const messages = describePmdPcmStatus({ slots, unsupportedFiles });
+    const messages = [...describePmdPcmStatus({ slots, unsupportedFiles }), ...extraMessages];
     if (messages.length > 0) {
       setNetStatus(messages.map((m) => t(m.key, m.params)).join(' '), true);
     }
@@ -1149,17 +1274,31 @@ export async function init(ctx) {
     // renderCompileErrors()が今回の結果で上書きするが、「開始時に消す」という
     // 要求どおりの箇所として明示的に置く)。
     clearCompileStatus();
-    const { file, errors, layout } = compileMml(source);
+    // .FFの不足/取り違え案内(2026-08-18): 実際のコンパイル成否に関わらず、
+    // 「このMMLが#FFFileを使っているか」「現在保持しているcurrentSongFfFileが
+    // それを満たせているか」を先に判定しておく。エラー(音色未定義)で終わる場合も
+    // 「なぜ.FFが要るのに足りないか」を案内するため、成功/失敗どちらの分岐でも
+    // 使う(下記参照)。
+    const ffHeaderName = extractFfFileHeaderName(source);
+    const ffMessages = describePmdFfStatus({ headerName: ffHeaderName, ffSelection: currentSongFfFile });
+    const { file, errors, layout } = compileMml(source, { ffFile: currentSongFfFile ? currentSongFfFile.data : undefined });
     if (errors.length > 0) {
       renderCompileErrors(errors);
+      if (ffMessages.length > 0) {
+        setNetStatus(ffMessages.map((m) => t(m.key, m.params)).join(' '), true);
+      }
       updateTransportButtonUI();
       return;
     }
     // コンパイル済みMMLの再生も、他の経路(playBytes())と同じくwriteSongWithPcm()の
     // 窓口を通す(入力源ごとに別配線を作らない。過去に押下表示だけ別配線にして
-    // 漏れた事故がある)。このコンパイラはADPCM/リズムパートを出力しない(v1範囲外)
-    // のでpcmFilesは常に空。
-    const editedPath = writeSongWithPcm(Module, { songName: 'edited.M', songBytes: file, pcmFiles: [] });
+    // 漏れた事故がある)。
+    // 【不具合修正・2026-08-18、利用者報告「編集モードで再生するとPCMが失われる」】
+    // 以前はここでpcmFiles:[]を固定していた。当時のコメント「このコンパイラは
+    // ADPCM/リズムパートを出力しない(v1範囲外)のでpcmFilesは常に空」は、
+    // J(ADPCM)・K(リズム)・PPZ8対応後は実態と合わなくなっている。読み込んだ曲の
+    // pcmFiles(currentSongPcmFiles、上のコメント参照)をここでも使う。
+    const editedPath = writeSongWithPcm(Module, { songName: 'edited.M', songBytes: file, pcmFiles: currentSongPcmFiles });
     const error = Module.playMusic(editedPath);
     // 曲を読み込み直すたびにミュートを全解除する(利用者指示: 意図しない無音を
     // 次の曲へ持ち越さない)。
@@ -1177,13 +1316,21 @@ export async function init(ctx) {
       return;
     }
     renderCompileErrors([]);
+    // ダウンロード用の「直近コンパイル結果」はここでだけ更新する(playBytes()は
+    // もう触らない。上のcurrentSongOriginalBytes導入コメント参照。「元データ」と
+    // 「コンパイル結果」を1つの変数で共有していた旧実装の事故を修正)。
+    // currentSongOriginalBytes/Name/pcmFiles/ffFileは意図的にここでは変更しない:
+    // これらは「読み込んだ曲」の識別に紐づくもので、その曲のMMLを編集して
+    // コンパイルしただけでは曲の識別自体は変わらない(利用者提案、2026-08-18:
+    // 編集モードを閉じたら元の.mへ戻すために必要)。
     lastCompiledBytes = file;
     mmlDirty = false;
     hasCompiled = true;
-    // PCM読み込み状態の案内。playBytes()と同じ窓口(reportPmdPcmStatus())を通す
-    // (入力源ごとに別配線を作らない、という上のコメントの続き)。このコンパイラは
-    // PCMを出力しないため実質常に空配列になるが、経路は分けない。
-    reportPmdPcmStatus([]);
+    // PCM/.FF読み込み状態の案内。playBytes()と同じ窓口(reportPmdPcmStatus())を通す
+    // (入力源ごとに別配線を作らない、という上のコメントの続き)。ffMessagesは
+    // 上で判定済み(コンパイル成功時も「名前が違う.FFを使っている」等は知らせる
+    // 価値があるため、成功/失敗どちらでも表示する)。
+    reportPmdPcmStatus([], ffMessages);
     // 共有可能カウンタ: 「コンパイル(再生)時に集計する」(利用者指示)。打鍵のたびではなく、
     // 実際にコンパイルが成功したこの1箇所でだけ集計する。
     shareControls.markCompiled(source);
@@ -1210,13 +1357,30 @@ export async function init(ctx) {
       return;
     }
     if (pendingUrlSong && uiMode !== 'editor') {
-      const { bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText } = pendingUrlSong;
+      const { bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText, ffFile } = pendingUrlSong;
       pendingUrlSong = null;
-      playBytes(bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText);
+      playBytes(bytes, name, fileName, pcmFiles, unsupportedFiles, mmlSourceText, ffFile);
       return;
     }
     const audioState = globalThis.pmdAudioState;
-    if (!audioState || !audioState.context) return;
+    if (!audioState || !audioState.context) {
+      // 課題(利用者提案、2026-08-18): 以前はここで黙ってreturnしており、
+      // 再生できる対象が無い状態(hasPlayback/pendingUrlSongのどちらでもない=
+      // Moduleがまだ何も再生していない)でボタンが押されても理由が分からなかった
+      // (例: 新規作成したMMLのまま一度もコンパイルせずプレイヤーモードへ戻った
+      // 場合、restoreOriginalSongOnExitEditor()に戻す先が無く何も起きない)。
+      //
+      // 無効化(updateTransportButtonUI())ではなくメッセージ表示を選んだ理由:
+      // playDisabledの判定はhasPlayback(AudioWorkletの非同期postMessageで立つ、
+      // 上のhasCompiled導入コメント参照)に依存しており、hasPlaybackは「一度でも
+      // 再生した」を指す一方向のフラグでModule.stopMusic()後も戻らない(実測)。
+      // そのため「今まさに再生対象が無い」を無効化だけで正確に表現しようとすると
+      // hasPlaybackとは別の状態追跡が要り、既存設計への影響が大きい。ボタンは
+      // 押せる状態のまま理由を返す方が、pmd.editor.noMmlSource等と同じ
+      // 「操作は許すが理由を返す」既存の作法に合う。
+      setNetStatus(t('pmd.player.noSongToPlay'), true);
+      return;
+    }
     if (audioState.paused) {
       audioState.context.resume();
       setAudioPaused(false);
@@ -1374,7 +1538,7 @@ export async function init(ctx) {
   // 「いつ確認するか」が異なる=既にconfirmしたのに二重に確認が出る事故を避けるため、
   // 反映そのものは呼び出し元の責務のままにしてある)。省略時(既存の呼び出し元)はnull=
   // 「この曲にMMLソースは無い」として記録される。
-  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = [], unsupportedFiles = [], mmlSourceText = null) {
+  async function playBytes(bytes, name, fileNameForBar = name, pcmFiles = [], unsupportedFiles = [], mmlSourceText = null, ffFile = null) {
     // 課題A: 曲を読み込んだときも編集欄に残っていた前回のエラー表示を消す
     // (この経路はMMLコンパイルを経由しない.M/.mバイナリの直接再生なので、
     // compileAndPlay()側のclearCompileStatus()を通らない)。
@@ -1388,6 +1552,34 @@ export async function init(ctx) {
     pendingUrlSong = null; // 直接再生する経路に入った時点で「未再生の読み込み」状態は解消
     currentSongName = fileNameForBar;
     setCurrentSongMmlSource(mmlSourceText);
+    // PCM/.FF/元データの結線(2026-08-18): 曲ごとにpcmFiles/ffFileを保持し、
+    // 編集モードでの直接コンパイル(compileAndPlay())でも同じものを使えるようにする
+    // (上のcurrentSongPcmFiles等の宣言コメント参照)。
+    //
+    // 同じ曲(同じ参照のbytes)を再生し直しただけかどうかを見て、直前のコンパイル
+    // 結果(lastCompiledBytes)を捨てるかどうかを決める。利用者提案(2026-08-18)
+    // 「編集を閉じたら元の.mへ戻す」の実装(restoreOriginalSongOnExitEditor())は、
+    // 保持していたcurrentSongOriginalBytesをそのままここへ渡す(=参照が同じ)ため、
+    // 「同じ曲へ戻っただけ」と正しく判定できる。別の曲を新しく読み込んだ場合
+    // (通常はbytesが新しいUint8Arrayで参照が異なる)は、以前のコンパイル結果は
+    // もう対応しないのでlastCompiledBytesを捨てる。
+    const isReplayingSameOriginal = currentSongOriginalBytes != null && bytes === currentSongOriginalBytes;
+    currentSongPcmFiles = pcmFiles;
+    currentSongFfFile = ffFile;
+    currentSongOriginalBytes = bytes;
+    currentSongOriginalName = name;
+    currentSongOriginalFileNameForBar = fileNameForBar;
+    if (!isReplayingSameOriginal) {
+      lastCompiledBytes = null;
+    }
+    // 「どちらを鳴らしているか」の案内(利用者提案、2026-08-18)。プレイヤーモードで
+    // かつコンパイル結果も手元にある(=この曲を一度でも編集モードでコンパイルした
+    // 後、編集を閉じて戻ってきた)ときだけ出す。元の.mしか無い場合はどちらが鳴るか
+    // 紛れようがないため出さない(毎回出すと聴くだけの利用者の邪魔になる、という
+    // 利用者指示)。「常に出す」に変えたくなったら、この条件式(uiMode!=='editor' &&
+    // lastCompiledBytes)を外すだけでよい。PCM等のエラー案内より優先度が低いため、
+    // pcmMessagesが空だった場合にだけ出す(下記)。
+    const showAmbiguousPlaybackNotice = uiMode !== 'editor' && Boolean(lastCompiledBytes);
     // 曲ごとに専用ディレクトリへ配置する窓口(net/pmd-pcm.js)を必ず通す。
     // ルート直下へ直接書くと.PPC等のPCM探索(opendir/readdir)が失敗するため
     // (詳細は同ファイルの冒頭コメント参照)。
@@ -1411,11 +1603,26 @@ export async function init(ctx) {
     if (error) {
       alert(error);
     } else {
-      lastCompiledBytes = bytes; // 課題D: 「曲を開く」で読み込んだ.Mもダウンロード対象にする
+      // 【不具合修正・2026-08-18】以前はここでlastCompiledBytesという変数へ
+      // 「読み込んだ元データ」の代入も行っていた。lastCompiledBytesは本来
+      // 「直近のコンパイル結果」専用のつもりだったが、1つの変数を2つの用途で
+      // 共有すると、状況によってダウンロードされる中身が違う、という事故になって
+      // いた(利用者指摘)。
+      // 元データはcurrentSongOriginalBytes(上で設定済み)、コンパイル結果は
+      // compileAndPlay()側だけがlastCompiledBytesを書く、と役割を分離したため、
+      // ここでは何も代入しない。
+      //
       // PCM(.PPC/.PZI/.PVI/.P86/.PPS)読み込み状態の案内(reportPmdPcmStatus()参照)。
       // 呼び出し元がこの直後に別のsetNetStatus()で上書きする場合は戻り値を見て
       // 判断すること(下のopenPmdFile()内、書庫を即再生する箇所参照)。
       pcmMessages = reportPmdPcmStatus(unsupportedFiles);
+      // 上のambiguous案内は、PCM等のエラー案内が無かったときだけ追加で出す
+      // (setNetStatus()は上書き式なので、両方同時に呼ぶと後勝ちで片方が消える。
+      // pcmMessagesが空でもPCM側は何もsetNetStatusしていないので、ここで初めて
+      // 出しても問題ない。エラーではないのでisError=falseで出す)。
+      if (pcmMessages.length === 0 && showAmbiguousPlaybackNotice) {
+        setNetStatus(t('pmd.player.playingBundled'), false);
+      }
     }
     commentOffset = 0;
     setAudioPaused(false);
@@ -1533,6 +1740,10 @@ export async function init(ctx) {
       // playBytes()の責務にしていない。上のplayBytes()コメント参照)。
       const mmlSourceText = extractMmlSourceText(chosen.entry.name, chosen.related);
       if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
+      // 外部音色ファイル(.FF)の選択(2026-08-18): PCM/MMLソースと同じ流儀で、
+      // 書庫全体のentries+選ばれた曲のエントリ名+MMLソースから決める
+      // (net/pmd-ff.js selectFfFileForSong()冒頭コメント参照)。
+      const ffSelection = selectFfFileForSong(resolved.entries, chosen.entry.name, mmlSourceText);
       const pcmMessages = await playBytes(
         chosen.entry.data,
         chosen.displayName,
@@ -1540,6 +1751,7 @@ export async function init(ctx) {
         collectPmdPcmFiles(resolved.entries, chosen.entry.name),
         collectUnsupportedPmdPcmFiles(resolved.entries),
         mmlSourceText,
+        ffSelection,
       );
       // playBytes()内でPCM不足等の案内を既にsetNetStatus()済みなら、それを
       // 「読み込みました」で上書きしない(唯一の窓口を通しつつ、後勝ちで警告が
@@ -1569,15 +1781,43 @@ export async function init(ctx) {
   };
 
   // --- 課題D: ダウンロード(MMLソース/コンパイル済み.M/asmのdb配列)。
+  //
+  // 【拡張・2026-08-18、利用者提案】「編集を閉じていたら元のデータ」の原則を
+  // ダウンロードにも通す(聞こえているものと落ちてくるものを一致させる)。以前は
+  // lastCompiledBytesが「書庫から開いた.mのバイト列」と「コンパイル結果」の
+  // 両方を兼ねており、状況によって違うものがダウンロードされていた
+  // (compileAndPlay()/playBytes()側の役割分離コメント参照。今はlastCompiledBytesは
+  // 「直近のコンパイル結果」専用、currentSongOriginalBytesが「元データ」専用)。
+  //
+  // 判定条件はgetDownloadBytes()/getDownloadFileName()で完全に揃える(ズレると
+  // 「ファイル名は元、中身はコンパイル結果」のような食い違いが起きるため)。
+  //   - プレイヤーモード かつ 元データがある: 元データ(pmd-song.M)。
+  //   - それ以外(エディタモード、または元データが無い=新規作成/共有リンク由来):
+  //     コンパイル結果(pmd-song-compiled.M)。落とせるものが無ければ両方null/undefined
+  //     になり、download-menu.js側が既に「compiled無しならボタンをdisabled」に
+  //     しているため、空ファイルを黙って落とすことはない。
+  function shouldDownloadOriginal() {
+    return uiMode !== 'editor' && Boolean(currentSongOriginalBytes);
+  }
+  function getDownloadBytes() {
+    if (shouldDownloadOriginal()) return currentSongOriginalBytes;
+    return lastCompiledBytes;
+  }
+  function getDownloadFileName() {
+    return shouldDownloadOriginal() ? 'pmd-song.M' : 'pmd-song-compiled.M';
+  }
   const downloadMenu = createDownloadMenu({
     driverKey: 'pmd',
     mmlFilename: 'pmd-mml.mml',
-    compiledFilename: 'pmd-song.M',
+    // 関数で渡す(ui/download-menu.js側を文字列/関数どちらも受け付けるよう拡張済み。
+    // MUCOM88側=html/mucom-app.jsは従来通り固定文字列'mucom-song.mub'のままで、
+    // 挙動は変えていない)。
+    compiledFilename: getDownloadFileName,
     compiledLabel: '.M',
     asmFilename: 'pmd-song-db.asm',
     asmLabel: 'pmd_song_data',
     getMmlText: () => mmlTextarea.value,
-    getCompiledBytes: () => lastCompiledBytes,
+    getCompiledBytes: getDownloadBytes,
   });
   btnDownload.addEventListener('click', () => downloadMenu.render());
   setupPopover(btnDownload, downloadMenu.popoverEl);
@@ -1669,12 +1909,20 @@ export async function init(ctx) {
       const mmlSourceText = extractMmlSourceText(chosen.entry.name, chosen.related);
       if (mmlSourceText != null) reflectSongMmlSourceQuietly(mmlSourceText);
       setCurrentSongMmlSource(mmlSourceText);
+      // 外部音色ファイル(.FF)の選択(2026-08-18、openPmdFile()と同じ窓口)。
+      const ffSelection = selectFfFileForSong(resolved.entries, chosen.entry.name, mmlSourceText);
+      const urlSongPcmFiles = collectPmdPcmFiles(resolved.entries, chosen.entry.name);
+      markPendingSongAssets({
+        bytes: chosen.entry.data, name: chosen.displayName, fileNameForBar: chosen.displayName,
+        pcmFiles: urlSongPcmFiles, ffFile: ffSelection,
+      });
       pendingUrlSong = {
         bytes: chosen.entry.data,
         name: chosen.displayName,
-        pcmFiles: collectPmdPcmFiles(resolved.entries, chosen.entry.name),
+        pcmFiles: urlSongPcmFiles,
         unsupportedFiles: collectUnsupportedPmdPcmFiles(resolved.entries),
         mmlSourceText,
+        ffFile: ffSelection,
       };
       currentSongName = chosen.displayName;
       setNetStatus(t('net.loadedReady', { name: chosen.displayName }), false);
@@ -1693,6 +1941,10 @@ export async function init(ctx) {
     // (playBytes()のfileNameForBar引数参照)。ツールバーの「読み込みました」は
     // 従来どおり曲名(タイトル)を優先するresolved.nameのまま(役割が違ってよい)。
     pendingUrlSong = { bytes: resolved.bytes, name: resolved.name, fileName: resolved.fileName };
+    // 単体ファイルURLはPCM/.FFを探す手段が無い(書庫を経由しないため)。以前の曲の
+    // PCM/.FFを持ち越さないよう、ここで明示的に空へ戻す(markPendingSongAssets()の
+    // 既定値そのもの)。
+    markPendingSongAssets({ bytes: resolved.bytes, name: resolved.name, fileNameForBar: resolved.fileName });
     // MMLソース連動: 単体ファイルURL(書庫を経由しない)は同梱`.mml`を探す手段が無い
     // (related相当のエントリ集合を持たない)ため、常に「ソース無し」として記録する。
     setCurrentSongMmlSource(null);
@@ -1733,6 +1985,7 @@ export async function init(ctx) {
     // サンプルはMMLソース(上でfetch済みのtext)を持つ扱いにする(dlSampleFurElise
     // クリックハンドラと同じ判断。取り違えると初見の利用者が編集できなくなる)。
     setCurrentSongMmlSource(text);
+    markPendingSongAssets({ bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', fileNameForBar: 'sample_fur_elise.M' });
     pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', mmlSourceText: text };
     currentSongName = 'sample_fur_elise.M';
     updateTransportButtonUI();
@@ -1782,6 +2035,9 @@ export async function init(ctx) {
     // uiModeを強制的にeditorへ切り替えるためガードは無関係だが、bookkeepingが
     // 古いまま残らないようcompileAndPlay()/btnNewMmlと同じく「曲」の識別を外す。
     clearCurrentSongMmlSource();
+    // PCM/.FF/元データも同じ理由で捨てる(2026-08-18、btnNewMmlと同じ扱い): 共有
+    // リンクはMMLテキストのみを運ぶため、以前の曲のPCM/.FF/元の.mは対応しない。
+    clearCurrentSongAudioAssets();
     currentSongName = SHARE_LINK_FILEBAR_NAME;
     setNetStatus(t('net.loadedFromShareLink'), false);
     updateTransportButtonUI();

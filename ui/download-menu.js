@@ -26,7 +26,11 @@ function downloadBytes(bytes, filename, mime) {
  * @param {Object} opts
  * @param {string} opts.driverKey        - 'pmd' | 'mucom'(要素idの衝突回避用)
  * @param {string} opts.mmlFilename      - MMLソースの既定ファイル名
- * @param {string} opts.compiledFilename - コンパイル済みバイナリのファイル名
+ * @param {string | (() => string)} opts.compiledFilename - コンパイル済みバイナリの
+ *   ファイル名。文字列固定(MUCOM88側=html/mucom-app.jsは従来通りこちらのまま、
+ *   MUCOM側の挙動は変えない)、または呼び出すたびに名前を決める関数(PMD側、
+ *   2026-08-18拡張: 「プレイヤーモードでは元の.M、編集モードではコンパイル結果」で
+ *   ファイル名も変える必要が出たため。html/pmd-app.js参照)のどちらでも渡せる。
  * @param {string} opts.compiledLabel    - UI表示用のラベル(例: '.M' / '.mub')
  * @param {string} opts.asmFilename      - asm db配列のファイル名
  * @param {string} opts.asmLabel         - asmラベル名(識別子)
@@ -100,7 +104,8 @@ export function createDownloadMenu(opts) {
     const compiledBtn = popover.querySelector('[data-action="compiled"]');
     if (compiled) {
       compiledBtn.addEventListener('click', () => {
-        downloadBytes(getCompiledBytes(), compiledFilename, 'application/octet-stream');
+        const filename = typeof compiledFilename === 'function' ? compiledFilename() : compiledFilename;
+        downloadBytes(getCompiledBytes(), filename, 'application/octet-stream');
       });
     }
     const asmBtn = popover.querySelector('[data-action="asm"]');

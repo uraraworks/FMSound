@@ -26,6 +26,7 @@ import { decodeMmlBytes } from './charset.js';
 import { findPairedVoiceBank } from './voice-bank.js';
 import { collectPmdPcmFiles } from './pmd-pcm.js';
 import { extractMmlSourceText } from './pmd-mml-source.js';
+import { selectFfFileForSong } from './pmd-ff.js';
 
 // DB_NAME/STORE_NAME/PCM_STORE_NAMEはexportしてある。net/library.js自体を無改変で
 // 検証するtools/verify_library.mjsが、DBバージョン昇格(1→2)検証のために「昇格前の
@@ -145,12 +146,25 @@ export function hashBytes(bytes) {
  *   bytes: Uint8Array,
  *   pcmFiles?: { name: string, data: Uint8Array }[],
  *   mmlSource?: string | null,
+ *   ffFile?: Uint8Array | null,
+ *   ffFileSource?: string | null,
+ *   ffFileMatchedHeaderName?: boolean | null,
  * }} input pcmFiles(PMD専用、PPC/PZI/PVI)は省略時[]扱い(MUCOM側の呼び出しは
  *   このフィールドを渡さないため一切影響しない)。mmlSource(PMD専用、書庫内に
  *   同梱されていた曲のMMLソーステキスト)も同様に省略時null扱い。voiceBankと
  *   同じ考え方(net/pmd-mml-source.js冒頭コメント参照。PCMと違ってテキストは
  *   小さいので内容ハッシュの共有ストアは使わず、レコードのフィールドとして
  *   素直に持たせる)。
+ *   ffFile(PMD専用、`#FFFile`が指す外部音色ファイルの生バイト列、net/pmd-ff.js
+ *   selectFfFileForSong()の戻り値)も同様に省略時null扱い。【判断】PCM(pcmRefs)は
+ *   内容ハッシュ共有ストア(PCM_STORE_NAME)を使うが、.FFはvoiceBankと同じく
+ *   レコードへ直接埋め込む: .FFは8192byte固定でvoiceBankと同サイズ、かつ
+ *   PPZ8バンク(MB規模、書庫内の全曲で共有)と違い1曲(またはアルバム程度)の
+ *   単位で閉じるため、内容ハッシュ共有ストアを新設するほどの理由が無い
+ *   (voiceBankの判断コメント=1曲あたり約8KBの複製は許容範囲、と同じ理由)。
+ *   ffFileSource(実際に採用した.FFのファイル名)・ffFileMatchedHeaderName
+ *   (曲が指定した名前と一致していたか、net/pmd-ff.js describePmdFfStatus()参照)も
+ *   一緒に持たせ、ライブラリから選び直したときも同じ案内が出せるようにする。
  * @returns {Promise<string>} 保存したレコードのid
  */
 export async function saveSong(db, input) {
@@ -263,6 +277,11 @@ async function upsertOne(songStore, pcmStore, input, now) {
     // MUCOM側/mml同梱の無い書庫)はnull。voiceBankと同じくschemaVersionは
     // 据え置き(新規フィールドの追加のみ、既存レコードは読み出し時に`?? null`で扱う)。
     mmlSource: input.mmlSource ?? null,
+    // 外部音色ファイル(PMD専用、`#FFFile`)。mmlSourceと同じ考え方(内容ハッシュ
+    // 共有はしない、上のsaveSong()コメント参照)。対が無い曲はnull。
+    ffFile: input.ffFile ?? null,
+    ffFileSource: input.ffFileSource ?? null,
+    ffFileMatchedHeaderName: input.ffFileMatchedHeaderName ?? null,
     contentHash,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
@@ -374,6 +393,12 @@ export async function importArchiveSongs(db, input) {
     // 「主ファイルと同じディレクトリのエントリ集合」に絞り込み済みなので、そのまま
     // findMmlSourceEntry()へ渡せる(取り違え防止、net/pmd-mml-source.js冒頭コメント参照)。
     const mmlSource = driver === 'pmd' ? extractMmlSourceText(c.entry.name, c.related) : null;
+    // 外部音色ファイル(PMD専用、`#FFFile`)。#voice/pcmFilesと同じ考え方で、driverが
+    // 'mucom'の場合は探しにいかない(MUCOM側には一切影響させない)。selectFfFileForSong()は
+    // 書庫全体のentries(取り違え防止のディレクトリ判定に必要、net/pmd-ff.js冒頭コメント
+    // 参照)とmmlSource(`#FFFile`ヘッダの照合に必要)の両方を要求するため、上のmmlSourceを
+    // 計算した後で呼ぶ。
+    const ffSelection = driver === 'pmd' ? selectFfFileForSong(entries, c.entry.name, mmlSource) : null;
     return {
       driver,
       fileName: c.displayName,
@@ -386,6 +411,9 @@ export async function importArchiveSongs(db, input) {
       voiceBankSource: pair ? pair.sysDiskName : null,
       pcmFiles,
       mmlSource,
+      ffFile: ffSelection ? ffSelection.data : null,
+      ffFileSource: ffSelection ? ffSelection.name : null,
+      ffFileMatchedHeaderName: ffSelection ? ffSelection.matchedHeaderName : null,
     };
   });
   const { addedCount, unchangedCount } = await saveSongs(db, inputs);
