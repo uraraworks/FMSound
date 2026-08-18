@@ -1013,14 +1013,22 @@ function tokenizeRhythmPatternBody(body, line, state, events, globalState) {
   }
 }
 
-// 構造(ループの対応関係)を検査してリンクを張る。ネストは v1 非対応(単純化のため)。
+// 構造(ループの対応関係)を検査してリンクを張る。
+// 2026-08-18: 当初「ネストは v1 非対応」として `[` の多重オープンを拒否していたが、
+// 実データ(YD、K対応で新たに露出)にネストしたループ([ [ ... ]n ]m 形)が実在すると判明。
+// WebNP2+MC.EXE ver4.8sで`;Title NestLoopProbe\nA o4 [ c8 [ d8 e8 ]3 f8 ]2 g8`を実測コンパイルし
+// (scratchpad配下、リポジトリ非同梱)、エラー無く98byteの.Mが生成され、外側/内側それぞれの
+// `[`/`]`が独立した0xf9(loopOpen)/0xf8(loopClose)ペアとして出力されることを確認した
+// (本家がネストを許容している実測根拠)。`.M`側のループ命令(0xf9/0xf8/0xf7、下のemitEvent)は
+// 各イベントが自分の対になるイベントへの直接ポインタを持つ設計(グローバルな深さカウンタでは
+// ない)なので、この下のスタックによる対応付け自体は元から入れ子に対応できる構造だった
+// (単純に「2重目のopenを拒否する」ガードだけが不要に制限をかけていた)。ガードを外し、
+// 通常のLIFOスタックで対応付ける(`:` のloopExitは「その時点で最も内側のopenで囲まれている
+// ループ」に対応するべきなので、stack最上段を参照するのは元から正しい)。
 function linkLoops(events, partLetter) {
   const stack = [];
   for (const ev of events) {
     if (ev.type === 'loopOpen') {
-      if (stack.length > 0) {
-        throw new ParseError(ev.line, `パート${partLetter}: ネストしたローカルループは v1 非対応です`);
-      }
       stack.push(ev);
     } else if (ev.type === 'loopExit') {
       if (stack.length === 0) {
@@ -1158,7 +1166,20 @@ export function parseMml(source) {
   // 残り、パート指定でも音色定義でもないため「行はパート指定(A-I)または音色定義(@)で
   // 始まる必要があります」の誤エラーになっていた不具合。DOS上のテキストエディタ/
   // コンパイラは通例この文字以降を読まない(EOFとして扱う)ため、以降を丸ごと切り捨てる。
-  const eofMarkerIdx = source.indexOf('\x1a');
+  //
+  // 2026-08-18追記: 上のindexOf('\x1a')は生バイトが素通りする経路(latin1等)でしか
+  // 効かず、実データ3曲でJSM/YD/SS_TENGとも各1件「空行相当」の誤エラーが依然残って
+  // いた。実測したところ、`net/charset.js`のdecodeMmlBytes()が使う
+  // `new TextDecoder('shift_jis')`はNode(ICU)実装がバイト0x1Aを U+001A ではなく
+  // U+001C にデコードするクセを持つ(node -e でC0域0x00-0x1Fを全数当たって確認:
+  // 0x1a→0x1c。WHATWG Encoding仕様のShift_JISデコーダはASCII域を恒等写像するはずだが、
+  // 実行環境の実挙動としてこれが出る)。実データ3曲のファイル中に生バイト0x1Cは1個も
+  // 存在しない(python3で確認済み)ため、「decodeMmlBytes経由で読んだテキストに
+  // U+001Cが現れたら、それは元バイト0x1AのEOFマーカがこの経路で化けたもの」と
+  // 実務上みなしてよい。\x1a・\x1c どちらか先に現れた方で切り捨てる。
+  const idx1a = source.indexOf('\x1a');
+  const idx1c = source.indexOf('\x1c');
+  const eofMarkerIdx = idx1a < 0 ? idx1c : (idx1c < 0 ? idx1a : Math.min(idx1a, idx1c));
   if (eofMarkerIdx >= 0) source = source.slice(0, eofMarkerIdx);
 
   const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
