@@ -71,15 +71,18 @@ function main() {
       r.errors.length === 1 && /x,y/.test(r.errors[0].message), r.errors[0]?.message);
   }
 
-  // 3. FM3Extendパートはkind='fm'で扱われる: 通常のFMパートと同じく'E'(ソフトウエア
-  //    エンベロープ、SSG/PCM専用)コマンドを使うと拒否される(実データ実測でも
-  //    yパートに対してこの拒否が発生することを確認済み=FM系ルールの適用が
-  //    一貫していることの裏付け)。
+  // 3. FM3Extendパートはkind='fm'で扱われる: 2026-08-19のMC.EXE実測(バッチ5)で
+  //    'E'(ソフトウエアエンベロープ)はFM系パートでも受理されると判明したため、
+  //    通常のFM系パートと同様にxパートでもEが構文としては受理され、残るエラーは
+  //    #FM3Extend自体の.M出力未確定エラー(0xc6配置未実測、このファイル冒頭の説明・
+  //    このテストの2番と同じ)だけになる=FM系ルールの適用(partKindによる拒否をせず
+  //    Eを通す)が一貫していることの裏付け。
   {
-    const mml = `#FM3Extend\tx\n${TONE_BLOCK}\nC @1 o4 c4\nx @1 o4 E-1,2,3,4 c4\n`;
+    const mml = `#FM3Extend\tx\n${TONE_BLOCK}\nC @1 o4 c4\nx @1 o4 E1,-3,2,0 c4\n`;
     const r = compileMml(mml, {});
-    check("FM3Extendパート'x'でEを使うとFM系パート専用エラー(partKind=fm)になる",
-      r.errors.some((e) => /partKind=fm/.test(e.message)), JSON.stringify(r.errors));
+    check("FM3Extendパート'x'でEを使ってもpartKindでは拒否されず、残エラーは.M出力未確定エラーのみ",
+      r.errors.length === 1 && /出力位置/.test(r.errors[0].message) && !/partKind/.test(r.errors[0].message),
+      JSON.stringify(r.errors));
   }
 
   // 4. ヘッダの書式検証。

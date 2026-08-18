@@ -7,7 +7,9 @@
 //              (fmdriver_pmd.c:2650 pmd_cmdf0_env_old実測)
 //            書式2(5-6引数 AR,DR,SR,RR,SL,AL) -> `.M`側 0xcd + 5byte
 //              (fmdriver_pmd.c:3410 pmd_cmdcd_env_new実測、SL/RRの詰め方もそこから確定)
-//            [音源]SSG/PCM(AD,86,PPZ)専用、FMパートでは未対応として拒否する。
+//            [音源]マニュアルはSSG/PCM(AD,86,PPZ)専用と明記するが、2026-08-19の
+//            MC.EXE ver4.8s実測(PEFM.MML)でFMパートでも受理され同一の0xf0+4byte
+//            を出すと確認できたため、FMパートでも受理する(バッチ5)。
 //   s        FM音源使用スロット位置指定                 PMDMML.MAN §6-2
 //            `.M`側 0xcf + 1byte(fmdriver_pmd.c:3313 pmd_cmdcf_slotmask実測)。FM専用。
 //   P(大文字) SSG/OPM トーン・ノイズ出力選択             PMDMML.MAN §6-5
@@ -24,13 +26,9 @@
 //   ABDEFJK /(MULE_op_loop.MML、K混在)
 //   P1 / P2(MULE_op_loop.MML、マクロ!x/!y展開内。SSGパートI向け)
 //
-// このバッチのスコープ外(意図的に対応しない): W(擬似エコー、§12-2)は「継続／タイ
-// flag」0と2の区別がマニュアル本文だけでは判然とせず(0:「継続／タイ無し」2:
-// 「１回限り／タイ無し」という説明の違いが実装参照無しに一意に決められない)、
-// 確証の無いまま音を生成する実装を避けるため今回は未対応のまま(引き続き
-// 「未対応の文字です」エラーに落ちる)。#FM3Extend・拡張パート(x/y)はバッチ3bの
-// スコープ。DT=-4等の資料範囲外の値は別途MC.EXE実測で扱いを決める予定のため
-// 範囲チェックは緩めない。
+// このバッチのスコープ外(意図的に対応しない): #FM3Extend・拡張パート(x/y)はバッチ3bの
+// スコープ。W(擬似エコー)・DT/SLの資料範囲外値・FMパートへのE・小文字w(ノイズ周波数)は
+// 2026-08-19のMC.EXE実測(バッチ5、tools/pmd-reference/追加分・FINDINGS.md参照)で対応済み。
 //
 // 実行: node tools/verify_pmd_ssg_misc_commands.mjs
 
@@ -93,10 +91,17 @@ function main() {
       Array.from(bytes).map((b) => b.toString(16)).join(' '));
   }
 
-  // 4. EはFMパートでは未対応(PMDMML.MAN §8-1「[音源]SSG/PCM」)。
+  // 4. E(書式1)はFMパートでも受理される。2026-08-19のMC.EXE ver4.8s実測(PEFM.MML:
+  //    「A o4 l4 E1,-3,2,0 c」→パートA先頭が f0 01 fd 02 00)で確認済み。
   {
-    const r = compileMml('A @1 o4 E1,-3,2,0 c4', { tones: { 1: {} } });
-    check('EをFMパートで使うとエラーになる(§8-1、SSG/PCM専用)', r.errors.length > 0, JSON.stringify(r.errors));
+    const r = compileOk('A @1 o4 E1,-3,2,0 c4');
+    const ev = findEvent(r, 'A', 'ssgEnvOld');
+    check('EをFMパートで使っても受理されssgEnvOldイベントになる', !!ev && ev.al === 1 && ev.dd === -3 && ev.sr === 2 && ev.rr === 0,
+      JSON.stringify(ev));
+    const bytes = r.file.slice(ev._addr + 1, ev._addr + 1 + 5);
+    check('FMパートのE1,-3,2,0 のバイト列がSSGと同じ 0xf0 01 fd 02 00',
+      bytes.length === 5 && bytes[0] === 0xf0 && bytes[1] === 1 && bytes[2] === 0xfd && bytes[3] === 2 && bytes[4] === 0,
+      Array.from(bytes).map((b) => b.toString(16)).join(' '));
   }
 
   // 5. s(FM使用スロット位置)がFMパートで受理され、0xcf + 1byte。
@@ -123,13 +128,30 @@ function main() {
     check('P1 のバイト列が 0xed 01', bytes.length === 2 && bytes[0] === 0xed && bytes[1] === 1, Array.from(bytes).map((b) => b.toString(16)).join(' '));
   }
 
-  // 8. Pの範囲は1-3(§6-5)、P0やP4はエラー。
+  // 8. w(小文字、SSGノイズ周波数)がSSGパートで受理され、0xee + 1byte。
+  //     2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPWL.MMLで実測して確定
+  //     (バッチ5): `G o4 l4 w6 c` → パートG先頭が `ee 06`。
+  {
+    const r = compileOk('G @1 o4 w6 c4');
+    const ev = findEvent(r, 'G', 'ssgNoiseFreq');
+    check('w6がssgNoiseFreqイベント(value=6)になる', !!ev && ev.value === 6, JSON.stringify(ev));
+    const bytes = r.file.slice(ev._addr + 1, ev._addr + 3);
+    check('w6 のバイト列が 0xee 06(PWL.MML実測どおり)', bytes.length === 2 && bytes[0] === 0xee && bytes[1] === 6, Array.from(bytes).map((b) => b.toString(16)).join(' '));
+  }
+
+  // 9. wはFMパートでは未対応(Pと同様SSG専用として扱う)。
+  {
+    const r = compileMml('A @1 o4 w6 c4', { tones: { 1: {} } });
+    check('wをFMパートで使うとエラーになる(SSG専用)', r.errors.length > 0, JSON.stringify(r.errors));
+  }
+
+  // 10. Pの範囲は1-3(§6-5)、P0やP4はエラー。
   {
     const r = compileMml('I @1 o4 P4 c4', { tones: { 1: {} } });
     check('P4(範囲外)はエラーになる(§6-5、範囲1-3)', r.errors.length > 0, JSON.stringify(r.errors));
   }
 
-  // 9. '/'(コンパイル打ち切り)は同じ行の残りを捨てる(§16-4例「A cde /」「A fga」->「A cde」相当)。
+  // 11. '/'(コンパイル打ち切り)は同じ行の残りを捨てる(§16-4例「A cde /」「A fga」->「A cde」相当)。
   {
     const r = compileOk('A @1 o4 cde / fga');
     const notes = r.layout.tracks.A.events.filter((e) => e.type === 'note').map((e) => e.noteIndex);
@@ -138,7 +160,7 @@ function main() {
       JSON.stringify(notes) === JSON.stringify([0, 2, 4]), JSON.stringify(notes));
   }
 
-  // 10. '/'は後続行の同じパート文字も打ち切る(§16-4の例そのもの: 2行にまたがるA)。
+  // 12. '/'は後続行の同じパート文字も打ち切る(§16-4の例そのもの: 2行にまたがるA)。
   {
     const r = compileOk('A @1 o4 cde /\nA fga');
     const notes = r.layout.tracks.A.events.filter((e) => e.type === 'note').map((e) => e.noteIndex);
@@ -146,7 +168,7 @@ function main() {
       JSON.stringify(notes) === JSON.stringify([0, 2, 4]), JSON.stringify(notes));
   }
 
-  // 11. '/'は他パートには影響しない(そのパートだけを打ち切る)。
+  // 13. '/'は他パートには影響しない(そのパートだけを打ち切る)。
   {
     const r = compileOk('A @1 o4 cde /\nB @1 o4 fga');
     const notesB = r.layout.tracks.B.events.filter((e) => e.type === 'note').map((e) => e.noteIndex);
@@ -154,7 +176,7 @@ function main() {
       JSON.stringify(notesB) === JSON.stringify([5, 7, 9]), JSON.stringify(notesB));
   }
 
-  // 12. Kパートでも'/'が効く(実データ MULE_op_loop.MML「ABDEFJK /」相当)。
+  // 14. Kパートでも'/'が効く(実データ MULE_op_loop.MML「ABDEFJK /」相当)。
   {
     const r = compileOk('K \\b /\nK \\s');
     const events = r.layout.tracks.K.events;
@@ -162,7 +184,7 @@ function main() {
       JSON.stringify(events));
   }
 
-  // 13. [陽性対照] '/'の分岐そのものを無効化すると、上の9番(打ち切り)が実際に落ちることを確認する。
+  // 15. [陽性対照] '/'の分岐そのものを無効化すると、上の11番(打ち切り)が実際に落ちることを確認する。
   {
     const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
     const orig = fs.readFileSync(parserPath, 'utf8');
