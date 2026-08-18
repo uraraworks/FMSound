@@ -213,13 +213,26 @@ const FFFILE_HEADER_RE = /^[ \t]*#FFFile[ \t]+(.*)$/i;
 // 未解明のヘッダ。黙って読み飛ばすと「コンパイルは通るのに音が違う」という最悪の壊れ方に
 // なるため、実装せず専用のエラーメッセージで止める(指示書の原則)。ヘッダ名は
 // 大文字小文字を無視して照合する(他ヘッダと同様、寛容側に倒す)。
+// 2026-08-18: #Detuneは実装済み(DETUNE_HEADER_RE、別途処理するためここには残さない。
+// 復活させないよう明記しておく)。#LFOSpeed/#EnvelopeSpeedは、対応するMXA/MXB/EXコマンド
+// 自体の出力バイトを実機参照.Mで実測できず(WebNP2ブラウザ操作環境がその場で
+// document.visibilityState==='hidden'/rAF停止に陥り、insert_disk等が全滅した。
+// 詳細はdocs/pmd-compiler-spec-v2.md該当節)、値を推測で埋めると「動作を変える
+// 可能性があるヘッダを黙って壊れた形で実装する」ことになるため、今回は見送って
+// 引き続きエラーにする(指示書の原則通り)。
 const KNOWN_UNIMPLEMENTED_HEADERS = {
-  // 2026-08-18: #PPZExtend は実装済み(collectPpzExtend、PPZEXTEND_HEADER_RE経由で
-  // 別途処理するためここには残さない。detune等と混同して復活させないよう明記しておく)。
-  'detune': 'デチューン数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
-  'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
-  'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
+  'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。等価コマンド(MXA/MXB)の.M側出力バイトを実機参照.Mで実測できておらず未実装',
+  'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。等価コマンド(EX)の.M側出力バイトを実機参照.Mで実測できておらず未実装',
 };
+
+// #Detune Extend/Normal(PMDMML.MAN §2-16)。「Extend」はSSGパート(G,H,I)の頭全てに
+// 等価なコマンド"DX1"を指定したのと同じ効果になる、とマニュアルに明記されている
+// (推測ではない)。対象パートがSSGのみ(A-FやJには効かない)という点は取り違えやすいが、
+// 実測(pmdhdrxt.M: #Detune Extendの参照.MでG/H/Iのみが+3byte増え、A/B-F/Jは
+// 変化しないことを確認済み)で裏取りしてある。「Normal」は既定状態そのもの
+// (§2-16「ノーマル仕様の場合」)なのでヘッダを見た記録だけ残し、合成コマンドは
+// 何も追加しない。
+const DETUNE_HEADER_RE = /^[ \t]*#Detune[ \t]+(Extend|Normal)[ \t]*$/i;
 // 汎用ヘッダ行判定(#で始まる行すべてを拾う。上記いずれにも一致しない未知のヘッダも
 // ここで捕まえて専用メッセージを出す。'#'始まりの行が「パート指定または音色定義で
 // 始まる必要があります」という無関係なエラーになるのを避けるため)。
@@ -270,10 +283,25 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
     return true;
   }
 
+  const detuneM = DETUNE_HEADER_RE.exec(raw);
+  if (detuneM) {
+    header.detuneExtend = detuneM[1].toLowerCase() === 'extend' ? 'Extend' : 'Normal';
+    header.detuneExtendLine = lineNo;
+    return true;
+  }
+
   const genM = GENERIC_HEADER_RE.exec(raw);
   if (genM) {
     const nameRaw = genM[1];
     const argRaw = (genM[2] ?? '').trim().toLowerCase();
+    // Detuneは上の専用正規表現(引数Extend/Normalのみ許可)で既に処理済みのはず。
+    // ここまで落ちてきたのは引数が Extend/Normal のどちらでもない(typo・省略等)
+    // ケースなので、専用の分かりやすいメッセージで止める(黙って読み飛ばすと動作が
+    // 変わるヘッダなので、想定外はエラーにする方針)。
+    if (/^detune$/i.test(nameRaw)) {
+      errors.push({ line: lineNo, message: `#${nameRaw} の引数が不正です(Extend または Normal のいずれかが必要): "${genM[2] ?? ''}"` });
+      return true;
+    }
     // "#Detune Extend" のように「ヘッダ名+引数Extend」の形と、"#PPZExtend"のように
     // ヘッダ名自体にExtendを含む形の両方があるため、まずヘッダ名単独で既知表を引き、
     // 無ければ「ヘッダ名+引数」の組み合わせでも引く(Detune/LFOSPeed/EnvelopeSpeed用)。
@@ -691,8 +719,23 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     }
 
     if (c === 'D') {
-      // デチューン設定。PMDMML.MAN §7-1。絶対値`D`=0xfa、相対値`DD`=0xd5(v2 3.9節)。
       i++;
+      if (body[i] === 'X') {
+        // SSG音源音程補正指定。PMDMML.MAN §7-3。`.M`側 0xcc + 1byte(値0-1)。
+        // #Detune Extend(§2-16)の実体そのもの(実測: pmdhdrxt.M、SSGパートの
+        // 頭で cc 01 の2byteとして確認、docs/pmd-compiler-spec-v2.md参照)。
+        // マニュアル上は[音源]SSGのみの記載だが、既存のD/DD同様パート種別は
+        // 検査せずそのまま出力する(他の数値系コマンドと実装方針を揃える)。
+        i++;
+        const m = /^\d+/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'DX' の後に数値がありません`);
+        i += m[0].length;
+        const val = parseInt(m[0], 10);
+        if (val < 0 || val > 1) throw new ParseError(line, `'DX' の値が範囲外です(0-1): ${val}`);
+        events.push({ type: 'detuneExtend', line, value: val });
+        continue;
+      }
+      // デチューン設定。PMDMML.MAN §7-1。絶対値`D`=0xfa、相対値`DD`=0xd5(v2 3.9節)。
       let relative = false;
       if (body[i] === 'D') { relative = true; i++; }
       const m = /^-?\d+/.exec(body.slice(i));
@@ -1348,6 +1391,7 @@ export function parseMml(source) {
     pcmfileLine: null, ppzfileLine: null, ppsfileLine: null,
     fffile: null, fffileLine: null,
     ppzExtend: null, ppzExtendLine: null, ppzExtendLetters: [],
+    detuneExtend: null, detuneExtendLine: null,
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T06:52:12.574Z",
+  "generatedAt": "2026-08-18T07:21:06.852Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -58,11 +58,11 @@
       "byteMatchRate": 1
     },
     "pmdhdrxt": {
-      "status": "compile_error",
-      "errorCount": 1,
-      "errorFeatures": [
-        "未対応のヘッダです: #Detune Extend（動作を変える可能性があるため読み飛ばさずエラーにしています。デチューン数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明）"
-      ]
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.7142857142857143
     },
     "pmdlfo": {
       "status": "compared",

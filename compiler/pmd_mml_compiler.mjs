@@ -148,6 +148,8 @@ function sizeOfEvent(ev) {
     // PPZ8初期化(#PPZExtend、v2 2.2節)。0xb4 + 16byte固定引数(PPZ_1〜_8のデータ先頭
     // ポインタ、2byte LE×8。0なら該当chは未使用)。fmdriver_pmd.c:4253-4260実測どおり。
     case 'ppz8Init': return 17;
+    case 'detuneExtend': return 2; // DX + 1byte(0xcc、PMDMML.MAN §7-3。実測はpmd_mml_compiler.mjs先頭のコメント参照)
+
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
 }
@@ -390,6 +392,10 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xb4;
       for (let k = 0; k < 8; k++) w16(offset + 1 + k * 2, ev.ptrs[k] & 0xffff);
       return;
+    case 'detuneExtend': // SSG音源音程補正指定(PMDMML.MAN §7-3。0xcc + 1byte、値0-1)
+      out[offset] = 0xcc;
+      out[offset + 1] = ev.value & 0xff;
+      return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -532,6 +538,9 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // 書き戻す(sizeOfEventはptrsの値を見ないため、後から書き換えてもレイアウト全体の
   // アドレスには影響しない)。
   const ppzExtendLetters = header.ppzExtendLetters ?? [];
+  // #Detune Extend(PMDMML.MAN §2-16)の対象パート。SSG(G,H,I)のみ(A-F/Jには効かない。
+  // 実測: pmdhdrxt.M参照。下のSLOT_LETTERSループ内コメント参照)。
+  const DETUNE_EXTEND_LETTERS = new Set(['G', 'H', 'I']);
   let ppz8InitEvent = null; // idx===9で確保、idx===10直後で.ptrsを確定させる
   let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
@@ -561,7 +570,15 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     // \系イベント列で、layoutTrack/emitEventは通常パートと同じ経路をそのまま使える。
     // 終端も他パートと同じ0x80、pmdunimp.M実測で確認済み)。
     const rawEvents = letter ? tracks.get(letter) : null;
-    const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : null;
+    let events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : null;
+    // #Detune Extend(PMDMML.MAN §2-16)。SSGパート(G,H,I)の頭全てに"DX1"を
+    // 指定したのと同じ効果(マニュアル記載通り)。パートが未使用でも、その事実自体は
+    // 変わらず「頭に置く」ため、DX1単独の1イベントだけの新規トラックとして生成する
+    // (実測: pmdhdrxt.M、G/H/Iが未使用でも cc 01 80 の3byteトラックになっていた)。
+    if (DETUNE_EXTEND_LETTERS.has(letter) && header.detuneExtend === 'Extend') {
+      const dxEvent = { type: 'detuneExtend', line: header.detuneExtendLine ?? 1, value: 1 };
+      events = events ? [dxEvent, ...events] : [dxEvent];
+    }
     if (events && events.length > 0) {
       const startAddr = cursor;
       const { endAddr, termAddr } = layoutTrack(events, startAddr);
