@@ -53,6 +53,14 @@ function listCases() {
     .sort();
 }
 
+// stem.FF が存在すれば読み込んで返す(#FFFile corpusケース用)。無ければundefined
+// (compileMmlのffFileオプションを省略した場合と同じ、従来通りの挙動になる)。
+function loadFfFile(stem) {
+  const ffPath = path.join(CORPUS_DIR, `${stem}.FF`);
+  if (!fs.existsSync(ffPath)) return undefined;
+  return new Uint8Array(fs.readFileSync(ffPath));
+}
+
 // 1ケースを評価する。refBytesOverride があれば参照.Mの代わりにそれを使う(陽性対照用)。
 function evaluateCase(stem, { refBytesOverride } = {}) {
   const mmlPath = path.join(CORPUS_DIR, `${stem}.mml`);
@@ -60,8 +68,9 @@ function evaluateCase(stem, { refBytesOverride } = {}) {
   const mmlBytes = new Uint8Array(fs.readFileSync(mmlPath));
   const { text } = decodeMmlBytes(mmlBytes);
   const refBytes = refBytesOverride ?? new Uint8Array(fs.readFileSync(refPath));
+  const ffFile = loadFfFile(stem);
 
-  const { file: ownFile, errors } = compileMml(text, {});
+  const { file: ownFile, errors } = compileMml(text, { ffFile });
   if (errors.length > 0) {
     const agg = aggregateErrors(errors);
     return {
@@ -187,7 +196,7 @@ console.log('\n--- [陽性対照] 参照.Mを1byteだけ壊した場合に悪化
     const refPath = path.join(CORPUS_DIR, `${stem}.M`);
     const { text } = decodeMmlBytes(new Uint8Array(fs.readFileSync(mmlPath)));
     const refBytes = new Uint8Array(fs.readFileSync(refPath));
-    const { file: ownFile, errors } = compileMml(text, {});
+    const { file: ownFile, errors } = compileMml(text, { ffFile: loadFfFile(stem) });
     if (errors.length > 0) return null;
     const cmp = compareFiles(ownFile, refBytes);
     for (const [name, p] of Object.entries(cmp.parts)) {

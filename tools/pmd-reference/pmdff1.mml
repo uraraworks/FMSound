@@ -1,0 +1,8 @@
+#Title Corpus FFFile Priority
+#FFFile PMDFF1.FF
+@1 6 1
+9 8 7 6 5 44 1 2 1 0
+10 9 6 5 4 34 2 3 2 1
+11 10 5 4 3 24 3 4 3 0
+12 11 4 3 2 14 0 5 4 1
+A @1 o4 l4 c @10 c

@@ -69,6 +69,73 @@ export function buildToneEntry({
   return bytes;
 }
 
+// 外部FM音色ファイル(`#FFFile`、拡張子.FF)1エントリ(25byte、tonenum無し版)を
+// buildToneEntry()と対称のオプション形式へデコードする。
+//
+// 出典: 2026-08-18、WebNP2+FreeDOS上の実機 MC.EXE ver4.8s に `/VW` オプションで
+// 自作の非対称2音色(@1・@10、飛び番号)入りMMLをコンパイルさせ、生成された.FFを
+// 実バイト単位で突き合わせて確定した(推測ではなく実測)。確認した事実:
+//   - .FFファイルは常に256エントリ×32byte=8192byte固定(エントリ0個の音色番号も
+//     ゼロ埋めのプレースホルダとして必ず場所を持つ)。
+//   - エントリnのオフセットは `n * 32`(tonenumをキーにした直接インデックス。
+//     ファイル内にtonenum自体のバイトは書かれない)。
+//   - エントリの先頭25byteは buildToneEntry() が返す26byteのうち **tonenum(先頭1byte)を
+//     除いた残り25byte** と完全に同一のビットレイアウト(オペレータ並び順は
+//     buildToneEntry()の引数配列と同じ物理スロット順1,3,2,4。呼び出し側で
+//     MML記述順からの並べ替えは不要、そのままデコードして良い)。
+//   - 残り7byte(25-31)はMC.EXE生成物では常にゼロ埋め(パディング。読み込み側では無視する)。
+// 第三者配布物のFF(手元のV5.FF、8192byte)でもファイルサイズ=256エントリ×32byteの
+// 構造は整合することを確認済み(中身の値はリポジトリへ転記していない)。
+export function parseFfEntry(bytes25) {
+  const mul = [0, 0, 0, 0];
+  const dt1 = [0, 0, 0, 0];
+  const tl = [0, 0, 0, 0];
+  const ks = [0, 0, 0, 0];
+  const ar = [0, 0, 0, 0];
+  const am = [0, 0, 0, 0];
+  const d1r = [0, 0, 0, 0];
+  const d2r = [0, 0, 0, 0];
+  const sl = [0, 0, 0, 0];
+  const rr = [0, 0, 0, 0];
+  for (let s = 0; s < 4; s++) {
+    const b0 = bytes25[0x00 + s];
+    dt1[s] = (b0 >> 4) & 0x7;
+    mul[s] = b0 & 0xf;
+    tl[s] = bytes25[0x04 + s] & 0x7f;
+    const b8 = bytes25[0x08 + s];
+    ks[s] = (b8 >> 6) & 0x3;
+    ar[s] = b8 & 0x1f;
+    const bc = bytes25[0x0c + s];
+    am[s] = (bc >> 7) & 0x1;
+    d1r[s] = bc & 0x1f;
+    d2r[s] = bytes25[0x10 + s] & 0x1f;
+    const b14 = bytes25[0x14 + s];
+    sl[s] = (b14 >> 4) & 0xf;
+    rr[s] = b14 & 0xf;
+  }
+  const b18 = bytes25[0x18];
+  const fb = (b18 >> 3) & 0x7;
+  const alg = b18 & 0x7;
+  return { mul, dt1, tl, ks, ar, am, d1r, d2r, sl, rr, fb, alg };
+}
+
+// `#FFFile`で読み込む外部音色ファイル(8192byte固定、256エントリ×32byte)を丸ごと
+// デコードする。戻り値は `{ [tonenum]: parseFfEntry()の戻り値 }`(0-255の256件、
+// 未定義(ゼロ埋め)エントリも含めて全件返す。MC.DOC/PMDMML.MAN §2-4の記述通り、
+// 「MML本文で未定義、かつFF内にも実体が無い音色」は結局ゼロ埋め=既定音色として
+// 扱われるのが実機の挙動のため、呼び出し側でゼロを特別扱いする必要は無い)。
+export function parseFfFile(buffer) {
+  if (buffer.length !== 8192) {
+    throw new Error(`FFファイルは8192byte固定のはずですが${buffer.length}byteでした`);
+  }
+  const tones = {};
+  for (let n = 0; n < 256; n++) {
+    const off = n * 32;
+    tones[n] = parseFfEntry(buffer.subarray(off, off + 25));
+  }
+  return tones;
+}
+
 // 単音だけを鳴らすFM1パートの最小 `.M` を1本組み立てる。
 // tone: buildToneEntry() の戻り値(26byte)。
 // note/length: FM1トラックに置く音符1個ぶん(休符やタイは含まない)。

@@ -16,7 +16,7 @@
 //   ':' (0xf7): 2byte引数 = 対応する ']' の 'n' バイトのアドレス(='['の引数と同じ値)。
 //               最終回(counter==n-1)のみ ptr+4(=']'コマンド全体の直後)へ脱出する。
 
-import { buildToneEntry, noteByte, REST_NIBBLE } from './gen_pmd_min.mjs';
+import { buildToneEntry, noteByte, REST_NIBBLE, parseFfFile } from './gen_pmd_min.mjs';
 import { parseMml, PART_LETTERS } from './pmd_mml_parser.mjs';
 import { encodeCp932 } from './cp932.mjs';
 
@@ -351,18 +351,44 @@ function layoutRhythmPattern(events, startAddr) {
 //   マージされる(同じ番号があればこの引数のほうが優先。第1段階からの後方互換用の経路)。
 //   `@n` が参照する音色番号は、本文中の定義かこの引数のどちらかに存在すればよい。
 //   どちらにも何も無ければ後方互換のため既定音色(@1, 全パラメータ既定値)を1つ用意する。
+// ffFile: `#FFFile`で読み込む外部音色ファイルの生バイト列(8192byte固定、Uint8Array/Buffer)。
+//   2026-08-18、実機MC.EXE(/VWオプション)で自作音色を実測して確定したフォーマット
+//   (parseFfFile()のコメント参照)でデコードし、**MML本文(またはtonesオプション)に
+//   定義が無い音色番号のみ**を補う(優先順位はMC.DOC「FM音源の音色データの扱いについて」・
+//   PMDMML.MAN §2-4の記述通り「本文優先、FFFileは本文で未定義の番号のみ使われる」で、
+//   自作MML+実機再コンパイルの突き合わせでも実測確認済み)。本文で定義済みの番号は
+//   ffFileに同じ番号があっても無視する(本文が勝つ)。
+//   ffFileが渡されない場合、本文にもtonesオプションにも無い@nは従来通りエラーにする
+//   (2026-08-18に直した「音色未使用時に既定音色を勝手に合成していた」不具合の再発防止。
+//   ffFileが無い状態で黙って既定音色を補うことはしない)。
 // 戻り値: { file, errors, layout } (errorsが空でない場合 file は null)。
 // layout には検証スクリプトが使う各トラックの先頭アドレス・終端アドレス・
 // イベント列(アドレス付き)・使用した音色テーブル(tones)を含む。
-export function compileMml(source, { tones, opmFlag = 0 } = {}) {
+export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   const { tracks, tones: parsedTones, header, rhythmPatterns, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
   const toneTable = {};
   for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
   if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)
+
+  // ffFile: 本文(+tonesオプション)で未定義の番号だけを埋める(本文が勝つ。上のコメント参照)。
+  // 実際に@nイベントで参照されている番号だけを補う(未参照の番号まで256件丸ごと
+  // toneTableへ入れると、使っていない音色まで出力トーンテーブルに現れてしまうため)。
+  if (ffFile) {
+    const ffTones = parseFfFile(ffFile);
+    for (const [, events] of tracks) {
+      for (const ev of events) {
+        if (ev.type === 'tone' && !(ev.tonenum in toneTable) && ev.tonenum in ffTones) {
+          toneTable[ev.tonenum] = ffTones[ev.tonenum];
+        }
+      }
+    }
+  }
+
   // hasExplicitTones: 出力(トーンテーブル)を決めるためのフラグ。既定音色を合成する
-  // *前*の時点(=利用者が実際に@n定義かtonesオプションを与えたかどうか)で確定させる。
+  // *前*の時点(=利用者が実際に@n定義かtonesオプション/ffFileで解決した音色を
+  // 持っているかどうか)で確定させる。
   const hasExplicitTones = Object.keys(toneTable).length > 0;
   // 2026-08-18: 検査(validation)用には引き続き既定音色@1を合成する(第1段階からの
   // 後方互換。tools/verify_pmd_recompile_after_error.mjs のFIXED_MML='A o4 c4 d4 e4 @1'
@@ -379,7 +405,7 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   for (const [part, events] of tracks) {
     for (const ev of events) {
       if (ev.type === 'tone' && !(ev.tonenum in toneTable)) {
-        errors.push({ line: ev.line, message: `パート${part}: 音色番号 @${ev.tonenum} が定義されていません(本文中の音色定義、またはtonesオプションのどちらにも無い)` });
+        errors.push({ line: ev.line, message: `パート${part}: 音色番号 @${ev.tonenum} が定義されていません(本文中の音色定義、tonesオプション、ffFileオプションのいずれにも無い)` });
       }
     }
   }

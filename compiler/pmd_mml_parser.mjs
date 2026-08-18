@@ -129,6 +129,16 @@ const MEMO_MAX_LINES = 128; // PMDMML.MAN §2-9 "複数指定が可能で、順�
 const PCM_HEADER_RE = /^[ \t]*#(PCMfile|PPZfile|PPSfile)[ \t]+(.*)$/i;
 const PCM_HEADER_KEY = { pcmfile: 'pcmfile', ppzfile: 'ppzfile', ppsfile: 'ppsfile' };
 
+// #FFFile ファイル名[.FF/.FFL] (PMDMML.MAN §2-4)。使用する外部音色ファイル名を
+// 指定するだけのヘッダで、ファイルの中身自体はこのパーサでは読まない(PCMfile等と
+// 同じ扱い。ファイルシステムアクセスを持たないパーサの責務外)。ファイル名を
+// header.fffileへ記録するのみで、実際に音色解決へ反映するのは呼び出し側
+// (compileMmlの`ffFile`オプション、渡された生バイト列を使う)が担う。
+// 2026-08-18: 以前はKNOWN_UNIMPLEMENTED_HEADERSでエラー扱いだったが、
+// compileMml側でffFileオプションによる外部音色解決を実装したため、ヘッダ行自体は
+// エラーにせず読み飛ばす(PCM_HEADER_REと同じ経路)よう変更した。
+const FFFILE_HEADER_RE = /^[ \t]*#FFFile[ \t]+(.*)$/i;
+
 // (b) 動作(パート割当・数値レンジ等)を変える可能性があるが、意味や.M側への反映方法が
 // 未解明のヘッダ。黙って読み飛ばすと「コンパイルは通るのに音が違う」という最悪の壊れ方に
 // なるため、実装せず専用のエラーメッセージで止める(指示書の原則)。ヘッダ名は
@@ -138,7 +148,6 @@ const KNOWN_UNIMPLEMENTED_HEADERS = {
   'detune': 'デチューン数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
   'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
   'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
-  'fffile': '外部音色ファイル(FFFile)読み込み。音色テーブルの実体が外部ファイル側にあり本コンパイラでは解決できない',
 };
 // 汎用ヘッダ行判定(#で始まる行すべてを拾う。上記いずれにも一致しない未知のヘッダも
 // ここで捕まえて専用メッセージを出す。'#'始まりの行が「パート指定または音色定義で
@@ -171,6 +180,13 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
     const key = PCM_HEADER_KEY[pcmM[1].toLowerCase()];
     header[key] = pcmM[2]; // 最後勝ち(Title等と同じ扱い。§2 全般注記に準拠)
     header[`${key}Line`] = lineNo;
+    return true;
+  }
+
+  const ffM = FFFILE_HEADER_RE.exec(raw);
+  if (ffM) {
+    header.fffile = ffM[1]; // 最後勝ち(Title等と同じ扱い)。実体の読み込みはcompileMml側
+    header.fffileLine = lineNo;
     return true;
   }
 
@@ -1190,6 +1206,7 @@ export function parseMml(source) {
     titleLine: null, composerLine: null, arrangerLine: null, memoLines: [],
     pcmfile: null, ppzfile: null, ppsfile: null,
     pcmfileLine: null, ppzfileLine: null, ppsfileLine: null,
+    fffile: null, fffileLine: null,
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);
@@ -1282,6 +1299,20 @@ export function parseMml(source) {
     // 同じ行に列挙したパート全部へ同じ本文を流す)、Kが混在していても他パート文字は
     // 通常通りtokenizeBodyへ、Kだけ別途tokenizeRhythmKBodyへ本文を流す
     // (当初「K混在は未対応」としていたが、実データ実測でこの制約が誤りだと判明したため撤回)。
+    // lettersToScan: このあとの通常パート走査(下のfor文)へ渡す、この行専用の文字列。
+    // 2026-08-18(重大バグ修正): 以前は `var lettersForRest` をこの if ブロック内で
+    // 宣言していたが、`var` は(ブロックスコープではなく)parseMml関数全体にホイストされる
+    // ため、Kを含む行を1回処理すると、その値が**後続のK非含有行にまで残留**していた。
+    // 特に「K」単独行(letters="K"のみ)を通ると lettersForRest="" になり、
+    // `lettersForRest ?? letters` は空文字列をnullish扱いしない(??はnull/undefinedのみ
+    // フォールバック)ため、以降**Kを含まない行も含めて全て空パート扱いで黙ってスキップ**
+    // されていた(エラーは一切出ない)。実データJSMで実測: 出力543byte(参照.M 11,040byte、
+    // 185本あるパート行のうち大半の内容が消えていた)。コンパイルが「成功」を名乗りながら
+    // 曲のほとんどを黙って捨てる、このプロジェクトが最も避けたい壊れ方だった。
+    // 行ごとに独立させ、このifブロックの外へ一切の状態を持ち出さないよう書き直す
+    // (常にその行自身のletters基準。「黙って捨てない」の構造的保証として、以降
+    // パート指定を跨いだ暗黙の状態共有は行わない設計にする)。
+    let lettersToScan = letters;
     if (/k/i.test(letters)) {
       if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLength: 24 } });
       try {
@@ -1294,11 +1325,10 @@ export function parseMml(source) {
       // letters中のK以外の文字は下の通常経路へそのまま続ける(letters/bodyは変更しない。
       // 下のfor文がPART_LETTERS.includes判定で自然にKを弾いてくれるので、Kをここで
       // letters から取り除く必要は無い。ただしそのままだと後段で「未対応のパート指定: 'K'」
-      // エラーが重複して出てしまうため、以降の処理からはKを取り除いた文字列を使う)。
-      var lettersForRest = letters.replace(/k/gi, '');
-      if (lettersForRest === '') continue;
+      // エラーが重複して出てしまうため、この行だけKを取り除いた文字列を使う)。
+      lettersToScan = letters.replace(/k/gi, '');
+      if (lettersToScan === '') continue;
     }
-    const lettersToScan = lettersForRest ?? letters;
 
     const partLetters = [];
     for (const ch of lettersToScan) {
