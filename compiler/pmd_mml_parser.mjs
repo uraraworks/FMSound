@@ -656,6 +656,17 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       continue;
     }
 
+    if (c === '/') {
+      // コンパイル打ち切り。PMDMML.MAN §16-4「そのパートのCompileを、そこで打ち切ります」。
+      // 出力バイトは一切無い(純粋なコンパイル時ディレクティブ)。「そこで打ち切る」は
+      // 単にこの行の残りだけでなく、以降の行で同じパート文字が再度現れても以後は
+      // 一切コンパイルしない、という意味(§16-4の例が2行にまたがって示している通り)。
+      // state.terminated を立てて即座にこの呼び出し自体を終了させ、呼び出し元
+      // (parseMml)がこのフラグを見て後続行での同パートの処理を丸ごとスキップする。
+      state.terminated = true;
+      return;
+    }
+
     if (c === '\\') {
       // リズム音源直接コマンド(`\`系、PMDMML.MAN §14)。「総てのパートに指定する事が
       // 可能」(§14冒頭)なため、FM/SSG/ADPCMパートでもここで受理する。
@@ -913,8 +924,7 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       // ソフトウエアエンベロープ速度設定(テンポ非依存化)。PMDMML.MAN §8-2。`.M`側
       // 0xc9 + 1byte(値0-1)。#EnvelopeSpeed Extend(§2-18)の実体そのもの(実測:
       // PMDENVXT.MML、G〜Jパートの頭で c9 01 の2byteとして確認、
-      // docs/pmd-compiler-spec-v2.md参照)。無印の'E'(エンベロープ再発行、§8-1)は
-      // 今回対象外のため未実装のまま(未対応の文字エラーへ落ちる)。
+      // docs/pmd-compiler-spec-v2.md参照)。
       i++;
       if (body[i] === 'X') {
         i++;
@@ -926,7 +936,78 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
         events.push({ type: 'envSpeedExtend', line, value: val });
         continue;
       }
-      i--; // 'E'単独(無印、未実装)は未対応の文字エラーに落とすため位置を戻す
+      // 無印の'E'(SSG/PCMソフトウエアエンベロープ指定、PMDMML.MAN §8-1)。バッチ3a
+      // で対応。引数の個数で書式を判別する(マニュアル本文「指定数値が４つの場合は
+      // 書式１、５または６個の場合は書式２」)。
+      //   書式1(4引数: AL,DD,SR,RR) → `.M`側 0xf0 + 4byte(fmdriver_pmd.c:2650
+      //     pmd_cmdf0_env_old実測: 4値ともraw byteをそのままload。DD(数値2)だけ
+      //     符号付き-15〜+15、他は0-255)。
+      //   書式2(5-6引数: AR,DR,SR,RR,SL,AL[省略時0]) → `.M`側 0xcd + 5byte
+      //     (fmdriver_pmd.c:3410 pmd_cmdcd_env_new実測: AR/DR/SRは&0x1f、4byte目は
+      //     上位nibble=(SL^0xf)・下位nibble=RR&0xf に詰めて1byte化、5byte目=AL&0xf)。
+      // [音源]SSG/PCM(AD,86,PPZ)専用(マニュアル明記)なのでFMパートでは未対応のまま
+      // 拒否する(範囲外の使用を黙って受理しない)。
+      {
+        const m = /^(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)(?:\s*,\s*(-?\d+))?(?:\s*,\s*(-?\d+))?/.exec(body.slice(i));
+        if (m) {
+          i += m[0].length;
+          const nums = [m[1], m[2], m[3], m[4], m[5], m[6]].filter((x) => x != null).map((x) => parseInt(x, 10));
+          if (partKind !== 'ssg' && partKind !== 'adpcm' && partKind !== 'ppz') {
+            throw new ParseError(line, `'E'(ソフトウエアエンベロープ)はSSG/PCM(AD,86,PPZ)専用です(PMDMML.MAN §8-1、FM系パートでは未対応): partKind=${partKind}`);
+          }
+          if (nums.length === 4) {
+            const [al, dd, sr, rr] = nums;
+            if (al < 0 || al > 255) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式1)の数値1(AL)が範囲外です(0-255。PMDMML.MAN §8-1): ${al}`);
+            if (dd < -15 || dd > 15) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式1)の数値2(DD)が範囲外です(-15〜+15。PMDMML.MAN §8-1): ${dd}`);
+            if (sr < 0 || sr > 255) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式1)の数値3(SR)が範囲外です(0-255。PMDMML.MAN §8-1): ${sr}`);
+            if (rr < 0 || rr > 255) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式1)の数値4(RR)が範囲外です(0-255。PMDMML.MAN §8-1): ${rr}`);
+            events.push({ type: 'ssgEnvOld', line, al, dd, sr, rr });
+            continue;
+          }
+          const [ar, dr, sr, rr, sl, al = 0] = nums;
+          if (ar < 0 || ar > 31) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値1(AR)が範囲外です(0-31。PMDMML.MAN §8-1): ${ar}`);
+          if (dr < 0 || dr > 31) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値2(DR)が範囲外です(0-31。PMDMML.MAN §8-1): ${dr}`);
+          if (sr < 0 || sr > 31) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値3(SR)が範囲外です(0-31。PMDMML.MAN §8-1): ${sr}`);
+          if (rr < 0 || rr > 15) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値4(RR)が範囲外です(0-15。PMDMML.MAN §8-1): ${rr}`);
+          if (sl < 0 || sl > 15) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値5(SL)が範囲外です(0-15。PMDMML.MAN §8-1): ${sl}`);
+          if (al < 0 || al > 15) throw new ParseError(line, `'E'(ソフトウエアエンベロープ書式2)の数値6(AL)が範囲外です(0-15。PMDMML.MAN §8-1): ${al}`);
+          events.push({ type: 'ssgEnvNew', line, ar, dr, sr, rr, sl, al });
+          continue;
+        }
+      }
+      i--; // 'E'単独で引数が続かない場合は未対応の文字エラーに落とすため位置を戻す
+    }
+
+    if (c === 's') {
+      // FM音源使用スロット位置指定。PMDMML.MAN §6-2。`.M`側 0xcf + 1byte(値0-15、
+      // fmdriver_pmd.c:3313 pmd_cmdcf_slotmask実測: 1byteをそのままslot_maskへ格納)。
+      // [音源]FM専用(マニュアル明記)。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'s' の後にスロット位置数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 0 || val > 15) throw new ParseError(line, `'s'(FM使用スロット)の値が範囲外です(0-15。PMDMML.MAN §6-2): ${val}`);
+      if (partKind !== 'fm') throw new ParseError(line, `'s'(FM使用スロット)はFM音源パート専用です(PMDMML.MAN §6-2): partKind=${partKind}`);
+      events.push({ type: 'fmSlotMask', line, value: val });
+      continue;
+    }
+
+    if (c === 'P') {
+      // SSG / OPM トーン・ノイズ出力選択。PMDMML.MAN §6-5。`.M`側 0xed + 1byte
+      // (fmdriver_pmd.c:2696 pmd_cmded_ssgmix実測: 1byteをそのままssg_mixへ格納)。
+      // SSG音源パート向けとして実装する(OPMのHパート向け用法は本コンパイラが
+      // OPM/Hに相当するパート種別を扱っていないため未対応のまま。実データはSSGでの
+      // 使用のみ確認できた)。
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'P' の後にトーン/ノイズ選択数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 1 || val > 3) throw new ParseError(line, `'P'(トーン/ノイズ選択)の値が範囲外です(1-3。PMDMML.MAN §6-5): ${val}`);
+      if (partKind !== 'ssg') throw new ParseError(line, `'P'(トーン/ノイズ選択)はSSG音源パート専用です(OPM Hパート向けは未対応。PMDMML.MAN §6-5): partKind=${partKind}`);
+      events.push({ type: 'ssgToneNoise', line, value: val });
+      continue;
     }
 
     if (c === 'p') {
@@ -1194,12 +1275,19 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
 // 必要があるため例外的に処理する(他パートと同じ、0xdfイベントもKのトラックへ積む。
 // PMDMML.MAN §4-11の「いずれかのパートの頭に設定すれば、すべてのパートに有効」を
 // 素直に読むと、指定した行の全パートの出力に同じ0xdfが載る)。
-function tokenizeRhythmKBody(body, line, events, globalState) {
+function tokenizeRhythmKBody(body, line, events, globalState, state) {
   let i = 0;
   const n = body.length;
   while (i < n) {
     const c = body[i];
     if (/\s/.test(c)) { i++; continue; }
+    if (c === '/') {
+      // コンパイル打ち切り。PMDMML.MAN §16-4([音源]にR選択/R定義も含まれる)。
+      // 通常パート(tokenizeBody)側と同じ扱い: state.terminatedを立てて即座に戻り、
+      // 呼び出し元(parseMml)が以降の行のKパート処理をスキップする。
+      state.terminated = true;
+      return;
+    }
     if (c === '\\') { i = parseBackslashCommand(body, i, line, events); continue; }
     if (c === 'C') {
       i++;
@@ -1781,13 +1869,18 @@ export function parseMml(source) {
     // パート指定を跨いだ暗黙の状態共有は行わない設計にする)。
     let lettersToScan = letters;
     if (/k/i.test(letters)) {
-      if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLength: 24 } });
-      try {
-        const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
-        tokenizeRhythmKBody(expandedBody, lineNo, tracks.get('K').events, globalState);
-      } catch (e) {
-        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
-        else throw e;
+      if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLength: 24, terminated: false } });
+      const kTrack = tracks.get('K');
+      // '/'(PMDMML.MAN §16-4)でKパートが既に打ち切られていれば、以降の行は
+      // このパートについて一切コンパイルしない(通常パートと同じ規則)。
+      if (!kTrack.state.terminated) {
+        try {
+          const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
+          tokenizeRhythmKBody(expandedBody, lineNo, kTrack.events, globalState, kTrack.state);
+        } catch (e) {
+          if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
+          else throw e;
+        }
       }
       // letters中のK以外の文字は下の通常経路へそのまま続ける(letters/bodyは変更しない。
       // 下のfor文がPART_LETTERS.includes判定で自然にKを弾いてくれるので、Kをここで
@@ -1824,7 +1917,7 @@ export function parseMml(source) {
         // 既定オクターブ: PMDMML.MAN §4-4の既定値はo4(1-8系)。nibble表現は
         // -1した3(oコマンド未実装当時の名残でoctave:4だったが、oコマンドの
         // 符号化修正(oct-1)に合わせてここも合わせる)。
-        tracks.set(p, { events: [], state: { octave: 3, defaultLength: 24 } });
+        tracks.set(p, { events: [], state: { octave: 3, defaultLength: 24, terminated: false } });
       }
     }
 
@@ -1836,6 +1929,9 @@ export function parseMml(source) {
       // (PMD慣習通り。パートごとに別オブジェクトへ積む必要があるため、パートごとに1回ずつ字句解析する)
       for (const p of partLetters) {
         const trackInfo = tracks.get(p);
+        // '/'(コンパイル打ち切り、PMDMML.MAN §16-4)で既に打ち切られたパートは、
+        // 以降の行に同じパート文字が再度現れても一切コンパイルしない。
+        if (trackInfo.state.terminated) continue;
         const kind = ppzExtendSet.has(p) ? 'ppz' : PART_KIND[p];
         tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState, p);
       }

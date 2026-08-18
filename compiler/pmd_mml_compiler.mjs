@@ -151,6 +151,13 @@ function sizeOfEvent(ev) {
     case 'detuneExtend': return 2; // DX + 1byte(0xcc、PMDMML.MAN §7-3。実測はpmd_mml_compiler.mjs先頭のコメント参照)
     case 'lfoSpeedExtend': return 2; // MXA=0xca / MXB=0xbb + 1byte(値0-1、PMDMML.MAN §9-5)
     case 'envSpeedExtend': return 2; // EX=0xc9 + 1byte(値0-1、PMDMML.MAN §8-2)
+    // バッチ3a追加分。opcodeはupstream/98fmplayer/fmdriver/fmdriver_pmd.cの
+    // pmd_cmd_table_fm/ssg配列(0xff起点で逆順に並ぶ関数テーブル)の実インデックスから
+    // 特定した(pmd_mml_parser.mjs該当コマンドのコメント参照)。
+    case 'fmSlotMask': return 2; // s: 0xcf + 1byte(PMDMML.MAN §6-2)
+    case 'ssgToneNoise': return 2; // P: 0xed + 1byte(PMDMML.MAN §6-5)
+    case 'ssgEnvOld': return 5; // E書式1: 0xf0 + AL/DD/SR/RR(各1byte、PMDMML.MAN §8-1)
+    case 'ssgEnvNew': return 6; // E書式2: 0xcd + AR/DR/SR/(RR|SL詰め)/AL(各1byte、§8-1)
 
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -405,6 +412,33 @@ function emitEvent(ev, out, offset) {
     case 'envSpeedExtend': // ソフトウエアエンベロープ速度設定(PMDMML.MAN §8-2。0xc9 + 1byte、値0-1)
       out[offset] = 0xc9;
       out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'fmSlotMask': // FM音源使用スロット位置指定(PMDMML.MAN §6-2。0xcf + 1byte)
+      out[offset] = 0xcf;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'ssgToneNoise': // SSG/OPM トーン・ノイズ出力選択(PMDMML.MAN §6-5。0xed + 1byte)
+      out[offset] = 0xed;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'ssgEnvOld': // SSG/PCMソフトウエアエンベロープ・書式1(PMDMML.MAN §8-1。
+      // 0xf0 + AL(1byte)/DD(1byte符号付き)/SR(1byte)/RR(1byte)、
+      // fmdriver_pmd.c:2650 pmd_cmdf0_env_old実測どおりの並び)
+      out[offset] = 0xf0;
+      out[offset + 1] = ev.al & 0xff;
+      out[offset + 2] = signedByte(ev.dd);
+      out[offset + 3] = ev.sr & 0xff;
+      out[offset + 4] = ev.rr & 0xff;
+      return;
+    case 'ssgEnvNew': // SSG/PCMソフトウエアエンベロープ・書式2(PMDMML.MAN §8-1。
+      // 0xcd + AR&0x1f/DR&0x1f/SR&0x1f/((SL^0xf)<<4|RR&0xf)/AL&0xf、
+      // fmdriver_pmd.c:3410 pmd_cmdcd_env_new実測どおりの詰め方)
+      out[offset] = 0xcd;
+      out[offset + 1] = ev.ar & 0x1f;
+      out[offset + 2] = ev.dr & 0x1f;
+      out[offset + 3] = ev.sr & 0x1f;
+      out[offset + 4] = (((ev.sl ^ 0xf) & 0xf) << 4) | (ev.rr & 0xf);
+      out[offset + 5] = ev.al & 0xf;
       return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
