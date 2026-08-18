@@ -576,6 +576,15 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
 
   function readLengthSpec() {
     // 戻り値: クロック値、または null(長さ指定なし=デフォルト長を使う)
+    // PMDMML.MAN §1-3「数値表記の方法」: 「コマンド名とパラメータ数値の間は、
+    // spaceまたはtabで空白を空けても構いません」(実測例4「MA 12, 1, 8, 2」は
+    // 「間のspaceは無視され、MA12,1,8,2と同等になります」)。音符名(c/d/e/f/g/a/b)
+    // も「コマンド名」に含まれる一般規則として、直後の音長数値との間の空白を
+    // 許容する(実データMULE_op_loop.MML:122 `g 12f12`で確認)。ただし同じ§1-3が
+    // 「数値が続く場合のカンマ等は、数値の直後にある必要があります」と明記して
+    // おり(失敗例「MB 12 , 1 , 8 , 2」はエラー)、数値の**後ろ側**の空白まで
+    // 無条件に緩めるものではない(ここでは数値の**前**だけを1回スキップする)。
+    while (body[i] === ' ' || body[i] === '\t') i++;
     if (body[i] === '%') {
       i++;
       const m = /^\d+/.exec(body.slice(i));
@@ -1522,6 +1531,9 @@ function tokenizeRhythmPatternBody(body, line, state, events, globalState) {
   const n = body.length;
 
   function readLengthSpec() {
+    // PMDMML.MAN §1-3(上のtokenizeBody内readLengthSpecと同じ根拠): コマンド名
+    // (r/R等)と音長数値の間の空白(space/tab)を許容する。
+    while (body[i] === ' ' || body[i] === '\t') i++;
     if (body[i] === '%') {
       i++;
       const m = /^\d+/.exec(body.slice(i));
