@@ -1137,7 +1137,8 @@ function parseToneOperatorLine(cleaned, line, opIndex) {
   return { ar, dr, sr, rr, sl, tl, ks, ml, dt, ams };
 }
 
-// 音色定義ブロック(ヘッダ1行+オペレータ4行)を lines[li]から読み進める。
+// 音色定義ブロック(ヘッダ1行+オペレータ4行+任意のALG/FB再掲5行目)を
+// lines[li]から読み進める。
 // 戻り値: { tone: {tonenum, ...buildToneEntry用options}, nextLi }
 // 空行・コメントのみの行は読み飛ばす(オペレータ4行が揃うまで先読みを続ける)。
 export function parseToneDefBlock(lines, li, lineNo) {
@@ -1153,6 +1154,47 @@ export function parseToneDefBlock(lines, li, lineNo) {
     if (cleaned === '') { cur++; continue; }
     ops.push(parseToneOperatorLine(cleaned, curLineNo, ops.length));
     cur++;
+  }
+  // オペレータ4行の直後に「ALG,FB」形式の2数値のみの行が続く場合、これは
+  // ヘッダ行(@ 音色番号 ALG FB)のALG/FBを再掲する任意の5行目とみなして読み飛ばす。
+  // 出典: PMDMML.MAN §3-1にはこの5行目の書式は記載が無い(書式1/2/3はいずれも
+  // ヘッダ1行+オペレータ行のみ)。実データ(自作コンパイラ対応対象のPMD_MSサンプル、
+  // 第三者データにつき本ファイルへの転記はしない)に、この5行目が付く音色定義が
+  // 実在することを確認した。
+  //
+  // 2026-08-18、WebNP2+FreeDOS上の実機 MC.EXE ver4.8s に `/V` オプション付きで
+  // 自作の3ケース(ヘッダ@1 5 3+5行目"2,1"／ヘッダ@1 2 1+5行目"5,3"／5行目無しの
+  // 対照)を食わせて実測: 3ケースとも出力の音色エントリ末尾バイト(ALG/FB)は常に
+  // **ヘッダ行の値と一致し、5行目の値の影響は一切無かった**(ヘッダ@1 5 3+5行目
+  // "2,1" → ALG=5,FB=3のまま。ヘッダ@1 2 1+5行目"5,3" → ALG=2,FB=1のまま)。
+  // つまり実機は5行目を構文として許容(エラーにならない)しつつ、値としては
+  // 完全に無視する。ヘッダのALG/FBを省略して5行目だけに書く形も実機で試したが、
+  // オペレータ行の数値がバイト単位でずれた壊れたエントリになった(PMDMML.MANの
+  // 「数値の省略は出来ません」という記載と整合)。よってこの5行目は「ヘッダの
+  // ALG/FBを目視確認しやすくするための冗長な再掲(効果なし)」であり、実装側も
+  // 値を捨てて読み飛ばすだけでよい(ヘッダの値をそのまま使う)。
+  {
+    let peek = cur;
+    while (peek < lines.length && cleanToneLine(lines[peek]) === '') peek++;
+    if (peek < lines.length) {
+      const peekCleaned = cleanToneLine(lines[peek]);
+      // ここは「あるかもしれない」を確認するだけの投機的な先読みなので、形が
+      // 合わない場合(トークン数が2以外、数値以外のトークンを含む、MML変数
+      // 参照`!H`等)は例外を投げず単に「5行目は無い」とみなして通常のトップ
+      // レベル行処理(次のパート指定/音色定義/変数定義など)に委ねる。
+      const peekTokens = peekCleaned.split(/[\s,]+/).filter((t) => t.length > 0);
+      const looksLikeAlgFb = peekTokens.length === 2 && peekTokens.every((t) => /^-?\d+$/.test(t));
+      if (looksLikeAlgFb) {
+        const alg5 = parseInt(peekTokens[0], 10);
+        const fb5 = parseInt(peekTokens[1], 10);
+        // 形が2数値である以上はALG/FB再掲行だと確定して読み飛ばす対象にする。
+        // 値そのものが無効(範囲外)ならエラーにする(黙って無視しない、というv2方針に
+        // 従い、書式として受理する5行目でも値の妥当性検査はする。ただし採用はしない)。
+        if (alg5 < 0 || alg5 > 7) throw new ParseError(peek + 1, `音色定義ALG/FB再掲5行目のALGが範囲外です(0-7): ${alg5}`);
+        if (fb5 < 0 || fb5 > 7) throw new ParseError(peek + 1, `音色定義ALG/FB再掲5行目のFBが範囲外です(0-7): ${fb5}`);
+        cur = peek + 1;
+      }
+    }
   }
   // MML記述順(op1,op2,op3,op4)と、音色テーブルのインデックスs(buildToneEntry()の
   // 第2引数、レジスタオフセット選択 0x30+ch+s*4)が対応する物理スロット順は 1,3,2,4

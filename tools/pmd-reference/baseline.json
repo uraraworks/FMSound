@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T05:32:37.965Z",
+  "generatedAt": "2026-08-18T06:12:39.938Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -7,6 +7,13 @@
       "matchedParts": 10,
       "totalParts": 11,
       "byteMatchRate": 0.6129032258064516
+    },
+    "pmdalg5": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
     },
     "pmdbasic": {
       "status": "compared",
