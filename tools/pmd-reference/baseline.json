@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T02:50:56.948Z",
+  "generatedAt": "2026-08-18T03:17:00.883Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -99,6 +99,20 @@
       "totalParts": 11,
       "byteMatchRate": 0.7073170731707317
     },
+    "pmdrhbit": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.7647058823529411
+    },
+    "pmdrhpan": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.7647058823529411
+    },
     "pmdssg": {
       "status": "compared",
       "identical": false,
@@ -128,14 +142,11 @@
       "byteMatchRate": 1
     },
     "pmdunimp": {
-      "status": "compile_error",
-      "errorCount": 5,
-      "errorFeatures": [
-        "未対応のパート指定: 'K'",
-        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\b\\c\"",
-        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\h\\s\\h\\t\"",
-        "行はパート指定(A-I)または音色定義(@)で始まる必要があります: \"RN lN \\s\\t\\c\\b\""
-      ]
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
     },
     "pmdvar": {
       "status": "compared",

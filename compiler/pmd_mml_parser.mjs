@@ -204,6 +204,99 @@ function numericLengthToClocks(n, line, measLen) {
   return measLen / n;
 }
 
+// リズム音源直接コマンド(`\`系、PMDMML.MAN §14)。全パート共通で使える
+// (§14冒頭「総てのパートに指定する事が可能」)ため、通常のtokenizeBody・
+// Kパート・Rパターン本体の3箇所から共通で呼ぶ。
+//
+// b/s/c/h/t/i の6文字とビット位置(0xebの下位6bit)の対応、l/m/rと出力位置2bitの対応は
+// いずれもマニュアルには明記が無く(§14-1/§14-4)、今回 tools/pmd-reference/pmdunimp.M
+// (既存corpus、K/R使用)の実測 + 新規corpusケース(rhbits/rhpan、MC.EXE ver4.8s実測、
+// 各音を1つずつ分離して`\b r4 \s r4 \c r4 \h r4 \t r4 \i r4`のように出力させ、
+// 0xebの引数バイトを直接読んだ)の2系統で確認した:
+//   b=bit0, s=bit1, c=bit2, h=bit3, t=bit4, i=bit5 (マニュアル記載順のまま0から採番)
+//   r=0b01, l=0b10, m=0b11 (YM2608パンレジスタのRR/LL 2bitと同じ並び。0b00は未使用)
+// \v(個別音量)の対象music番号(1-6)は0xeaの上位3bitをpmdunimp.M実測で解読して
+// b=1,s=2,c=3,h=4,t=5,i=6と確認済み(§14-3本文の記載順と一致)。
+const RHYTHM_BIT = { b: 0, s: 1, c: 2, h: 3, t: 4, i: 5 };
+const RHYTHM_TARGET_NUM = { b: 1, s: 2, c: 3, h: 4, t: 5, i: 6 };
+const RHYTHM_PAN_VAL = { r: 1, l: 2, m: 3 };
+
+// body[i] === '\\' の直後から1つの `\`系コマンドを読み、eventsへ積んで次のindexを返す。
+// 直前のeventが「dumpフラグが同じrhShot」であれば、そのビットマスクへ合算する
+// (PMDMML.MAN §14-1「同時に出力したい場合は、\s\t\iというように指定して下さい」を
+// 参照.M実測(pmdunimp.M: `\b\c`→単一の0xeb 05、`\h\s\h\t`→単一の0xeb 1a)で確認した挙動)。
+function parseBackslashCommand(body, i, line, events) {
+  i++; // '\\' を読み飛ばす
+  const c2 = body[i];
+  if (c2 === 'V') {
+    // マスタボリューム。PMDMML.MAN §14-2。絶対値0xe8(0-63)/相対値0xe6(符号付き1byte)。
+    i++;
+    let sign = null;
+    if (body[i] === '+' || body[i] === '-') { sign = body[i]; i++; }
+    const m = /^\d+/.exec(body.slice(i));
+    if (!m) throw new ParseError(line, `'\\V' の後に数値がありません(PMDMML.MAN §14-2)`);
+    i += m[0].length;
+    const val = parseInt(m[0], 10);
+    if (sign) {
+      const delta = sign === '-' ? -val : val;
+      if (delta < -128 || delta > 127) throw new ParseError(line, `'\\V'の相対値が1byte符号付きに収まりません: ${delta}`);
+      events.push({ type: 'rhVolRel', line, delta });
+    } else {
+      if (val < 0 || val > 63) throw new ParseError(line, `'\\V'の値が範囲外です(0-63。PMDMML.MAN §14-2): ${val}`);
+      events.push({ type: 'rhVolAbs', line, value: val });
+    }
+    return i;
+  }
+  if (c2 === 'v') {
+    // 個別音量。PMDMML.MAN §14-3。絶対値0xea(上位3bit=対象1-6/下位5bit=値0-31)、
+    // 相対値0xe5(1byte目=対象1-6/2byte目=符号付き差分)。
+    i++;
+    const t = body[i];
+    if (!(t in RHYTHM_TARGET_NUM)) throw new ParseError(line, `'\\v' の後は b/s/c/h/t/i のいずれかです(PMDMML.MAN §14-3): '${t ?? ''}'`);
+    i++;
+    let sign = null;
+    if (body[i] === '+' || body[i] === '-') { sign = body[i]; i++; }
+    const m = /^\d+/.exec(body.slice(i));
+    if (!m) throw new ParseError(line, `'\\v${t}' の後に数値がありません`);
+    i += m[0].length;
+    const val = parseInt(m[0], 10);
+    if (sign) {
+      const delta = sign === '-' ? -val : val;
+      if (delta < -128 || delta > 127) throw new ParseError(line, `'\\v${t}'の相対値が1byte符号付きに収まりません: ${delta}`);
+      events.push({ type: 'rhVolIndivRel', line, target: RHYTHM_TARGET_NUM[t], delta });
+    } else {
+      if (val < 0 || val > 31) throw new ParseError(line, `'\\v${t}'の値が範囲外です(0-31。PMDMML.MAN §14-3): ${val}`);
+      events.push({ type: 'rhVolIndivAbs', line, target: RHYTHM_TARGET_NUM[t], value: val });
+    }
+    return i;
+  }
+  if (c2 === 'l' || c2 === 'm' || c2 === 'r') {
+    // 出力位置。PMDMML.MAN §14-4。0xe9(上位3bit=対象1-6/下位2bit=l=2,m=3,r=1)。
+    const panVal = RHYTHM_PAN_VAL[c2];
+    i++;
+    const t = body[i];
+    if (!(t in RHYTHM_TARGET_NUM)) throw new ParseError(line, `'\\${c2}' の後は b/s/c/h/t/i のいずれかです(PMDMML.MAN §14-4): '${t ?? ''}'`);
+    i++;
+    events.push({ type: 'rhPan', line, target: RHYTHM_TARGET_NUM[t], pos: panVal });
+    return i;
+  }
+  if (c2 in RHYTHM_BIT) {
+    // ショット/ダンプ制御。PMDMML.MAN §14-1。0xeb(bit7=dump、下位6bit=対象)。
+    i++;
+    let dump = false;
+    if (body[i] === 'p') { dump = true; i++; }
+    const bit = 1 << RHYTHM_BIT[c2];
+    const last = events[events.length - 1];
+    if (last && last.type === 'rhShot' && last.dump === dump) {
+      last.bits |= bit;
+    } else {
+      events.push({ type: 'rhShot', line, bits: bit, dump });
+    }
+    return i;
+  }
+  throw new ParseError(line, `未対応の '\\' コマンドです: '\\${c2 ?? ''}'（PMDMML.MAN §14。対応: b/s/c/h/t/i[p], V, v[bschti], l/m/r[bschti]）`);
+}
+
 function applyDots(baseClocks, dotCount, line) {
   let total = baseClocks;
   let extra = baseClocks;
@@ -314,6 +407,13 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
   while (i < n) {
     const c = body[i];
     if (/\s/.test(c)) { i++; continue; }
+
+    if (c === '\\') {
+      // リズム音源直接コマンド(`\`系、PMDMML.MAN §14)。「総てのパートに指定する事が
+      // 可能」(§14冒頭)なため、FM/SSG/ADPCMパートでもここで受理する。
+      i = parseBackslashCommand(body, i, line, events);
+      continue;
+    }
 
     if (c in NOTE_LETTER_TO_BASE_INDEX) {
       i++;
@@ -728,6 +828,191 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
   }
 }
 
+// Kパート本体(リズムパターン演奏順、PMDMML.MAN §1-2-1/§1-2-2、doc v2 1.3節)。
+// 通常のFM/SSGパートとは全く別の語彙: Rパターン選択(`R数値`。cmd<0x80制約により0-127)、
+// ループ([ ] :)、全体ループ(L)、`\`系リズム直接コマンドのみを受理する。
+// Rの直後は「休符」ではなく「パターン番号」を意味する点が通常パートと異なる
+// (通常パートの'r'/'R'=休符とは名前空間が別、doc 1.3節「cmdの値がそのままRパターン番号」)。
+// Kパートは実データ上、他パート文字と同じ行に頻繁に混在する
+// (`ABCDEFGHIKJ C192 o4 l8`のように)。'C'(全音符長、全パート共通のグローバル設定)・
+// 'o'/'<'/'>'(オクターブ)・'l'(デフォルト音長)は、K自体には音符が無く意味を持たない
+// (どのみち出力バイトも無い)ため、構文としては受理してそのまま読み飛ばす
+// (エラーにすると「他パートのための設定をKと同じ行に書けない」という実データに
+// 合わない制約になってしまう)。'C'だけは全パート共通のglobalStateを更新する
+// 必要があるため例外的に処理する(他パートと同じ、0xdfイベントもKのトラックへ積む。
+// PMDMML.MAN §4-11の「いずれかのパートの頭に設定すれば、すべてのパートに有効」を
+// 素直に読むと、指定した行の全パートの出力に同じ0xdfが載る)。
+function tokenizeRhythmKBody(body, line, events, globalState) {
+  let i = 0;
+  const n = body.length;
+  while (i < n) {
+    const c = body[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '\\') { i = parseBackslashCommand(body, i, line, events); continue; }
+    if (c === 'C') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'C' の後に全音符長の数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 1 || val > 255) throw new ParseError(line, `'C'(全音符長)の値が範囲外です(1-255): ${val}`);
+      globalState.measLen = val;
+      events.push({ type: 'measLen', line, value: val });
+      continue;
+    }
+    if (c === 'o' || c === 'O') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'o' の後にオクターブ数値がありません`);
+      i += m[0].length;
+      continue; // Kには音符が無いため読み捨てる(出力バイトも無い)
+    }
+    if (c === '<' || c === '>') { i++; continue; }
+    if (c === 'l') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
+      i += m[0].length;
+      while (body[i] === '.') i++;
+      continue; // Kにはデフォルト音長の概念が無いため読み捨てる
+    }
+    // 'v'(大雑把な音量)・'V'(細かい音量)・'q'(ゲート)・'_'/'__'(転調)も、実データでは
+    // 「ABCDEFGHIJKab l12 o4 !H v14 q1 l16」のようにKと同じ行へ頻繁に混在する
+    // (`!H`変数展開の中身に`_`が含まれるケースも実測)。いずれもKには対応する出力先が
+    // 無く読み捨てて構わない(o/l/C以外は本当に無視してよいコマンド群、PMDMML.MAN上も
+    // 音符/音量/ゲート系はK/Rパートの演奏内容そのものには関与しない)ため、構文だけ
+    // 消費して捨てる(範囲チェックはしない。他パート側で同じ文字列がchecked済みのため)。
+    if (c === 'v' || c === 'V') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'${c}' の後に音量数値がありません`);
+      i += m[0].length;
+      continue;
+    }
+    if (c === 'q') {
+      i++;
+      const m1 = /^\d+/.exec(body.slice(i));
+      if (m1) i += m1[0].length;
+      if (body[i] === '-') {
+        i++;
+        const m2 = /^\d+/.exec(body.slice(i));
+        if (m2) i += m2[0].length;
+      }
+      if (body[i] === ',') {
+        i++;
+        const m3 = /^\d+/.exec(body.slice(i));
+        if (m3) i += m3[0].length;
+      }
+      continue;
+    }
+    if (c === '_') {
+      i++;
+      if (body[i] === '_') i++;
+      const m = /^[+-]?\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'_' の後に転調数値がありません`);
+      i += m[0].length;
+      continue;
+    }
+    if (c === 'R') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'R' の後にRパターン番号がありません(Kパート、PMDMML.MAN §6-7)`);
+      i += m[0].length;
+      const num = parseInt(m[0], 10);
+      // [範囲]の記載は0-255だが、`.M`側の読み出し経路(cmd<0x80のときのみパターン索引として
+      // 解釈される、fmdriver_pmd.c:1748)により実際に到達できるのは0-127のみ
+      // (docs/pmd-compiler-spec-v2.md 1.3節、マニュアルとの食い違いとして記録済み)。
+      if (num < 0 || num > 127) throw new ParseError(line, `Kパートの'R'パターン番号は0-127です(cmd&0x80分岐の制約でこの範囲のみ到達可能。docs/pmd-compiler-spec-v2.md 1.3節): ${num}`);
+      events.push({ type: 'rhSelect', line, pattern: num });
+      continue;
+    }
+    if (c === '[') { i++; events.push({ type: 'loopOpen', line }); continue; }
+    if (c === ']') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `']' の後にループ回数(n)が必要です`);
+      i += m[0].length;
+      const count = parseInt(m[0], 10);
+      if (count < 0 || count > 255) throw new ParseError(line, `ループ回数が1byteに収まりません: ${count}`);
+      events.push({ type: 'loopClose', line, count });
+      continue;
+    }
+    if (c === ':') { i++; events.push({ type: 'loopExit', line }); continue; }
+    if (c === 'L') { i++; events.push({ type: 'globalLoop', line }); continue; }
+    throw new ParseError(line, `Kパートで未対応の文字です: '${c}'（Rパターン選択(R数値)・ループ([ ] :)・全体ループ(L)・\\系コマンドのみ対応）`);
+  }
+}
+
+// Rパターン本体(PMDMML.MAN §1-2-1/§1-2-2)。実データ3曲は全て`\`系直接コマンド
+// (§14)のみで構成されており、`@音色番号`によるPMD内蔵SSGドラムのマスク指定方式
+// (§6-1-3、通常の音符文字を使う)は実データに出現しなかったため今回は未実装のまま
+// (docs/pmd-compiler-spec-v2.md 1.3節「実装上の優先度としては下がる」)。
+// 対応: 休符(r/R)・デフォルト音長(l)・ループ([ ] :)・`\`系コマンド。
+// 音符文字(c/d/e/f/g/a/b)・`@`は専用エラーで止める(黙って無視しない)。
+function tokenizeRhythmPatternBody(body, line, state, events, globalState) {
+  let i = 0;
+  const n = body.length;
+
+  function readLengthSpec() {
+    if (body[i] === '%') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'%' の後に数値がありません`);
+      i += m[0].length;
+      return parseInt(m[0], 10);
+    }
+    const m = /^\d+/.exec(body.slice(i));
+    let clocks;
+    if (m) {
+      i += m[0].length;
+      clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+    } else {
+      clocks = state.defaultLength;
+    }
+    let dots = 0;
+    while (body[i] === '.') { dots++; i++; }
+    return dots > 0 ? applyDots(clocks, dots, line) : clocks;
+  }
+
+  while (i < n) {
+    const c = body[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '\\') { i = parseBackslashCommand(body, i, line, events); continue; }
+    if (c === 'r' || c === 'R') {
+      i++;
+      const clocks = readLengthSpec();
+      if (clocks < 1 || clocks > 255) throw new ParseError(line, `音長クロック値が1byteに収まりません: ${clocks}`);
+      events.push({ type: 'rest', line, octave: 0, clocks });
+      continue;
+    }
+    if (c === 'l') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
+      i += m[0].length;
+      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+      let dots = 0;
+      while (body[i] === '.') { dots++; i++; }
+      if (dots > 0) clocks = applyDots(clocks, dots, line);
+      state.defaultLength = clocks;
+      continue;
+    }
+    if (c === '[') { i++; events.push({ type: 'loopOpen', line }); continue; }
+    if (c === ']') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `']' の後にループ回数(n)が必要です`);
+      i += m[0].length;
+      const count = parseInt(m[0], 10);
+      if (count < 0 || count > 255) throw new ParseError(line, `ループ回数が1byteに収まりません: ${count}`);
+      events.push({ type: 'loopClose', line, count });
+      continue;
+    }
+    if (c === ':') { i++; events.push({ type: 'loopExit', line }); continue; }
+    throw new ParseError(line, `Rパターン本体で未対応の文字です: '${c}'（休符(r)・デフォルト音長(l)・ループ([ ] :)・\\系コマンドのみ対応。@音色番号によるマスク指定パターン(PMDMML.MAN §6-1-3)は実データに出現しなかったため未実装）`);
+  }
+}
+
 // 構造(ループの対応関係)を検査してリンクを張る。ネストは v1 非対応(単純化のため)。
 function linkLoops(events, partLetter) {
   const stack = [];
@@ -878,6 +1163,7 @@ export function parseMml(source) {
 
   const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
   const tones = new Map(); // tonenum -> toneOptions (buildToneEntry用、tonenumはキー側と重複保持)
+  const rhythmPatterns = new Map(); // Rパターン番号(0-127) -> {events:[], state:{octave, defaultLength}}
   const header = {
     title: null, composer: null, arranger: null, memo: [],
     titleLine: null, composerLine: null, arrangerLine: null, memoLines: [],
@@ -935,6 +1221,32 @@ export function parseMml(source) {
       continue;
     }
 
+    // Rパターン定義行(`R数値 ...`、PMDMML.MAN §1-2-1)。通常のパート指定行(A-J/K)とは
+    // 別体系(パートではなく「パターン表エントリ」、doc v2 1.3節)なので、パート文字の
+    // 一般判定より前に専用の正規表現で拾う(`R`の直後は空白無しで数字が続くため、
+    // 通常のパート行regexにはそもそもマッチしない=誤って一般エラーになっていた)。
+    const rPatM = /^R(\d+)(?:[ \t]+(.*))?$/.exec(trimmed);
+    if (rPatM) {
+      const patNum = parseInt(rPatM[1], 10);
+      if (patNum < 0 || patNum > 127) {
+        errors.push({ line: lineNo, message: `Rパターン番号は0-127です(cmd&0x80分岐の制約でこの範囲のみ到達可能。docs/pmd-compiler-spec-v2.md 1.3節): ${patNum}` });
+        continue;
+      }
+      if (!rhythmPatterns.has(patNum)) {
+        rhythmPatterns.set(patNum, { events: [], state: { octave: 0, defaultLength: 24 } });
+      }
+      try {
+        const rBody = rPatM[2] ?? '';
+        const expandedBody = expandVariables(rBody, varMap, varSortedNames, lineNo, new Set());
+        const info = rhythmPatterns.get(patNum);
+        tokenizeRhythmPatternBody(expandedBody, lineNo, info.state, info.events, globalState);
+      } catch (e) {
+        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
+        else throw e;
+      }
+      continue;
+    }
+
     const m = /^([A-Za-z]+)(?:\s+(.*))?$/.exec(trimmed);
     if (!m) {
       errors.push({ line: lineNo, message: `行はパート指定(A-I)または音色定義(@)で始まる必要があります: "${trimmed}"` });
@@ -942,13 +1254,38 @@ export function parseMml(source) {
     }
     const letters = m[1];
     const body = m[2] ?? '';
+
+    // Kパート(リズムパターン演奏順、doc v2 1.3節)。通常パートとは全く別の語彙
+    // (tokenizeRhythmKBody)を使う。実データ3曲の実測で「ABCDEFGHIJK t120...」のように
+    // 他パート文字と同じ行にKが混在する書き方が多数出現したため(PMD慣習:
+    // 同じ行に列挙したパート全部へ同じ本文を流す)、Kが混在していても他パート文字は
+    // 通常通りtokenizeBodyへ、Kだけ別途tokenizeRhythmKBodyへ本文を流す
+    // (当初「K混在は未対応」としていたが、実データ実測でこの制約が誤りだと判明したため撤回)。
+    if (/k/i.test(letters)) {
+      if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLength: 24 } });
+      try {
+        const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
+        tokenizeRhythmKBody(expandedBody, lineNo, tracks.get('K').events, globalState);
+      } catch (e) {
+        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
+        else throw e;
+      }
+      // letters中のK以外の文字は下の通常経路へそのまま続ける(letters/bodyは変更しない。
+      // 下のfor文がPART_LETTERS.includes判定で自然にKを弾いてくれるので、Kをここで
+      // letters から取り除く必要は無い。ただしそのままだと後段で「未対応のパート指定: 'K'」
+      // エラーが重複して出てしまうため、以降の処理からはKを取り除いた文字列を使う)。
+      var lettersForRest = letters.replace(/k/gi, '');
+      if (lettersForRest === '') continue;
+    }
+    const lettersToScan = lettersForRest ?? letters;
+
     const partLetters = [];
-    for (const ch of letters) {
+    for (const ch of lettersToScan) {
       const upper = ch.toUpperCase();
       if (!PART_LETTERS.includes(upper)) {
         errors.push({
           line: lineNo,
-          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J に対応。K/Rリズム・PPZ8拡張パートは未解明のため対象外）`,
+          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J, リズム=K に対応。PPZ8拡張パートは未解明のため対象外）`,
         });
         continue;
       }
@@ -993,9 +1330,19 @@ export function parseMml(source) {
         else throw e;
       }
     }
+    for (const [num, info] of rhythmPatterns) {
+      try {
+        linkLoops(info.events, `R${num}`);
+      } catch (e) {
+        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
+        else throw e;
+      }
+    }
   }
 
   const trackEvents = new Map();
   for (const [p, info] of tracks) trackEvents.set(p, info.events);
-  return { tracks: trackEvents, tones, header, errors };
+  const rhythmPatternEvents = new Map();
+  for (const [num, info] of rhythmPatterns) rhythmPatternEvents.set(num, info.events);
+  return { tracks: trackEvents, tones, header, rhythmPatterns: rhythmPatternEvents, errors };
 }

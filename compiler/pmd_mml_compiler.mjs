@@ -132,6 +132,16 @@ function sizeOfEvent(ev) {
     case 'portamento': return 4; // 0xda + note1(1byte) + note2(1byte) + clocks(1byte)(v2 3.5節、今回実測で解決)
     case 'transposeAbs': return 2; // 0xf5 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
     case 'transposeRel': return 2; // 0xe7 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
+    // リズム音源直接コマンド(`\`系、PMDMML.MAN §14)・Kパートのパターン選択(v2 1.3節)。
+    // バイト割当はpmd_mml_parser.mjsのRHYTHM_BIT等のコメント参照(pmdunimp.M実測+
+    // rhbits/rhpan corpus実測の2系統で確定)。
+    case 'rhShot': return 2; // 0xeb + 1byte(bit7=dump、下位6bit=対象マスク)
+    case 'rhVolAbs': return 2; // 0xe8 + 1byte(0-63)
+    case 'rhVolRel': return 2; // 0xe6 + 1byte符号付き
+    case 'rhVolIndivAbs': return 2; // 0xea + 1byte(上位3bit=対象1-6/下位5bit=値0-31)
+    case 'rhVolIndivRel': return 3; // 0xe5 + 対象1byte + 符号付き差分1byte
+    case 'rhPan': return 2; // 0xe9 + 1byte(上位3bit=対象1-6/下位2bit=l=2,m=3,r=1)
+    case 'rhSelect': return 1; // cmd(=パターン番号、0-127)のみ。オペコード無し(cmd<0x80が識別子)
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
 }
@@ -191,7 +201,13 @@ function emitEvent(ev, out, offset) {
     case 'loopClose': {
       out[offset] = 0xf8;
       out[offset + 1] = ev.count & 0xff;
-      out[offset + 2] = 0; // カウンタ初期値(実行時に自己書き換えされる)
+      // カウンタ初期値: 従来0固定としていたが、今回K/R実装の副産物として
+      // tools/pmd-reference/pmdunimp.M(ループ使用corpus唯一の既存ケース)を実測した
+      // ところ、コンパイル直後の値は0ではなく数値1(count)と同じ値だった(0xf8 04 04 ...)。
+      // 「実行時に自己書き換えされる」こと自体は変わらない(コンパイル時点のスナップショット)が、
+      // 初期値はcountそのものだったため合わせる。他corpusにループ使用ケースが無く
+      // 退行の懸念は無い(grep確認済み)。
+      out[offset + 2] = ev.count & 0xff;
       const ptr = ev.openRef._addr + 1;
       w16(offset + 3, ptr);
       return;
@@ -267,6 +283,34 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xe7;
       out[offset + 1] = signedByte(ev.value);
       return;
+    case 'rhShot': // リズム音源ショット/ダンプ制御(PMDMML.MAN §14-1。0xeb)
+      out[offset] = 0xeb;
+      out[offset + 1] = (ev.dump ? 0x80 : 0) | (ev.bits & 0x3f);
+      return;
+    case 'rhVolAbs': // リズム音源マスタボリューム絶対値(PMDMML.MAN §14-2。0xe8)
+      out[offset] = 0xe8;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'rhVolRel': // リズム音源マスタボリューム相対値(PMDMML.MAN §14-2。0xe6)
+      out[offset] = 0xe6;
+      out[offset + 1] = signedByte(ev.delta);
+      return;
+    case 'rhVolIndivAbs': // リズム音源個別音量絶対値(PMDMML.MAN §14-3。0xea)
+      out[offset] = 0xea;
+      out[offset + 1] = ((ev.target & 0x7) << 5) | (ev.value & 0x1f);
+      return;
+    case 'rhVolIndivRel': // リズム音源個別音量相対値(PMDMML.MAN §14-3。0xe5)
+      out[offset] = 0xe5;
+      out[offset + 1] = ev.target & 0xff;
+      out[offset + 2] = signedByte(ev.delta);
+      return;
+    case 'rhPan': // リズム音源出力位置(PMDMML.MAN §14-4。0xe9)
+      out[offset] = 0xe9;
+      out[offset + 1] = ((ev.target & 0x7) << 5) | (ev.pos & 0x3);
+      return;
+    case 'rhSelect': // Kパート: Rパターン選択(v2 1.3節。cmd(<0x80)そのものがパターン番号)
+      out[offset] = ev.pattern & 0x7f;
+      return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -284,6 +328,23 @@ function layoutTrack(events, startAddr) {
   return { endAddr: addr, termAddr };
 }
 
+// Rパターン本体(v2 1.3節)のレイアウト。通常トラックと同じイベント列だが、
+// 終端バイトが0x80ではなく単独の0xffである点だけが違う(pmdunimp.M実測、
+// R0/R1/R2いずれも`\`系コマンド列の直後に0xffが1byteだけ置かれ、次のパターンの
+// ポインタがその直後を指していた。0xffは通常コマンド表への「エスケープ」経路
+// (rcmd&0xc0==0xc0)を通る値で、fmdriver_pmd.c単体からは終端の意味の確証は
+// 得られていないが、実測上は常にこの1byteでパターンが閉じている)。
+function layoutRhythmPattern(events, startAddr) {
+  let addr = startAddr;
+  for (const ev of events) {
+    ev._addr = addr;
+    addr += sizeOfEvent(ev);
+  }
+  const termAddr = addr;
+  addr += 1; // 0xff 終端(通常トラックの0x80とは異なる)
+  return { endAddr: addr, termAddr };
+}
+
 // MML全文 → `.M` バイト列。
 // tones: { [tonenum]: buildToneEntry()のoptions(tonenumを除く) } 。
 //   MML本文中の音色定義ブロック(@ 音色番号 ALG FB ...、pmd_mml_parser.mjsが解析)と
@@ -294,7 +355,7 @@ function layoutTrack(events, startAddr) {
 // layout には検証スクリプトが使う各トラックの先頭アドレス・終端アドレス・
 // イベント列(アドレス付き)・使用した音色テーブル(tones)を含む。
 export function compileMml(source, { tones, opmFlag = 0 } = {}) {
-  const { tracks, tones: parsedTones, header, errors: parseErrors } = parseMml(source);
+  const { tracks, tones: parsedTones, header, rhythmPatterns, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
   const toneTable = {};
@@ -341,10 +402,15 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
   const slotAddr = new Array(SLOT_LETTERS.length); // 各スロットがヘッダに書き込むポインタ値
   const emptySlotAddrs = []; // 未使用スロットの終端バイト(0x80)を書き込むアドレス
-  let rhythmFixedAddr = null; // r_offset固定領域(8byte)の先頭アドレス
+  let rhythmFixedAddr = null; // r_offset固定領域(8byte、K/R未使用時)の先頭アドレス
+  let rhythmIndexInfo = null; // K/R使用時: {tableAddr, patAddrs, patternLayouts, mysteryAddr}
   for (let idx = 0; idx < SLOT_LETTERS.length; idx++) {
     const letter = SLOT_LETTERS[idx];
-    const events = letter && letter !== 'K' ? tracks.get(letter) : null;
+    // 2026-08-18(K/R実装): Kパートは他パートと同じ「実トラック」として扱う
+    // (letter!=='K'の除外を撤廃。中身は tokenizeRhythmKBody が作るrhSelect/loop/
+    // \系イベント列で、layoutTrack/emitEventは通常パートと同じ経路をそのまま使える。
+    // 終端も他パートと同じ0x80、pmdunimp.M実測で確認済み)。
+    const events = letter ? tracks.get(letter) : null;
     if (events && events.length > 0) {
       const startAddr = cursor;
       const { endAddr, termAddr } = layoutTrack(events, startAddr);
@@ -353,19 +419,54 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
       cursor = endAddr;
     } else if (idx === 11) {
       // r_offset(RHYTHMパート\0-\n等のパターン定義ポインタテーブル、
-      // fmdriver_pmd.c:5440 `pmd->r_offset + cmd*2`で参照される)。K/Rパートの
-      // 実装自体は今回のスコープ外だが、参照.M(tools/pmd-reference/、pmdunimp.M
-      // (K/R使用)を除く18ケース全て)は**K/Rを一切使わない曲でもこの8byte領域を
-      // 必ず確保する**ことを実測で確認した(r_offsetからtone_ptrまで常に12byte
-      // = この8byte + flags4byte)。5byte目以降(index1-7)は全ケースで0x00固定。
-      // 先頭byte(index0)は0x16〜0x80の間でケースごとに揺れており、単純な
-      // MML内容(パート構成/T値/使用コマンド)との相関を確認したが規則を特定できな
-      // かった(MC.EXE内部の未使用パターン0番ポインタの残留値と見られる。K/R自体が
-      // 未実装のため実害はない値)。指示書が名指しした3ケース(pmdbasic/pmdhdrmt/
-      // pmdhdrpc)はいずれも0x60で一致していたため、既定値として採用する。
+      // fmdriver_pmd.c:5440 `pmd->r_offset + cmd*2`で参照される)。
+      //
+      // 2026-08-18(K/R実装): 既存corpus(pmdunimp.M、K/R使用)を実バイト単位で
+      // 読み直した結果、以前「r_offsetの8byte固定領域」と呼んでいたものは、実は
+      // r_offsetそのものではなく「r_offsetの直後、tone_ptrの手前に常にある別の
+      // 8byte領域」だと判明した(K/R未使用時はr_offsetの値がこの領域の先頭アドレス
+      // と一致するため、これまで両者を区別できていなかった)。
+      // pmdunimp.M実測: r_offset(0x3d)から6byte(3パターン×2byte)の索引表→
+      // 各パターンの`\`系コマンド列(3byte×3、いずれも末尾は単独の0xff)→
+      // その直後(0x4c)から8byteの0x00固定領域→flags(4byte、0x54)。
+      // つまり正しい構造は
+      //   r_offset → [索引表(2byte×パターン数)][各パターンの本体(終端0xff付き)]
+      //   → (常にある8byte領域、K/R使用時は全byte0x00) → flags/toneTable
+      // であり、既存の「8byte固定領域(既定値0x60,0,0,...)」は「K/R未使用時、
+      // 索引表が0エントリでr_offsetがこの8byte領域と同じ位置になる」特殊ケースに
+      // すぎなかった(この8byte領域自体の意味・先頭byteの規則は依然未解明のまま。
+      // K/R未使用時は指示書が名指しした3ケースの実測値0x60を既定値として維持し、
+      // K/R使用時は0x00(pmdunimp.M実測どおり)を既定値とする)。
       slotAddr[idx] = cursor;
-      rhythmFixedAddr = cursor;
-      cursor += 8;
+      if (rhythmPatterns.size > 0) {
+        const patNums = [...rhythmPatterns.keys()].sort((a, b) => a - b);
+        // 索引表は「r_offset + パターン番号*2」で直接参照される(fmdriver_pmd.c:1748)ため、
+        // 番号0から連番でないと途中のエントリが未定義になる。この形は今回の実測
+        // (pmdunimp.M: R0,R1,R2)でしか確認できていないため、飛び番号は安全側で未対応とする。
+        for (let k = 0; k < patNums.length; k++) {
+          if (patNums[k] !== k) {
+            throw new Error(`Rパターン番号は0から連番である必要があります(未実測の飛び番号には未対応。パターン番号: ${patNums.join(',')})`);
+          }
+        }
+        const tableAddr = cursor;
+        cursor += patNums.length * 2; // 索引表(各パターンにつき2byte)
+        const patAddrs = [];
+        const patternLayouts = [];
+        for (const num of patNums) {
+          const startAddr = cursor;
+          const patEvents = rhythmPatterns.get(num);
+          const { endAddr, termAddr } = layoutRhythmPattern(patEvents, startAddr);
+          patAddrs.push(startAddr);
+          patternLayouts.push({ events: patEvents, termAddr });
+          cursor = endAddr;
+        }
+        const mysteryAddr = cursor;
+        cursor += 8; // 常にある8byte領域(K/R使用時は0x00固定、上記コメント参照)
+        rhythmIndexInfo = { tableAddr, patAddrs, patternLayouts, mysteryAddr };
+      } else {
+        rhythmFixedAddr = cursor;
+        cursor += 8;
+      }
     } else {
       slotAddr[idx] = cursor;
       emptySlotAddrs.push(cursor);
@@ -428,9 +529,21 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
 
   for (const addr of emptySlotAddrs) rel[addr] = 0x80;
 
-  // r_offset固定領域(8byte): 先頭byteは実測どおりの既定値、残り7byteは常に0x00。
-  rel[rhythmFixedAddr] = 0x60;
-  for (let i = 1; i < 8; i++) rel[rhythmFixedAddr + i] = 0x00;
+  if (rhythmIndexInfo) {
+    // K/R使用時: 索引表(パターン番号順に本体アドレスをLEで書く) + 各パターン本体
+    // (`\`系イベント列 + 単独0xff終端) + 常にある8byte領域(0x00固定、上のコメント参照)。
+    const { tableAddr, patAddrs, patternLayouts, mysteryAddr } = rhythmIndexInfo;
+    patAddrs.forEach((addr, i) => w16(tableAddr + i * 2, addr));
+    for (const { events, termAddr } of patternLayouts) {
+      for (const ev of events) emitEvent(ev, rel, ev._addr);
+      rel[termAddr] = 0xff;
+    }
+    for (let i = 0; i < 8; i++) rel[mysteryAddr + i] = 0x00;
+  } else {
+    // r_offset固定領域(8byte、K/R未使用時): 先頭byteは実測どおりの既定値、残り7byteは常に0x00。
+    rel[rhythmFixedAddr] = 0x60;
+    for (let i = 1; i < 8; i++) rel[rhythmFixedAddr + i] = 0x00;
+  }
 
   for (const letter of Object.keys(trackLayout)) {
     const { events, termAddr } = trackLayout[letter];
