@@ -1157,11 +1157,24 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
         const m = /^([+-]?\d+)(?:\s*,\s*(\d+))?(?:\s*,\s*(\d+))?/.exec(body.slice(i));
         if (!m) throw new ParseError(line, `'MP'/'MPA'/'MPB' の後に±数値1がありません(PMDMML.MAN §9-6)`);
         i += m[0].length;
-        const depthA = parseInt(m[1], 10);
+        const depthARaw = parseInt(m[1], 10);
         const delay = m[2] != null ? parseInt(m[2], 10) : 0;
         const speed = m[3] != null ? parseInt(m[3], 10) : 1;
         const depthB = 255;
-        if (depthA < -128 || depthA > 127) throw new ParseError(line, `'MP'系の数値1(depth)が範囲外です(-128〜127): ${depthA}`);
+        // PMDMML.MAN §9-6は数値1(depth)を「-128~127」と説明する(実測: wikiwiki.jp
+        // thtools「PMD version4.8 コマンドマニュアル_3」§9-6)。一方、実データ
+        // (MULE_op_loop.MML:70/71/80等)には`MP-230`のようにこの範囲を超える値が
+        // あり、提供元は8曲全てをPMD98 ver4.8l実機で確認済みと明記している。
+        // upstream/98fmplayer(fmdriver/fmdriver_pmd.c、pmd_lfo_tick_waveform、
+        // 約515行目)を見ると、`.M`側のdepthは常に1byte(u8s8変換)としてしか
+        // 読まれておらず、16bit格納の余地は無い(「16bitかもしれない」という
+        // 仮説は棄却)。つまりMC.EXEは数値1をここで範囲チェックせず、Cの
+        // signed charへの代入と同じ2の補数切り捨てで1byteへ書き出していると
+        // 考えるのが両資料と矛盾しない唯一の説明。ここでも同じ切り捨て
+        // (mod 256を-128~127へ正規化)を行う。切り捨て後は常に1byteに収まる
+        // ため、範囲チェックは不要(下のsignedByte()呼び出しに委ねる)。
+        let depthA = ((depthARaw % 256) + 256) % 256;
+        if (depthA > 127) depthA -= 256;
         if (delay < 0 || delay > 255) throw new ParseError(line, `'MP'系の数値2(delay)が範囲外です(0-255): ${delay}`);
         if (speed < 0 || speed > 255) throw new ParseError(line, `'MP'系の数値3(speed)が範囲外です(0-255): ${speed}`);
         events.push({ type: 'lfoBody', line, lfo: lfoNum, delay, speed, depthA, depthB });
