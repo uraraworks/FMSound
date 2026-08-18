@@ -541,10 +541,20 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
     return { value: num * 4, isDefault };
   }
 
-  // '{ }' 内(ポルタメント音程指定、v2 3.5節→今回実測で解決)は c/d/e/f/g/a/b/o/</< のみ許可
-  // (PMDMML.MAN §4-3)。o/</> はここで state.octave を更新し、これは通常の音符と同じく
-  // '}' の外まで持ち越される(PMDの八度レジスタはパート共通の1つの状態のため)。
-  function readBraceNote() {
+  // '{ }' 内(ポルタメント音程指定、v2 3.5節→今回実測で解決)は c/d/e/f/g/a/b/o/</>
+  // のみ許可(PMDMML.MAN §4-3「{ }の中には、c d e f g a b o > < コマンドのみ
+  // 指定して下さい」)。o/</> はここで state.octave を更新し、これは通常の音符と
+  // 同じく '}' の外まで持ち越される(PMDの八度レジスタはパート共通の1つの状態のため)。
+  //
+  // バッチ3a: 旧実装は「note1・note2の直後にそれぞれ1回だけo/</>を許す」という
+  // 固定順(o/</>* note o/</>* note)を前提にしていたが、実データ(DS4_MAIA.mml:176
+  // `d8&{d<a>}16`)で「note2の**後**、'}'の**前**」にオクターブシフトが来る例が
+  // 見つかり、これは旧実装では扱えなかった(note2確定後に`}`を期待して失敗)。
+  // マニュアルの許可文字列挙は順序を一切規定していないため、「o/</>と音程文字が
+  // 任意の順序で混在してよく、その中に音程がちょうど2つ含まれる」という一般形で
+  // 読み直すのが正しい(実データの4件全てがこの読みで矛盾なく説明できる: `{g<g>}`
+  // `{d<d>}` `{ef}8&f` `{a-<a->}16` `{d<a>}16`)。
+  function readBraceOctaveShifts() {
     for (;;) {
       if (body[i] === 'o' || body[i] === 'O') {
         i++;
@@ -566,10 +576,13 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (body[i] === '>') { i++; state.octave += 1; continue; }
       break;
     }
+  }
+
+  // 音程文字(c/d/e/f/g/a/b)が1つあれば読み取って返す。無ければnull(呼び出し側で
+  // '{...}' 内の音程がちょうど2個であることを検査するために使う)。
+  function tryReadBraceNoteLetter() {
     const nc = body[i];
-    if (!(nc in NOTE_LETTER_TO_BASE_INDEX)) {
-      throw new ParseError(line, `'{...}' 内には c/d/e/f/g/a/b/o/</> のみ指定できます(PMDMML.MAN §4-3): '${nc ?? ''}'`);
-    }
+    if (!(nc in NOTE_LETTER_TO_BASE_INDEX)) return null;
     i++;
     let noteIndex = NOTE_LETTER_TO_BASE_INDEX[nc];
     let octave = state.octave;
@@ -583,6 +596,21 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(0-7。cmd<0x80制約): ${octave}`);
     }
     return { octave, noteIndex };
+  }
+
+  // '{...}' の中身全体(o/</>と音程が任意順で混在)を読み、音程をちょうど2個集めて返す。
+  function readBraceNotes() {
+    const notes = [];
+    for (;;) {
+      readBraceOctaveShifts();
+      const note = tryReadBraceNoteLetter();
+      if (note) { notes.push(note); continue; }
+      break;
+    }
+    if (notes.length !== 2) {
+      throw new ParseError(line, `'{...}' 内には音程(c/d/e/f/g/a/b)をちょうど2つ指定してください(o/</>は任意個数・任意位置に混在可。PMDMML.MAN §4-3): ${notes.length}個`);
+    }
+    return notes;
   }
 
   while (i < n) {
@@ -1100,10 +1128,9 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       // クロック分だけ発音してtieで繋ぎ、残り(clocks1-clocks2)クロックでポルタメント」
       // という3命令(note+tie+portamento)へ展開する。
       i++;
-      const note1 = readBraceNote();
-      const note2 = readBraceNote();
+      const [note1, note2] = readBraceNotes();
       if (body[i] !== '}') {
-        throw new ParseError(line, `'{' に対応する '}' がありません(内部は c/d/e/f/g/a/b/o/</> の2音のみ許可、PMDMML.MAN §4-3)`);
+        throw new ParseError(line, `'{' に対応する '}' がありません(内部は c/d/e/f/g/a/b/o/</> のみ許可、PMDMML.MAN §4-3)`);
       }
       i++;
       const clocks1 = readLengthSpec();
