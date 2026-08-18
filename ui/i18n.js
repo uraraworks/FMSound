@@ -143,6 +143,7 @@ const ja = {
   'confirm.sampleReplace': '編集中のMMLをサンプルで置き換えます。元の内容はこの操作の直後であればCmd/Ctrl+Zで戻せます。よろしいですか?',
   'confirm.songMmlReplace': '編集中のMMLを、選んだ曲のMMLで置き換えます。元の内容はこの操作で失われます。',
   'confirm.shareLinkLoad': '編集中のMMLを共有リンクの内容で置き換えます。よろしいですか?',
+  'confirm.restoreOriginalOnExitEditor': '編集中のMMLを、読み込んだ元のMMLに戻します。今の編集内容はこの操作で失われます。よろしいですか?',
 
   'sample.mmlLabel': 'サンプルMML:',
   'sample.furEliseLabel': 'エリーゼのために・冒頭',
@@ -346,6 +347,7 @@ const en = {
   'confirm.sampleReplace': 'This replaces the MML you are editing with the sample. You can undo this with Cmd/Ctrl+Z right after. Continue?',
   'confirm.songMmlReplace': "The MML in the editor will be replaced with the selected song's MML. Your current content will be lost.",
   'confirm.shareLinkLoad': 'This replaces the MML you are editing with the content of the shared link. Continue?',
+  'confirm.restoreOriginalOnExitEditor': 'This restores the originally loaded MML. Your current edits will be lost. Continue?',
 
   'sample.mmlLabel': 'Sample MML:',
   'sample.furEliseLabel': 'Für Elise, opening',

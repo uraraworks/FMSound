@@ -446,14 +446,69 @@ export async function init(ctx) {
     setMmlStatus(mmlStatusEl, { ok: false, message });
   }
 
+  // 課題(利用者提案、2026-08-18): editor→player の遷移時、読み込んだ元のMMLと
+  // 今の編集欄の内容が食い違っていれば確認し、OKなら元のMMLへ戻す。
+  //
+  // PMD側(html/pmd-app.js restoreOriginalSongOnExitEditor())と目的は同じだが
+  // 構造が違うため素直な移植はできない: PMDが開くのはコンパイル済み.M(バイナリ)で
+  // 編集欄のMMLとは別物だが、MUCOMが開くのは常にMMLソース(.muc)そのもので、
+  // applyMmlBytes()が読み込みの唯一の窓口としてtextareaへ直接テキストを入れる。
+  // つまりMUCOMでの「元データ」=「読み込んだ直後の編集欄の中身」であり、
+  // 「戻す」ことは「編集内容を破棄する」ことと同義になる(だからこそ無条件に戻さず、
+  // 差が無ければ黙って切り替え・差があれば確認する)。
+  function restoreOriginalMmlOnExitEditorIfNeeded() {
+    // lastLoadedRawBytesが無い(新規作成/下書き復元のみで、ファイル・サンプル・
+    // 共有リンク等を一度も読み込んでいない)状態では戻す元が無いので何もしない
+    // (btnNewMmlハンドラがlastLoadedRawBytesをnullへ戻す経路がある点に注意。
+    // 上のlastLoadedRawBytes宣言コメント参照)。
+    if (!lastLoadedRawBytes) return;
+    // lastLoadedEncodingはlastLoadedRawBytesと常に同じ呼び出し(applyMmlBytes())内で
+    // セットされるペアのため、ここが非nullならlastLoadedEncodingも必ず非null。
+    const originalText = decodeMmlBytesAs(lastLoadedRawBytes, lastLoadedEncoding);
+    // 差が無ければ戻す必要が無いので黙って切り替える(利用者指示)。比較はデコード後の
+    // テキスト同士で行う(生バイト列同士だと、手動で文字コードを切り替えただけの
+    // ケース(encodingBadgeEl)まで「差がある」と誤判定してしまうため)。
+    if (mmlTextarea.value === originalText) return;
+    const ok = window.confirm(t('confirm.restoreOriginalOnExitEditor'));
+    if (!ok) return; // キャンセル: 編集内容のままモードだけ切り替える(=何もしない)
+    if (moduleReady) stopPlayback(); // 古い(編集後の)内容を鳴らしたまま表示だけ戻る、を避ける
+    // opts.nameは渡さない: 省略するとcurrentSongName(FILEBARの表示)に触れない設計
+    // になっている(applyMmlBytes()内のopts.nameコメント参照)。読み込み直後と同じ
+    // 曲を開き直すだけなので、ファイル名表示が変わらないのはむしろ自然。
+    applyMmlBytes(lastLoadedRawBytes, { forceEncoding: lastLoadedEncoding });
+    // 自動保存(下書き、ui/mml-draft.js)は入力イベントをデバウンスして保存するが、
+    // タブを裏に回す/閉じるタイミング(visibilitychange/pagehide)ではtextarea.value
+    // を直接その場で読んで即時保存する(setupMmlAutosave()のflush()参照)。つまり
+    // ここでinput イベントを発火させなくても、次にタブを裏に回した瞬間には
+    // 「元へ戻した後」の内容が下書きとして保存される。これはOKを押した時点で
+    // 編集内容を破棄する判断を利用者が既に下しているので、下書きも同じ内容に
+    // 揃うのが自然で不意打ちにはならない、と判断した(=下書きだけ古い編集内容を
+    // 残す方がむしろ不整合)。
+    //
+    // 再コンパイルはしない(利用者指示。MUCOMは次に再生ボタンを押した時にコンパイル
+    // される設計で、PMD側のように読み込み直後に自動再生する必要も無い)。ただし
+    // mmlDirtyがfalseのまま(=戻す前の編集内容を既にコンパイル成功させていた場合)
+    // だと、needsCompileNow() = mmlDirty || !hasCompiled || !hasPlaybackがfalseの
+    // ままになり、表示は元のMMLに戻ったのに次の再生ボタンで「戻す前の(編集後の)」
+    // 古いコンパイル結果をそのまま鳴らしてしまう(表示と音が矛盾する)。
+    // markMmlDirty()で必ず次回コンパイルされるようにする。
+    markMmlDirty();
+  }
+
   btnEditorMode.addEventListener('click', () => {
     const prevMode = currentUiMode();
     const next = prevMode === 'editor' ? 'player' : 'editor';
     // 課題E: 「編集OFF→ON」の遷移のときだけ、再生中の曲を頭出しで止める
     // (一時停止ではない)。編集ONで再生ボタンを押すのは普通に鳴らす通常操作なので
-    // ここでは止めない。編集から戻るときも何もしない。
+    // ここでは止めない。
     if (next === 'editor' && prevMode !== 'editor' && moduleReady) {
       stopPlayback();
+    }
+    // 課題(利用者提案、2026-08-18): 「編集ON→OFF」の遷移のときだけ、読み込んだ元の
+    // MMLへ戻すかどうかを確認する(上のrestoreOriginalMmlOnExitEditorIfNeeded()
+    // コメント参照)。
+    if (next === 'player' && prevMode === 'editor') {
+      restoreOriginalMmlOnExitEditorIfNeeded();
     }
     setUiMode(next);
   });
