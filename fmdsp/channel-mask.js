@@ -168,19 +168,33 @@ export function usedChannelsFromMucomCompileLog(log) {
 // 表し、配列indexの並びはFM_CHANNELS+SSG_CHANNELS+[ADPCM_CHANNEL]の並びと一致する
 // (pmd_mml_parser.mjs冒頭コメント「A-F=FM1-6, G-I=SSG1-3, J=ADPCM」参照。
 // JはADPCMパート実装(docs/pmd-compiler-spec-v2.md 1.2節、v2 step3)で追加された)。
-// 重要: 同コンパイラはRHYTHM(K/R)を構造的に一切出力しない(K/Rの14bitマスクの
-// `@`対応が未解明のため未実装、compiler/pmd_mml_compiler.mjs
-// `// RHYTHM: K/Rは未解明のため未対応、空トラック`のとおり、該当ヘッダを常に
-// EMPTY_TRACK_OFFで埋める)。そのためRHYTHMは「判定できない」のではなく
-// 「このアプリでMML入力した曲では絶対に鳴らない」と確定できる事実であり、
-// usedPartLettersに含まれることは無い(=常に未使用表示になる)。ADPCM(J)は
-// 実際に使われていれば使用チャンネルとして検出される。
+//
+// 【修正・2026-08-18、利用者報告「編集モードで再生するとレベルメーターのリズム/PCM
+// 付近の列が暗くなっている」】以前のこのコメントは「同コンパイラはRHYTHM(K/R)を
+// 構造的に一切出力しない」としていたが、これは同日中に古くなった: compiler/
+// pmd_mml_compiler.mjsがK/R(リズム)へ対応した(同ファイル「2026-08-18(K/R実装)」
+// コメント参照)ため、parseMml()/compileMml()が返すtracksにはKパートが実際に
+// 含まれるようになった。しかしこの関数(usedPartLetters→使用チャンネル変換)は
+// PART_LETTERS(A-J、依然としてKを含まない。pmd_mml_parser.mjs PART_LETTERS参照)
+// だけを見ていたため、Kは`PMD_MML_PART_LETTERS.indexOf('K')`が-1になり黙って
+// 無視されていた。実データ(SS_TENG、リズムパートK使用)で実測: layout.tracksの
+// keysに'K'が含まれるにもかかわらず、この関数の戻り値にRHYTHM_CHANNELが入らず、
+// 曲が実際にリズムを鳴らしているのにレベルメーターのRHYTHM列だけが「未使用」表示
+// (暗色化)のままになっていた(実測では音自体は鳴っている。
+// tools/verify_pmd_ppc_load.mjs等と同じ実測手法で絶対値和が非0であることを確認
+// 済み。「鳴らない」側の不具合ではなく表示判定側の不具合)。
+// Kは通常のPART_LETTERSと別扱い(パーサ側の理由はcompiler/pmd_mml_parser.mjs
+// `if (/k/i.test(letters))`のコメント参照)なのでここでも明示的に分岐する。
 //
 // usedPartLetters: parseMml()が返すtracksのkeys、またはcompileMml()が返す
-// layout.tracksのObject.keys()(どちらもPART_LETTERSの部分集合の配列)。
+// layout.tracksのObject.keys()(PART_LETTERSの部分集合+'K'+#PPZExtend文字を含みうる)。
 export function usedChannelsFromPmdMmlParts(usedPartLetters) {
   const used = new Set();
   usedPartLetters.forEach((letter) => {
+    if (letter === 'K') {
+      used.add(RHYTHM_CHANNEL);
+      return;
+    }
     const idx = PMD_MML_PART_LETTERS.indexOf(letter);
     if (idx >= 0) used.add(PMD_MML_PART_ORDER[idx]);
   });

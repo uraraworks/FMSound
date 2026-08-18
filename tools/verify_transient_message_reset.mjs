@@ -98,7 +98,7 @@ const SONG_CHANGE_SITES = {
   },
   "PMD playBytes()(URL/ファイル/書庫/ライブラリ選択のバイナリ直接再生が共通で通る窓口)": {
     src: pmdSrc,
-    startRe: /async function playBytes\(bytes, name, fileNameForBar = name\) \{/,
+    startRe: /async function playBytes\(bytes, name, fileNameForBar = name, pcmFiles = \[\], unsupportedFiles = \[\], mmlSourceText = null, ffFile = null\) \{/,
     endMarker: '\n  }\n',
   },
   'PMD btnNewMml(新規作成、playBytes()を経由しない)': {

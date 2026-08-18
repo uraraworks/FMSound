@@ -359,6 +359,11 @@ export async function init(ctx) {
       pcmFiles: currentSongPcmFiles,
       unsupportedFiles: [],
       ffFile: currentSongFfFile,
+      // 利用者報告(SS_TENGで編集が開けなくなる)の修正: compileAndPlay()が
+      // clearCurrentSongMmlSource()でcurrentSongMmlSourceTextを消していても、
+      // 元の曲専用に分けて保持しているcurrentSongOriginalMmlSourceTextから
+      // 復元する(上のcurrentSongOriginalMmlSourceText宣言コメント参照)。
+      mmlSourceText: currentSongOriginalMmlSourceText,
     };
     currentSongName = currentSongOriginalFileNameForBar;
     updateTransportButtonUI();
@@ -642,6 +647,16 @@ export async function init(ctx) {
   let currentSongOriginalBytes = null;
   let currentSongOriginalName = null;
   let currentSongOriginalFileNameForBar = null;
+  // 元の.mのMMLソース(利用者報告・2026-08-18「SS_TENGで編集が開けなくなる」の修正)。
+  // compileAndPlay()はエディタで直接コンパイルするたびcurrentSongMmlSourceTextを
+  // clearCurrentSongMmlSource()で消す(「今編集中のテキストは曲の識別ではない」
+  // という別の目的のため、正しい)。だが、その後editor→playerで
+  // restoreOriginalSongOnExitEditor()が元の.mへ戻すとき、消えたcurrentSongMmlSourceText
+  // を参照すると「ソース無し」のまま復元してしまい、次にeditorボタンを押すと
+  // ブロックされる(実機で確認)。currentSongOriginalBytes等と同じ「読み込んだ元の曲」
+  // 専用の保管場所を分けて持ち、compileAndPlay()のclearCurrentSongMmlSource()の
+  // 影響を受けないようにする。
+  let currentSongOriginalMmlSourceText = null;
   // 曲の識別が変わる(=元の.mが無関係になる)箇所の唯一の書き込み窓口。playBytes()
   // 自身は新しい引数でこれらを上書きするので個別に呼ぶ必要は無い。呼ぶのは
   // 「曲を経由しない」箇所(新規作成・共有リンク読み込み・サンプルのエディタモード
@@ -653,6 +668,7 @@ export async function init(ctx) {
     currentSongOriginalBytes = null;
     currentSongOriginalName = null;
     currentSongOriginalFileNameForBar = null;
+    currentSongOriginalMmlSourceText = null;
     lastCompiledBytes = null;
   }
 
@@ -665,12 +681,13 @@ export async function init(ctx) {
   // restoreOriginalSongOnExitEditor()はこの窓口を使わない(同じ曲への復帰であり、
   // lastCompiledBytesを捨てたくないため、上のplayBytes()内の
   // isReplayingSameOriginal判定に任せる)。
-  function markPendingSongAssets({ bytes, name, fileNameForBar, pcmFiles = [], ffFile = null }) {
+  function markPendingSongAssets({ bytes, name, fileNameForBar, pcmFiles = [], ffFile = null, mmlSourceText = null }) {
     currentSongPcmFiles = pcmFiles;
     currentSongFfFile = ffFile;
     currentSongOriginalBytes = bytes;
     currentSongOriginalName = name;
     currentSongOriginalFileNameForBar = fileNameForBar ?? name;
+    currentSongOriginalMmlSourceText = mmlSourceText;
     lastCompiledBytes = null; // 新しい曲を選んだので、以前のコンパイル結果は対応しない
   }
 
@@ -1569,6 +1586,7 @@ export async function init(ctx) {
     currentSongOriginalBytes = bytes;
     currentSongOriginalName = name;
     currentSongOriginalFileNameForBar = fileNameForBar;
+    currentSongOriginalMmlSourceText = mmlSourceText;
     if (!isReplayingSameOriginal) {
       lastCompiledBytes = null;
     }
@@ -1914,7 +1932,7 @@ export async function init(ctx) {
       const urlSongPcmFiles = collectPmdPcmFiles(resolved.entries, chosen.entry.name);
       markPendingSongAssets({
         bytes: chosen.entry.data, name: chosen.displayName, fileNameForBar: chosen.displayName,
-        pcmFiles: urlSongPcmFiles, ffFile: ffSelection,
+        pcmFiles: urlSongPcmFiles, ffFile: ffSelection, mmlSourceText,
       });
       pendingUrlSong = {
         bytes: chosen.entry.data,
@@ -1985,7 +2003,7 @@ export async function init(ctx) {
     // サンプルはMMLソース(上でfetch済みのtext)を持つ扱いにする(dlSampleFurElise
     // クリックハンドラと同じ判断。取り違えると初見の利用者が編集できなくなる)。
     setCurrentSongMmlSource(text);
-    markPendingSongAssets({ bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', fileNameForBar: 'sample_fur_elise.M' });
+    markPendingSongAssets({ bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', fileNameForBar: 'sample_fur_elise.M', mmlSourceText: text });
     pendingUrlSong = { bytes: new Uint8Array(buffer), name: 'sample_fur_elise.M', mmlSourceText: text };
     currentSongName = 'sample_fur_elise.M';
     updateTransportButtonUI();

@@ -35,7 +35,14 @@ if (layoutAG) {
   check('A. FM1(パートA)が使用チャンネルに含まれる', usedAG.has(FM_CHANNELS[0]), `used=${[...usedAG].join(',')}`);
   check('A. SSG1(パートG)が使用チャンネルに含まれる', usedAG.has(SSG_CHANNELS[0]), `used=${[...usedAG].join(',')}`);
   check('A. 触れていないFM2は使用チャンネルに含まれない(=未使用判定できている)', !usedAG.has(FM_CHANNELS[1]));
-  check('A. RHYTHM/ADPCMはこのMMLでも使用チャンネルに含まれない(v1コンパイラが構造的に出力しないため常に未使用)',
+  // 2026-08-18追記: コンパイラがK(リズム)/J(ADPCM)へ対応した後も、この特定の
+  // MML(A・Gパートのみ、K/Jは書いていない)では両方とも「使っていない」が
+  // 正しい答えのまま(=触れていないパートは検出されない、という上のFM2の確認と
+  // 同じ理由)。「コンパイラが構造的に出力しない」という以前の理由付けは
+  // K/R実装(compiler/pmd_mml_compiler.mjs)により古くなったため削除した
+  // (K使用時にRHYTHMが検出されることはtools/verify_pmd_rhythm_used_channel.mjsで
+  // 別途検証する)。
+  check('A. RHYTHM/ADPCMはこのMML(K/Jを書いていない)では使用チャンネルに含まれない',
     !usedAG.has(RHYTHM_CHANNEL) && !usedAG.has(ADPCM_CHANNEL));
 }
 
