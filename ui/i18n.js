@@ -174,6 +174,7 @@ const ja = {
   'mucom.unresolvedVoiceNames': '\n[注意] 一部の音色名を解決できませんでした: {names}',
   'mucom.voiceBankInUse': '\n[情報] このディスクの音色バンク({source})を使用しています',
   'mucom.externalBankFallback': '外部バンク',
+  'mucom.player.notReadyYet': 'まだ準備中です。エンジンの読み込みが終わってからもう一度お試しください。',
 
   'picker.ariaLabel': '曲を選択',
   'picker.title': '書庫の中から曲を選んでください({count}件見つかりました)',
@@ -375,6 +376,7 @@ const en = {
   'mucom.unresolvedVoiceNames': '\n[Note] Could not resolve some instrument names: {names}',
   'mucom.voiceBankInUse': '\n[Info] Using this disk\'s voice bank ({source})',
   'mucom.externalBankFallback': 'external bank',
+  'mucom.player.notReadyYet': 'Still starting up. Please try again once the engine finishes loading.',
 
   'picker.ariaLabel': 'Select a song',
   'picker.title': 'Choose a song from the archive ({count} found)',

@@ -1151,7 +1151,17 @@ export async function init(ctx) {
   const EXPLICIT_VOICE_TAG_RE = /^[ \t]*#voice\b/im;
 
   function compileAndPlay() {
-    if (!moduleReady) return;
+    if (!moduleReady) {
+      // PMD側同様の「操作は許すが理由を返す」作法(html/pmd-app.js btnPlayPauseクリック
+      // ハンドラのコメント参照)。到達可能性を実測: btnPlayPauseはdisabled=!moduleReady
+      // (下のupdateTransportButtonUI())でガードされておりクリック経路では届かないが、
+      // 曲ライブラリ(btnLibrary)のonSelectコールバックはModuleロード完了(=await
+      // createMucomWeb()、moduleReady=trueの代入)より前に登録されるため、wasmの
+      // 読み込みが終わる前に利用者がライブラリから曲を選ぶと届く(実測: onSelect登録は
+      // このファイル上部、await createMucomWeb()呼び出しより行番号で前)。
+      setNetStatus(t('mucom.player.notReadyYet'), true);
+      return;
+    }
     const mml = document.getElementById('mml').value;
     // 課題A: 編集欄が空のまま再生された場合、古いエラー表示を残さず案内を出して終える。
     if (mml.trim().length === 0) {
@@ -1491,10 +1501,31 @@ export async function init(ctx) {
   };
 
   // --- 課題D: ダウンロード(MMLソース/コンパイル済み.mub/asmのdb配列)。
+  //
+  // 【拡張・PMD側(html/pmd-app.js getDownloadFileName())と同じ「固定文字列でなく
+  // 関数で渡す」パターンを踏襲】以前はcompiledFilename: 'mucom-song.mub'固定で、
+  // 複数曲を続けて開いてダウンロードすると全部同じファイル名になり手元で
+  // 上書き・混同していた(利用者報告)。開いている曲名(currentSongName、
+  // rightpane.drawFileBar()と同じ変数)から拡張子を.mubへ差し替えて作る。
+  // なお「編集を閉じたら元データへ戻す」(別課題)には触れていない: ここは
+  // ファイル名だけの対応で、中身(getCompiledBytes())は従来どおりlastCompiledBytes。
+  function getDownloadFileName() {
+    const FALLBACK_NAME = 'mucom-song.mub';
+    // currentSongNameがnull(何も開いていない/新規作成)、またはFILEBAR_RESTORED_DRAFT_NAME
+    // (下書き復元時の擬似名。実ファイル名ではない)のときは従来のファイル名にフォールバック。
+    if (!currentSongName || currentSongName === FILEBAR_RESTORED_DRAFT_NAME) return FALLBACK_NAME;
+    // 元の拡張子(.muc/.mub/書庫内エントリの拡張子等)を落として.mubへ差し替える。
+    const base = currentSongName.replace(/\.[^./\\]+$/, '');
+    // OS(Windows/macOS共通)でファイル名に使えない文字を除去する(PMD側に既存の
+    // サニタイズ処理は無かったため、ここで最小限のものを新設。net/archive-util.js等の
+    // 既存正規化とは目的が違う=あちらはパス区切り統一、こちらは禁則文字除去)。
+    const sanitized = base.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').trim();
+    return sanitized ? `${sanitized}.mub` : FALLBACK_NAME;
+  }
   const downloadMenu = createDownloadMenu({
     driverKey: 'mucom',
     mmlFilename: 'mucom-mml.mml',
-    compiledFilename: 'mucom-song.mub',
+    compiledFilename: getDownloadFileName,
     compiledLabel: '.mub',
     asmFilename: 'mucom-song-db.asm',
     asmLabel: 'mucom_song_data',
