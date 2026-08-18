@@ -139,9 +139,8 @@ v1公開後まで検出できずにいたことが判明した。原因は、そ
 ## 再生成手順
 
 前提: WebNP2(PC-98エミュレータ、`WebNP2/`)を dev サーバーで起動し、MCPブリッジ経由で
-ブラウザ操作できる状態にすること。手順とハマりどころは
-`docs/`配下ではなく作業時のscratchpad `pmd_work/MEMO.md` にまとめてあった
-(本作業のセッション固有のメモなのでリポジトリには同梱していない)。要点のみ記載する。
+ブラウザ操作できる状態にすること。手順・スクリプト一式・ハマりどころは
+`tools/webnp2-mc-pipeline/`(`MEMO.md`/`README.md`)に保全してある。要点のみ記載する。
 
 1. `WebNP2/` を `npm run dev` 等でローカル起動する(`http://localhost:5173/?bridge=1`)。
    公開ページ(`https://uraraworks.github.io/WebNP2/?bridge=1`)からは
