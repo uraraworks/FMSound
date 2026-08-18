@@ -258,7 +258,10 @@ async function main() {
     const amps = [];
     const tlHistory = [];
     await play(mml, `${label}.m`, {
-      chunkFrames, maxChunks: 90, tones: TONES,
+      // 2026-08-18: タイ有りMMLは3連結(合計288clock、圧縮後192+タイ+96clock。上のコメント
+      // 参照)にしたため、旧来の90チャンクでは1音目(192clock分)の終わりまで届かず境界を
+      // 検出できなかった(normSSE=null)。180に拡張して確認済み。
+      chunkFrames, maxChunks: 180, tones: TONES,
       onChunk: (i, absSum, track) => {
         amps.push(absSum);
         tlHistory.push(track[FIELD.ticks_left]);
@@ -284,11 +287,20 @@ async function main() {
     const refEnergy = ref.reduce((s, r) => s + r * r, 0);
     return { normSSE: refEnergy > 0 ? sse / refEnergy : null, amps, boundary, s0 };
   }
-  const tiedMml = 'A @1 T250 o4 c1&c1'; // 同ピッチを2連結(タイ)
-  const untiedMml = 'A @1 T250 o4 c1 c1'; // 同ピッチを2つ普通に並べる(毎回keyoff→keyon)
+  // 2026-08-18: 単純な同ピッチ2連結(`c1&c1`)は使わない。実データ参照.M実測(mso_JSM.MML)で、
+  // PMDMML.MAN §4-9注意1「c2&c2 = 4(直前の音符がc1と圧縮される)」通り、MC.EXEは
+  // 同ピッチのタイをコンパイル時に1個の音符へ「圧縮」し、0xfb(タイコマンド)自体を
+  // 出力しないと判明した(compiler/pmd_mml_compiler.mjs mergeSamePitchTies())。ただし
+  // 同注意1は「C192 c1.^4 は c%255&c%33 と展開される(=1byte長255を超える分は圧縮できず
+  // 実際にタイで繋がれる)」とも明記しており、圧縮後の長さが255clockを超える場合は
+  // mergeSamePitchTiesもガード(`<=255`)で圧縮しない。そこで同ピッチ3連結(合計288clock
+  // >255)にし、[192clock(圧縮後)]+タイ(0xfb)+[96clock]という実際に0xfbが出力される
+  // 構成にする(波形比較の前提=同じピッチを保ったまま、圧縮で0xfbが消える問題を回避)。
+  const tiedMml = 'A @1 T250 o4 c1&c1&c1'; // 同ピッチ3連結(合計288clock、圧縮しきれず0xfbが残る)
+  const untiedMml = 'A @1 T250 o4 c1 c1 c1'; // 同ピッチを3つ普通に並べる(毎回keyoff→keyon)
   const tied = await measureRetriggerSimilarity(tiedMml, 'tied');
   const untied = await measureRetriggerSimilarity(untiedMml, 'untied');
-  check('タイあり(c1&c1)の境界波形の類似度(normSSE)を測定できた', tied.normSSE !== null, `normSSE=${tied.normSSE}`);
+  check('タイあり(c1&c1&c1)の境界波形の類似度(normSSE)を測定できた', tied.normSSE !== null, `normSSE=${tied.normSSE}`);
   check('タイなし(c1 c1)の境界波形の類似度(normSSE)を測定できた', untied.normSSE !== null, `normSSE=${untied.normSSE}`);
   check('タイなしの2音目境界は曲頭の立ち上がり波形をほぼ完全に再現する(=本物のkeyoffの後にkeyonが起きた証拠)',
     untied.normSSE !== null && untied.normSSE < 0.02,

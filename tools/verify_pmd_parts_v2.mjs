@@ -119,12 +119,19 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
   }
 }
 
-// --- 4. [陽性対照] 音色未定義エラーがJパートにも及ぶ ---
+// --- 4. Jパートの`@n`はFM音色テーブルと無関係(2026-08-18訂正) ---
+// 旧実装は「音色未定義エラーがJパートにも及ぶ」ことを陽性対照として検証していたが、
+// これは誤りだった。PMDMML.MAN §6-1-5(音色番号指定/PCM音源パートの場合)実測
+// (mso_JSM.MML実データ、参照.M実測)により、Jパート(ADPCM)の`@n`はFM音色テーブルの
+// 26byteエントリとは無関係に、PCM音色番号としてトラックバイト列へそのまま書かれる
+// だけと判明した(compiler/pmd_mml_compiler.mjsのFM_PART_LETTERS制限、同コミットの
+// 実測根拠)。よってJパートの`@n`は(SSGパートの`@n`同様)FM音色定義の有無に
+// 関係なくエラーにならない。
 {
-  const mml = 'J @9 c4\n'; // @9は未定義
+  const mml = 'J @9 c4\n'; // @9はFM音色テーブルには未定義だが、Jパートなので無関係
   const { errors, file } = compileMml(mml, {});
-  check('4. [陽性対照] Jパートで未定義の音色番号を参照するとエラーになる',
-    errors.length > 0 && file === null, JSON.stringify(errors));
+  check('4. Jパートの@nはFM音色テーブル未定義でもエラーにならない(§6-1-5、FM音色と無関係)',
+    errors.length === 0 && file !== null, JSON.stringify(errors));
 }
 
 // --- 2/3. 実測(wasm再生)。PPC形式のADPCMサンプルをテスト専用APIで読み込み、

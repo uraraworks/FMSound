@@ -190,9 +190,14 @@ function compileTrackABytes(body) {
 
 // --- 7. ( ) 音量相対変化の基本形(0xe2/0xe3) ---
 {
+  // 2026-08-18: 実データ参照.M実測(mso_JSM.MML)で、`)`/`(`を数値/%を一切付けずに
+  // 書いた場合、MC.EXEは0xe3/0xe2(1byte引数)ではなく0引数の専用コマンド0xf4/0xf3
+  // (fmdriver_pmd.c:2526-2572)を出力すると判明した(own: e2 04 e2 04 / ref: f3 f3、
+  // どちらも「無指定=値4相当」だがバイト表現が違う)。数値または%を明示した場合は
+  // 従来通り0xe3/0xe2(下のexpectedIncPercent等、影響無し)。
   const actualIncDefault = compileTrackABytes(')');
-  const expectedIncDefault = [0xe3, 4]; // 数値省略時=1、%無し→×4
-  check(')(数値省略,加算)の出力が仕様どおり(0xe3, 04)', arraysEqual(actualIncDefault, expectedIncDefault), `actual=${hex(actualIncDefault)}`);
+  const expectedIncDefault = [0xf4]; // 数値省略時は0引数の専用コマンド
+  check(')(数値省略,加算)の出力が仕様どおり(0xf4)', arraysEqual(actualIncDefault, expectedIncDefault), `actual=${hex(actualIncDefault)}`);
 
   const actualIncPercent = compileTrackABytes(')%10');
   const expectedIncPercent = [0xe3, 10]; // %付きは指定値そのまま

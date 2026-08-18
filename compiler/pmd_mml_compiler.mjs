@@ -125,7 +125,10 @@ function sizeOfEvent(ev) {
     case 'pan': return 2; // 0xec + 1byte(v2 3.2節)
     case 'lfoSwitch': return 2; // 0xf1 + 1byte(v2 3.7節)
     case 'lfoBody': return 5; // 0xf2 + 4byte固定(v2 3.6節)
-    case 'volInc': case 'volDec': return 2; // 0xe3/0xe2 + 1byte(v2 3.1節)
+    // 2026-08-18: 数値/%が完全に無指定(isDefault)の場合、参照.M実測(mso_JSM.MML)で
+    // MC.EXEが0引数の専用コマンド(0xf4/0xf3、1byte)を出力すると判明した。明示指定時は
+    // 従来通り0xe3/0xe2(2byte、値=数値×4または%指定値そのまま)。
+    case 'volInc': case 'volDec': return ev.isDefault ? 1 : 2;
     case 'gateRandRange': return 2; // 0xb1 + 1byte(v2 3.3節)
     case 'gateMin': return 2; // 0xb3 + 1byte(v2 3.3節)
     case 'gateAbs': return 2; // 0xfe + 1byte(qの数値1。今回参照.M実測で確定)
@@ -151,6 +154,64 @@ function signedByte(v) {
   return v & 0xff;
 }
 
+// 2026-08-18: 隣接する休符イベントの結合。参照.M実測(mso_JSM.MML、FM1パート)で、
+// MML本文中に連続して書かれた複数の`r`トークン(例: `r6r22`相当)が、参照.Mでは
+// 1個の休符コマンド(0x0f + 合計clock)にまとまって出力されていることを確認した
+// (own: 0x0f,0x06,0x0f,0x16(=6+22=28) / ref: 0x0f,0x1c(=28)の1個のみ。他の値でも
+// 差分が常に「own側だけ休符が2個に分かれ、clocksの合計がrefの1個と一致する」形で
+// 再現した)。休符は音高が無く、結合しても実際の発音(keyon)には影響しないため、
+// MC.EXEはコンパイル時にこの結合を行っていると判断できる(ノート同士は結合しない。
+// ノートは同じ音高が連続しても毎回keyonが要るため)。ループ境界(0xf7/0xf8/0xf9)や
+// 休符以外のイベントを挟んだ場合は結合しない(隣接判定がそこで途切れるため自然に
+// 保護される)。合計clocksが1byteの上限(255)を超える場合は結合せず元のまま残す
+// (readLengthSpec()側で単独の休符は既に1-255の範囲検査済みのため、この関数が
+// 生成する合成後の休符もこの範囲を超えないことを保証する)。
+// 2026-08-18: 同音程タイ(`&`)の圧縮。PMDMML.MAN §4-10・§4-9注意1(WebFetch/iconv変換
+// した原文)によれば、`&`(タイ)は「直前の音符をkeyoffしない」articulationだが、
+// `c2&c2`のように**同じ音程**の音符同士をタイで繋いだ場合、コンパイラは2つの音符を
+// 1個の音符(`c1`)へ「圧縮」する(§4-9注意1に`c2&c2 =4`が「直前の音符がc1と圧縮
+// されるため」エラーになる、という記述がある。つまり圧縮は`l=`より前の時点で
+// 既に起きている)。実データ参照.M実測(mso_JSM.MML FM1パート)でも、own側だけ
+// 0x40(note),0x0c(len12),0xfb(タイ),0x40(note),0x8e(len142)の4byteに対し、
+// 参照.M側は0x40(note),0x9a(len154=12+142)の1個の音符にまとまっていることを確認した。
+// 一方、異なる音程同士のタイ(ポルタメント等)はfmdriver_pmd.c由来の0xfbコマンド
+// (docs/pmd-compiler-spec.md 165行目、「直前ノートのkeyoffを抑止」)がそのまま必要
+// なため、同音程の場合のみ圧縮し、異音程の場合は従来通りtie(0xfb)+次ノートを出力する。
+function mergeSamePitchTies(events) {
+  const merged = [];
+  let i = 0;
+  while (i < events.length) {
+    const ev = events[i];
+    const prev = merged[merged.length - 1];
+    if (ev.type === 'tie' && prev && prev.type === 'note'
+        && i + 1 < events.length && events[i + 1].type === 'note') {
+      const next = events[i + 1];
+      if (prev.octave === next.octave && prev.noteIndex === next.noteIndex
+          && prev.clocks + next.clocks <= 255) {
+        prev.clocks += next.clocks; // prevは既にクローン済み(下でpush時に{...ev}している)
+        i += 2;
+        continue;
+      }
+    }
+    merged.push(ev.type === 'note' ? { ...ev } : ev);
+    i++;
+  }
+  return merged;
+}
+
+function mergeAdjacentRests(events) {
+  const merged = [];
+  for (const ev of events) {
+    const last = merged[merged.length - 1];
+    if (ev.type === 'rest' && last && last.type === 'rest' && last.clocks + ev.clocks <= 255) {
+      last.clocks += ev.clocks;
+      continue;
+    }
+    merged.push(ev.type === 'rest' ? { ...ev } : ev);
+  }
+  return merged;
+}
+
 function emitEvent(ev, out, offset) {
   function w16(off, val) {
     out[off] = val & 0xff;
@@ -162,7 +223,10 @@ function emitEvent(ev, out, offset) {
       out[offset + 1] = ev.clocks & 0xff;
       return;
     case 'rest':
-      out[offset] = noteByte(ev.octave, REST_NIBBLE);
+      // 2026-08-18: 参照.M実測(mso_JSM.MML、休符が0x0f=オクターブ0固定で出ていた。
+      // 旧実装はev.octave(現在のオクターブ状態)をそのまま上位nibbleに使っていたが、
+      // 休符には音高が無いのでMC.EXEは常にオクターブnibble=0で出力する)。
+      out[offset] = noteByte(0, REST_NIBBLE);
       out[offset + 1] = ev.clocks & 0xff;
       return;
     case 'tie':
@@ -250,10 +314,14 @@ function emitEvent(ev, out, offset) {
       out[offset + 4] = ev.depthB & 0xff;
       return;
     case 'volInc': // 音量相対変化・加算(v2 3.1節)
+      // isDefault(数値/%無指定、常に値4相当)の場合は0引数の専用コマンド0xf4
+      // (fmdriver_pmd.c:2526-2572、pmd_cmdf4_volinc_fm)を出力する(上のsizeOfEvent参照)。
+      if (ev.isDefault) { out[offset] = 0xf4; return; }
       out[offset] = 0xe3;
       out[offset + 1] = ev.value & 0xff;
       return;
     case 'volDec': // 音量相対変化・減算(v2 3.1節)
+      if (ev.isDefault) { out[offset] = 0xf3; return; }
       out[offset] = 0xe2;
       out[offset + 1] = ev.value & 0xff;
       return;
@@ -372,17 +440,30 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
   if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)
 
+  // FMパート(A-F=FM1-6)だけがFM音色テーブルを参照する。PMDMML.MAN §6-1-2/§6-1-3/
+  // §6-1-5実測(2026-08-18、実データJSM(mso_JSM.MML)をJSM/SS_TENGの参照.Mと突き合わせ):
+  // G-I(SSG1-3)の`@n`は内蔵SSGソフトウエアエンベロープ(0-9)、J(ADPCM)の`@n`は
+  // PCM音色番号を選ぶだけで、いずれもFM音色テーブルの26byteエントリとは無関係。
+  // 混同すると出力トーンテーブルに不要なエントリが混入する(実測: mso_JSM.MMLで
+  // 自作が23件・参照.Mが9件、差14件×26byte=364byteがトーンテーブル領域の
+  // サイズ差そのものと一致)。
+  const FM_PART_LETTERS = new Set(PART_LETTERS.slice(0, 6));
+  const fmUsedToneNums = new Set();
+  for (const [part, events] of tracks) {
+    if (!FM_PART_LETTERS.has(part)) continue;
+    for (const ev of events) {
+      if (ev.type === 'tone') fmUsedToneNums.add(ev.tonenum);
+    }
+  }
+
   // ffFile: 本文(+tonesオプション)で未定義の番号だけを埋める(本文が勝つ。上のコメント参照)。
-  // 実際に@nイベントで参照されている番号だけを補う(未参照の番号まで256件丸ごと
-  // toneTableへ入れると、使っていない音色まで出力トーンテーブルに現れてしまうため)。
+  // 実際にFMパートの@nイベントで参照されている番号だけを補う(未参照の番号まで256件丸ごと
+  // toneTableへ入れると、使っていない音色まで出力トーンテーブルに現れてしまうため。
+  // SSG/ADPCMパートの@n参照はFM音色テーブルと無関係なので補わない、上のコメント参照)。
   if (ffFile) {
     const ffTones = parseFfFile(ffFile);
-    for (const [, events] of tracks) {
-      for (const ev of events) {
-        if (ev.type === 'tone' && !(ev.tonenum in toneTable) && ev.tonenum in ffTones) {
-          toneTable[ev.tonenum] = ffTones[ev.tonenum];
-        }
-      }
+    for (const tn of fmUsedToneNums) {
+      if (!(tn in toneTable) && tn in ffTones) toneTable[tn] = ffTones[tn];
     }
   }
 
@@ -401,8 +482,14 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   if (Object.keys(toneTable).length === 0) toneTable[1] = {};
 
   const errors = [];
-  // MML中で使われている音色番号がすべて toneTable に存在するか検査
+  // FMパートで使われている音色番号がすべて toneTable に存在するか検査。
+  // SSG(G-I)/ADPCM(J)の`@n`はFM音色テーブルと無関係(上のfmUsedToneNums算出時の
+  // コメント参照)なので、この検査の対象外(この検査が無いだけで、trackのバイト列
+  // 生成側は@nイベントの値をtoneTableの有無に関係なくそのまま書き出す。詳細は
+  // 下のcodeGenSize/encodeEvent相当の'tone'ケース参照。値の範囲検査(SSGは0-9等)は
+  // 未実装、範囲外の値もそのまま出力する)。
   for (const [part, events] of tracks) {
+    if (!FM_PART_LETTERS.has(part)) continue;
     for (const ev of events) {
       if (ev.type === 'tone' && !(ev.tonenum in toneTable)) {
         errors.push({ line: ev.line, message: `パート${part}: 音色番号 @${ev.tonenum} が定義されていません(本文中の音色定義、tonesオプション、ffFileオプションのいずれにも無い)` });
@@ -436,7 +523,8 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     // (letter!=='K'の除外を撤廃。中身は tokenizeRhythmKBody が作るrhSelect/loop/
     // \系イベント列で、layoutTrack/emitEventは通常パートと同じ経路をそのまま使える。
     // 終端も他パートと同じ0x80、pmdunimp.M実測で確認済み)。
-    const events = letter ? tracks.get(letter) : null;
+    const rawEvents = letter ? tracks.get(letter) : null;
+    const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : null;
     if (events && events.length > 0) {
       const startAddr = cursor;
       const { endAddr, termAddr } = layoutTrack(events, startAddr);
@@ -508,9 +596,13 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     || header.arranger != null || header.memo.length > 0
     || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null;
 
-  // hasExplicitTonesがfalseの場合、toneTableには検査用に合成した既定音色(@1)しか
-  // 無い。出力(toneEntries)には反映しない(TONE_TERMINATORだけを置く。上のコメント参照)。
-  const toneNums = hasExplicitTones ? Object.keys(toneTable).map(Number).sort((a, b) => a - b) : [];
+  // 出力トーンテーブルに載せるのは「FMパートの@nで実際に参照されている番号」のみ
+  // (fmUsedToneNums、上のコメント参照)。toneTableには検証用にSSG/ADPCM由来の
+  // 番号や既定音色@1(hasExplicitTonesがfalseの場合)が混じっていることがあるが、
+  // それらはfmUsedToneNumsに含まれないため自然に除外される
+  // (MC.DOC「/Vはその曲で使用されているFM音色データを添付する」を実測で確認、
+  // mso_JSM.MML: 自作23件→9件、参照.Mの9件と一致)。
+  const toneNums = [...fmUsedToneNums].filter((tn) => tn in toneTable).sort((a, b) => a - b);
   const toneEntries = toneNums.map((tn) => buildToneEntry({ ...toneTable[tn], tonenum: tn }));
 
   // 2026-08-18: トーンテーブルは常に2byteの終端マーカ`00 FF`で終わる(参照.M実測、

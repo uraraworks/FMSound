@@ -367,13 +367,20 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     if (body[i] === '%') { percent = true; i++; }
     const m = /^\d+/.exec(body.slice(i));
     let num;
+    // 2026-08-18: %も数値も一切無い完全な無指定かどうか(isDefault)。参照.M実測
+    // (mso_JSM.MML)で、`(`/`)`を数値無しで書いた場合はMC.EXEが0引数の専用コマンド
+    // (0xf3/0xf4、fmdriver_pmd.c:2526-2572)を出力し、値4を1byte引数で書く
+    // 0xe2/0xe3(fmdriver_pmd.c:2958-2966)を使うのは数値/%が明示された場合だけ、
+    // と判明した(own: e2 04 e2 04 / ref: f3 f3。どちらも「無指定×4=値4」相当だが
+    // バイト表現が違う)。isDefaultはこの分岐に使う(compileMml側)。
+    const isDefault = !percent && !m;
     if (m) { i += m[0].length; num = parseInt(m[0], 10); } else { num = 1; }
     if (percent) {
       if (num < 0 || num > 255) throw new ParseError(line, `'('/')' の%指定値が範囲外です(0-255): ${num}`);
-      return num;
+      return { value: num, isDefault };
     }
     if (num < 0 || num > 63) throw new ParseError(line, `'('/')' の数値が範囲外です(0-63。無指定時は×4され1byteに収める制約から算出): ${num}`);
-    return num * 4;
+    return { value: num * 4, isDefault };
   }
 
   // '{ }' 内(ポルタメント音程指定、v2 3.5節→今回実測で解決)は c/d/e/f/g/a/b/o/</< のみ許可
@@ -777,8 +784,8 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       // (v2 3.1節)。`^`(アクセント)は未解明のため今回は非対応のまま。
       const isAdd = c === ')';
       i++;
-      const val = readVolRelArg();
-      events.push({ type: isAdd ? 'volInc' : 'volDec', line, value: val });
+      const { value: val, isDefault } = readVolRelArg();
+      events.push({ type: isAdd ? 'volInc' : 'volDec', line, value: val, isDefault });
       continue;
     }
 
