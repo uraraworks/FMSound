@@ -121,11 +121,15 @@ async function main() {
   // 1. 音程列: 代表的な音階(全96通りではなく低・中・高音域から代表36通り)
   // ---------------------------------------------------------------
   console.log('--- 1. 音程列 ---');
-  const pitchOctaves = [0, 4, 7]; // 有効範囲は0-7(cmd<0x80制約。低・中・高音域の代表)
-  let pitchMml = 'A @1 T250 o4 ';
+  // 有効な音符バイトnibbleは0-7(cmd<0x80制約。低・中・高音域の代表)。
+  // MMLの'o'コマンドはPMDMML.MAN §4-4により1-8(nibble+1)なので、
+  // 生成するMML文字列は`o${oct + 1}`で書く(docs/pmd-compiler-spec-v2.md 6章、
+  // 参照.M実測で確定)。noteByte()に渡すoctは引き続き生nibble(0-7)のまま。
+  const pitchOctaves = [0, 4, 7];
+  let pitchMml = 'A @1 T250 o5 ';
   const expectedKeys = [];
   for (const oct of pitchOctaves) {
-    pitchMml += `o${oct} `;
+    pitchMml += `o${oct + 1} `;
     for (let n = 0; n < 12; n++) {
       pitchMml += `${NOTE_LETTERS[n]}%4 `;
       expectedKeys.push(noteByte(oct, n));

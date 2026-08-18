@@ -119,25 +119,80 @@ function expandVariables(text, varMap, sortedNames, line, stack) {
 const HEADER_LINE_RE = /^[ \t]*#(Title|Composer|Arranger|Memo)[ \t]+(.*)$/i;
 const MEMO_MAX_LINES = 128; // PMDMML.MAN §2-9 "複数指定が可能で、順に定義されます。最大は128行までです。"
 
-// ヘッダ命令行かどうかを判定し、該当すれば header へ反映して true を返す。
-// 呼び出し元は raw(未加工の行文字列、';'を切り詰める前)を渡すこと。
+// (a) PCMファイル指定系ヘッダ。出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の
+// pmd_init()(6043-6066) が pmd_get_memo(pmd, -2)=PPZ, -1=PPS, 0=PCM(PPC) を読んで
+// pmd->ppzfile/ppsfile/ppcfile へコピーする(ppzfileはさらに','以降をppzfile2へ分離)。
+// つまり書き込まないとPCM/PPZ/PPSが鳴らない実害があるため、メモ領域へ実測どおり反映する
+// (buildMemoBlock 側、レイアウトはそちらのコメント参照)。書式はTitle等と同じ
+// 「#コマンド名 + SPACE/TAB + 文字列(行末まで)」で、';'をコメントとして切り詰めない
+// (Title等と同じ理由。ファイル名にセミコロンが使われる可能性を否定できないため安全側)。
+const PCM_HEADER_RE = /^[ \t]*#(PCMfile|PPZfile|PPSfile)[ \t]+(.*)$/i;
+const PCM_HEADER_KEY = { pcmfile: 'pcmfile', ppzfile: 'ppzfile', ppsfile: 'ppsfile' };
+
+// (b) 動作(パート割当・数値レンジ等)を変える可能性があるが、意味や.M側への反映方法が
+// 未解明のヘッダ。黙って読み飛ばすと「コンパイルは通るのに音が違う」という最悪の壊れ方に
+// なるため、実装せず専用のエラーメッセージで止める(指示書の原則)。ヘッダ名は
+// 大文字小文字を無視して照合する(他ヘッダと同様、寛容側に倒す)。
+const KNOWN_UNIMPLEMENTED_HEADERS = {
+  'ppzextend': 'PPZ8用パート拡張(PMDMML.MAN §2-25)。指定した文字列の出現順とPPZ_1〜_8の対応規則が未解明(docs/pmd-compiler-spec-v2.md 2.1節)',
+  'detune': 'デチューン数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
+  'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
+  'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
+  'fffile': '外部音色ファイル(FFFile)読み込み。音色テーブルの実体が外部ファイル側にあり本コンパイラでは解決できない',
+};
+// 汎用ヘッダ行判定(#で始まる行すべてを拾う。上記いずれにも一致しない未知のヘッダも
+// ここで捕まえて専用メッセージを出す。'#'始まりの行が「パート指定または音色定義で
+// 始まる必要があります」という無関係なエラーになるのを避けるため)。
+const GENERIC_HEADER_RE = /^[ \t]*#(\S+)(?:[ \t]+(.*))?$/;
+
+// ヘッダ命令行かどうかを判定し、該当すれば header へ反映するか、専用エラーを積んで
+// true を返す。呼び出し元は raw(未加工の行文字列、';'を切り詰める前)を渡すこと。
 function tryParseHeaderLine(raw, lineNo, header, errors) {
   const m = HEADER_LINE_RE.exec(raw);
-  if (!m) return false;
-  const key = m[1].toLowerCase();
-  const text = m[2];
-  if (key === 'memo') {
-    if (header.memo.length >= MEMO_MAX_LINES) {
-      errors.push({ line: lineNo, message: `#Memo が${MEMO_MAX_LINES}行を超えています(PMDMML.MAN §2-9の上限)` });
-      return true;
+  if (m) {
+    const key = m[1].toLowerCase();
+    const text = m[2];
+    if (key === 'memo') {
+      if (header.memo.length >= MEMO_MAX_LINES) {
+        errors.push({ line: lineNo, message: `#Memo が${MEMO_MAX_LINES}行を超えています(PMDMML.MAN §2-9の上限)` });
+        return true;
+      }
+      header.memo.push(text);
+      header.memoLines.push(lineNo);
+    } else {
+      header[key] = text; // 最後に書かれたものが有効(§2 全般注記)
+      header[`${key}Line`] = lineNo;
     }
-    header.memo.push(text);
-    header.memoLines.push(lineNo);
-  } else {
-    header[key] = text; // 最後に書かれたものが有効(§2 全般注記)
-    header[`${key}Line`] = lineNo;
+    return true;
   }
-  return true;
+
+  const pcmM = PCM_HEADER_RE.exec(raw);
+  if (pcmM) {
+    const key = PCM_HEADER_KEY[pcmM[1].toLowerCase()];
+    header[key] = pcmM[2]; // 最後勝ち(Title等と同じ扱い。§2 全般注記に準拠)
+    header[`${key}Line`] = lineNo;
+    return true;
+  }
+
+  const genM = GENERIC_HEADER_RE.exec(raw);
+  if (genM) {
+    const nameRaw = genM[1];
+    const argRaw = (genM[2] ?? '').trim().toLowerCase();
+    // "#Detune Extend" のように「ヘッダ名+引数Extend」の形と、"#PPZExtend"のように
+    // ヘッダ名自体にExtendを含む形の両方があるため、まずヘッダ名単独で既知表を引き、
+    // 無ければ「ヘッダ名+引数」の組み合わせでも引く(Detune/LFOSPeed/EnvelopeSpeed用)。
+    const nameKey = nameRaw.toLowerCase();
+    const combinedKey = argRaw === 'extend' ? nameKey : null;
+    const desc = KNOWN_UNIMPLEMENTED_HEADERS[nameKey] ?? (combinedKey ? KNOWN_UNIMPLEMENTED_HEADERS[combinedKey] : undefined);
+    if (desc) {
+      errors.push({ line: lineNo, message: `未対応のヘッダです: #${nameRaw}${argRaw ? ' ' + genM[2].trim() : ''}（動作を変える可能性があるため読み飛ばさずエラーにしています。${desc}）` });
+    } else {
+      errors.push({ line: lineNo, message: `未対応のヘッダです: #${nameRaw}（意味が未解明のため読み飛ばさずエラーにしています）` });
+    }
+    return true;
+  }
+
+  return false;
 }
 
 // 数値長 → クロック値。全音符長(既定96、`C`コマンドで変更可)の約数のみ許容
@@ -223,12 +278,18 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
         if (!m) throw new ParseError(line, `'{...}' 内の 'o' の後にオクターブ数値がありません`);
         i += m[0].length;
         const oct = parseInt(m[0], 10);
-        if (oct < 0 || oct > 7) throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(0-7): ${oct}`);
-        state.octave = oct;
+        // PMDMML.MAN §4-4: oコマンドの範囲は1〜8(既定4)。実バイトのnibbleは
+        // これより1小さい0-7(参照.M実測、docs/pmd-compiler-spec-v2.md 6章参照:
+        // `pmdbasic.mml`の`o5`が参照.M上でnibble=4として符号化されていた)。
+        if (oct < 1 || oct > 8) throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(1-8。PMDMML.MAN §4-4): ${oct}`);
+        state.octave = oct - 1;
         continue;
       }
-      if (body[i] === '<') { i++; state.octave += 1; continue; }
-      if (body[i] === '>') { i++; state.octave -= 1; continue; }
+      // 標準MML慣習: '<'=オクターブ下, '>'=オクターブ上(参照.M実測、
+      // pmdbasic.mmlの`b>c<`で b=0x4b→>後のc=0x50 と1オクターブ上がることを確認。
+      // 旧実装は逆(未検証コメント付き)だった)。
+      if (body[i] === '<') { i++; state.octave -= 1; continue; }
+      if (body[i] === '>') { i++; state.octave += 1; continue; }
       break;
     }
     const nc = body[i];
@@ -298,12 +359,16 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       if (!m) throw new ParseError(line, `'o' の後にオクターブ数値がありません`);
       i += m[0].length;
       const oct = parseInt(m[0], 10);
-      if (oct < 0 || oct > 7) throw new ParseError(line, `オクターブが範囲外です(0-7。cmd<0x80制約): ${oct}`);
-      state.octave = oct;
+      // PMDMML.MAN §4-4: oコマンドの範囲は1〜8(既定4)。実バイトのnibbleはこれより
+      // 1小さい0-7(参照.M実測、docs/pmd-compiler-spec-v2.md 6章参照)。
+      if (oct < 1 || oct > 8) throw new ParseError(line, `オクターブが範囲外です(1-8。PMDMML.MAN §4-4): ${oct}`);
+      state.octave = oct - 1;
       continue;
     }
-    if (c === '<') { i++; state.octave += 1; continue; } // doc: PC-98系MML慣習で<=オクターブ上(未検証、報告参照)
-    if (c === '>') { i++; state.octave -= 1; continue; }
+    // 標準MML慣習: '<'=オクターブ下, '>'=オクターブ上(参照.M実測、
+    // pmdbasic.mmlの`b>c<`で確認。旧実装は逆(未検証コメント付き)だった)。
+    if (c === '<') { i++; state.octave -= 1; continue; }
+    if (c === '>') { i++; state.octave += 1; continue; }
 
     if (c === 'l') {
       i++;
@@ -745,11 +810,21 @@ export function parseToneDefBlock(lines, li, lineNo) {
 //     header: {title, composer, arranger: string|null, memo: string[]}, errors: [{line,message}] }
 // 複数パートに同じ行が指定された場合、各パートに同じイベント列(参照は別オブジェクト)を積む。
 export function parseMml(source) {
+  // DOS text-mode EOF marker (Ctrl-Z / 0x1A / SUB)。実データ3曲すべてでファイル末尾に
+  // 1個だけ出現(`...\r\n\x1a\r\n`、16進実測で確認)。CRLFで行分割すると単独の行として
+  // 残り、パート指定でも音色定義でもないため「行はパート指定(A-I)または音色定義(@)で
+  // 始まる必要があります」の誤エラーになっていた不具合。DOS上のテキストエディタ/
+  // コンパイラは通例この文字以降を読まない(EOFとして扱う)ため、以降を丸ごと切り捨てる。
+  const eofMarkerIdx = source.indexOf('\x1a');
+  if (eofMarkerIdx >= 0) source = source.slice(0, eofMarkerIdx);
+
   const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
   const tones = new Map(); // tonenum -> toneOptions (buildToneEntry用、tonenumはキー側と重複保持)
   const header = {
     title: null, composer: null, arranger: null, memo: [],
     titleLine: null, composerLine: null, arrangerLine: null, memoLines: [],
+    pcmfile: null, ppzfile: null, ppsfile: null,
+    pcmfileLine: null, ppzfileLine: null, ppsfileLine: null,
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);
@@ -825,7 +900,10 @@ export function parseMml(source) {
 
     for (const p of partLetters) {
       if (!tracks.has(p)) {
-        tracks.set(p, { events: [], state: { octave: 4, defaultLength: 24 } });
+        // 既定オクターブ: PMDMML.MAN §4-4の既定値はo4(1-8系)。nibble表現は
+        // -1した3(oコマンド未実装当時の名残でoctave:4だったが、oコマンドの
+        // 符号化修正(oct-1)に合わせてここも合わせる)。
+        tracks.set(p, { events: [], state: { octave: 3, defaultLength: 24 } });
       }
     }
 

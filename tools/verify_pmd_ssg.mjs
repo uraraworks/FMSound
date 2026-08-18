@@ -113,9 +113,11 @@ async function main() {
   const expected = [];
   for (let n = 0; n < notes.length; n++) {
     mml += `${notes[n]}%8 `;
-    // noteByteは半音インデックス。c,d,e,f,g,a,bのnoteIndexは0,2,4,5,7,9,11
+    // noteByteは半音インデックス。c,d,e,f,g,a,bのnoteIndexは0,2,4,5,7,9,11。
+    // nibbleはMMLの'o3'より1小さい2(PMDMML.MAN §4-4、docs/pmd-compiler-spec-v2.md
+    // 6章、参照.M実測で確定)。
     const idx = [0, 2, 4, 5, 7, 9, 11][n];
-    expected.push(noteByte(3, idx));
+    expected.push(noteByte(2, idx));
   }
   const { seq, ended } = await recordKeySequence(mml, TRACK_SSG1_INDEX);
   check('SSG(G)パートの演奏が終端まで到達した', ended);

@@ -54,11 +54,11 @@
 
 ; --- FM1: 旋律 ---
 A t30 @1 V110 L
-A o5 e16 d+16
-A e16 d+16 e16 o4 b16 o5 d16 c16
-A o4 a8 r16 c16 e16 a16
-A o4 b8 r16 e16 g+16 b16
-A o5 c4.
+A o6 e16 d+16
+A e16 d+16 e16 o5 b16 o6 d16 c16
+A o5 a8 r16 c16 e16 a16
+A o5 b8 r16 e16 g+16 b16
+A o6 c4.
 
 ; --- FM2: 分散和音の伴奏 ---
 ; V90はFM1(V110)に対して-14.5dB(実測、tools/measure_split.mjs相当)と沈みすぎていた。
@@ -67,7 +67,7 @@ A o5 c4.
 ; isolate計測)でFM1に対し-5.21dBへ調整。音色@2のTLは変更していない(@1も未変更)。
 B t30 @2 V103 L
 B r8
-B o2 a8 o3 e8 a8
-B o2 a8 o3 e8 a8
-B o3 e8 g+8 b8
-B o2 f8 o3 a8 c8
+B o3 a8 o4 e8 a8
+B o3 a8 o4 e8 a8
+B o4 e8 g+8 b8
+B o3 f8 o4 a8 c8

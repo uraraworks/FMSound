@@ -93,8 +93,10 @@ A @1 T250 o4 c%8 d%8 e%8 f%8
 B @1 T250 o5 g%8 f%8 e%8 d%8
 `;
   const { seqs: seqs2fm, endedFlags: ended2fm } = await recordMultiTrackKeySeq(mml2fm, ['A', 'B']);
-  const expectedA = [0, 2, 4, 5].map((n) => noteByte(4, n));
-  const expectedB = [7, 5, 4, 2].map((n) => noteByte(5, n));
+  // 音符バイトのnibbleはMMLの'o'数値より1小さい(PMDMML.MAN §4-4、docs/pmd-compiler-spec-v2.md
+  // 6章。o4->nibble3, o5->nibble4)。
+  const expectedA = [0, 2, 4, 5].map((n) => noteByte(3, n));
+  const expectedB = [7, 5, 4, 2].map((n) => noteByte(4, n));
   check('パートAが終端まで到達した', ended2fm.A);
   check('パートBが終端まで到達した', ended2fm.B);
   check('パートAの音程列が期待通り(パートBの内容が混入していない)',
@@ -116,8 +118,9 @@ A @1 T250 o4 c%4 e%4 g%4
 G T250 o3 a%4 f%4 d%4
 `;
   const { seqs: seqsFmSsg, endedFlags: endedFmSsg } = await recordMultiTrackKeySeq(mmlFmSsg, ['A', 'G']);
-  const expectedFmA = [0, 4, 7].map((n) => noteByte(4, n));
-  const expectedSsgG = [9, 5, 2].map((n) => noteByte(3, n));
+  // o4->nibble3, o3->nibble2(上のexpectedA/Bと同じ根拠)。
+  const expectedFmA = [0, 4, 7].map((n) => noteByte(3, n));
+  const expectedSsgG = [9, 5, 2].map((n) => noteByte(2, n));
   check('FMパートAが終端まで到達した', endedFmSsg.A);
   check('SSGパートGが終端まで到達した', endedFmSsg.G);
   check('FM(A)の音程列がSSG(G)の内容と混ざらず期待通り',
@@ -140,9 +143,10 @@ B @1 T250 o4 c%4 d%4 e%4 f%4 g%4 a%4 b%4 c%4 d%4 e%4
   const { seqs: seqsDiff, endedFlags: endedDiff } = await recordMultiTrackKeySeq(mmlDiffLen, ['A', 'B'], { maxChunks: 20000 });
   check('短いパートAが先に終端まで到達する', endedDiff.A);
   check('長いパートBも最終的に終端まで到達する', endedDiff.B);
+  // o4->nibble3(上と同じ根拠)。
   check('短いパートAの音程列は1音だけ(後続パートBの影響を受けない)',
-    seqsDiff.A.length === 1 && seqsDiff.A[0] === noteByte(4, 0), `actual=${seqsDiff.A.map((k) => k.toString(16)).join(',')}`);
-  const expectedLongB = [0, 2, 4, 5, 7, 9, 11, 0, 2, 4].map((n, i) => noteByte(4, n));
+    seqsDiff.A.length === 1 && seqsDiff.A[0] === noteByte(3, 0), `actual=${seqsDiff.A.map((k) => k.toString(16)).join(',')}`);
+  const expectedLongB = [0, 2, 4, 5, 7, 9, 11, 0, 2, 4].map((n, i) => noteByte(3, n));
   check('長いパートBの音程列が期待通り(短いパートAの終了に引きずられていない)',
     seqsDiff.B.length === expectedLongB.length && seqsDiff.B.every((k, i) => k === expectedLongB[i]),
     `expected=${expectedLongB.map((k) => k.toString(16)).join(',')} actual=${seqsDiff.B.map((k) => k.toString(16)).join(',')}`);

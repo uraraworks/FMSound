@@ -229,7 +229,9 @@ function compileTrackABytes(body) {
   const nestBytes = nestResult.file.subarray(1 + nestResult.layout.tracks.A.startAddr, 1 + nestResult.layout.tracks.A.termAddr);
   // 期待: "!bcc !sg !bc" -> "@1 c @2g @1" (最長一致で!bcが優先される、!b cc ではない)。
   // 直接バイト列を組み立てて比較する(0xff+tonenum、note=noteByte(oct4既定,idx)+clocks24既定長)。
-  const nestExpBytes = [0xff, 1, 0x40, 24, 0xff, 2, 0x47, 24, 0xff, 1];
+  // nibbleは既定オクターブ(o4相当)より1小さい3(PMDMML.MAN §4-4、
+  // docs/pmd-compiler-spec-v2.md 6章、参照.M実測で確定)。
+  const nestExpBytes = [0xff, 1, 0x30, 24, 0xff, 2, 0x37, 24, 0xff, 1];
   check('!bcc!sg!bc が最長一致で"!bc c !s g !bc"(@1 c @2g @1相当)に展開される(PMDMML.MAN §16-1 例1)', arraysEqual(nestBytes, nestExpBytes), `actual=${hex(nestBytes)} exp=${hex(nestExpBytes)}`);
 
   check('!の再帰定義(!A→!B→!A)はParseErrorになる(暴走を避ける安全側の実装)', (() => {
@@ -258,18 +260,20 @@ function compileTrackABytes(body) {
 // --- 11. `{ }` ポルタメント(v2 3.5節「未解明」→今回fmdriver_pmd.c:3083-3121実測で解決) ---
 {
   const actual = compileTrackABytes('{cg}4');
-  // 0xda + note1(c, oct4=既定) + note2(g, oct4) + clocks(4分音符=C96で24)
-  const expected = [0xda, (4 << 4) | 0, (4 << 4) | 7, 24];
+  // 0xda + note1(c, oct4=既定) + note2(g, oct4) + clocks(4分音符=C96で24)。
+  // nibbleはMMLの既定オクターブ(o4相当)より1小さい3(PMDMML.MAN §4-4、
+  // docs/pmd-compiler-spec-v2.md 6章、参照.M実測で確定)。
+  const expected = [0xda, (3 << 4) | 0, (3 << 4) | 7, 24];
   check('{cg}4 の出力が仕様どおり(0xda, note(c), note(g), clocks=24)', arraysEqual(actual, expected), `actual=${hex(actual)}`);
 
-  const wrongExpected = [0xda, (4 << 4) | 0, (4 << 4) | 7, 23]; // clocksを1違えた誤り期待値(陽性対照)
+  const wrongExpected = [0xda, (3 << 4) | 0, (3 << 4) | 7, 23]; // clocksを1違えた誤り期待値(陽性対照)
   check('[陽性対照] {cg}4の出力は1byte違う誤り期待値とは一致しない', !arraysEqual(actual, wrongExpected), `actual=${hex(actual)} wrong=${hex(wrongExpected)}`);
 
   // ディレイ付き: {cg}4,8 は "c8&{cg}8" と同等(PMDMML.MAN §4-3 例2)。
   const actualDelay = compileTrackABytes('{cg}4,8');
-  const noteC8 = [(4 << 4) | 0, 12]; // note(c) + clocks(8分音符=96/8=12)
+  const noteC8 = [(3 << 4) | 0, 12]; // note(c) + clocks(8分音符=96/8=12)
   const tie = [0xfb];
-  const porta = [0xda, (4 << 4) | 0, (4 << 4) | 7, 24 - 12]; // 残り12clock
+  const porta = [0xda, (3 << 4) | 0, (3 << 4) | 7, 24 - 12]; // 残り12clock
   const expectedDelay = [...noteC8, ...tie, ...porta];
   check('{cg}4,8 が "c8&{cg}(残りclock)" に展開される(PMDMML.MAN §4-3 例2)', arraysEqual(actualDelay, expectedDelay), `actual=${hex(actualDelay)} exp=${hex(expectedDelay)}`);
 

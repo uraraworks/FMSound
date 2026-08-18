@@ -29,17 +29,49 @@ const HEADER_LEN = 0x1a; // 11ポインタ(22) + r_offset(2) + tone_ptr(2)。doc
 // タイトル/1=作曲者/2=編曲者/n+1=メモ)を突き合わせて確定した。詳細は
 // docs/pmd-compiler-spec.md 追記分を参照。
 //
-// レイアウト(tone_ptrの直前、`toneptr-4`から): [memoTableOff(2byte LE)][flaglow=0x40][flaghigh]
-// flaglow==0x40 は pmd_get_memo() のindexシフトを起こさない値として選んだ
-// (fmdriver_pmd.c:5975-5980: 0x42/0x48以上で index++ される。0x40はそのどちらの閾値
-// 未満なので素通しになる。flaghighは flaglow==0x40 の分岐では読まれないため任意値)。
-// memoTableOff が指す先はポインタ(2byte LE)の配列、0x0000で終端。
-// index0=予約(PPCファイル名スロット、pmd_get_memo(pmd,0)用。今回はPCM機能を
-// 使わないので常に空文字列を置くだけの位置合わせ)、index1=タイトル、index2=作曲者、
-// index3=編曲者、index4以降=#Memoの各行(この順でpmd_get_comment(work,0..2,n+1)と一致)。
-function buildMemoBlock(header, startOff) {
-  const slots = ['', header.title ?? '', header.composer ?? '', header.arranger ?? '', ...header.memo];
-  const slotLines = [null, header.titleLine, header.composerLine, header.arrangerLine, ...header.memoLines];
+// レイアウト(tone_ptrの直前、`toneptr-4`から): [memoTableOff(2byte LE)][flaglow][flaghigh]
+// pmd_get_memo() (fmdriver_pmd.c:5962-5993) の index シフト規則:
+//   flaglow==0x40                        → indexシフト無し
+//   flaglow!=0x40 の場合、flaghigh==0xfe かつ flaglow>=0x41 が必須(でなければ0扱い)。
+//   その上で flaglow>=0x42 なら index++、flaglow>=0x48 なら さらに index++(=合計+2)。
+// #PCMfile/#PPZfile/#PPSfile(pmd_init 6043-6058で pmd_get_memo(pmd,-2/-1/0)を読む)を
+// 有効にするには index=-2 が物理位置0に届く必要があり、+2シフト(flaglow>=0x48)が要る。
+// これによりpmd_get_comment(line)側(6008-6014, line+1をpmd_get_memoへ渡す)の物理位置も
+// +2ずれるため、テーブルの並びは [PPZ, PPS, PCM(PPC), Title, Composer, Arranger, Memo...]
+// にする(旧来のTitle=idx1相当だった並びをそのまま2つ後ろへずらすだけで整合する)。
+// flaglow=0x48/flaghigh=0xfeの組はfmdsp側の再実装(pmdweb, PmdCore.c)を通した実測
+// (tools/verify_pmd_header.mjsの getPcmName/getCommentLength/getCommentPointer)で
+// title/composer/arranger/memo/pcm/ppz/ppsの全スロットが期待通り読み出せることを確認済み。
+//
+// 2026-08-18: 追加corpusケース(tools/pmd-reference/pmdhdrmt.mml、#PCMfile等を
+// 一切使わない#Title/#Composer/#Memoのみのケース)をMC.EXEで実測した結果、
+// **PCM系ヘッダの有無に関わらずMC.EXEは常にこの3予約スロット+flaglow=0x48/
+// flaghigh=0xfeのレイアウトを出力する**ことが判明した(手計算でpmdhdrmt.Mの
+// テーブル/文字列オフセットをすべて突き合わせ、8スロット全ての位置が一致することを確認済み。
+// 当初「PCM系ヘッダが無ければ旧来のflaglow=0x40・4スロットのレイアウトを使う」という
+// 条件分岐にしていたが、これは誤りだった: 参照.M比較ツール(verify_pmd_reference_corpus.mjs)
+// の一致率指標がそもそもヘッダ領域を見ておらず、条件分岐の要不要を判定できていなかった)。
+// そのため常時この8スロット(予約3+Title/Composer/Arranger+Memo)構成を使う。
+//
+// 2026-08-18 追記(配置の訂正): このメモ「本体」(文字列+ポインタテーブル)は
+// tone_ptrの**手前**ではなく、tone_ptrが指すトーンテーブルの**直後**に置かれる、
+// と参照.M実測(pmdbasic.M/pmdtone.M/pmdhdrmt.M/pmdhdrpc.M、4ケース)で判明した。
+// 実際のファイル順序は
+//   [トラック][r_offset固定領域(8B)][flags(4B、toneptr-4)]
+//   [トーンテーブル(entries + 00 FF終端)][メモ文字列群][メモポインタテーブル]
+// で、flagsのmemoTableOffはこの関数が返す末尾のポインタテーブル(tableOff)を指す。
+// (flags自体はcompileMml側でtone_ptrの直前に書く。この関数は文字列+テーブルのみ)
+function buildMemoTail(header, stringsStartOff) {
+  const slots = [
+    header.ppzfile ?? '', header.ppsfile ?? '', header.pcmfile ?? '',
+    header.title ?? '', header.composer ?? '', header.arranger ?? '',
+    ...header.memo,
+  ];
+  const slotLines = [
+    header.ppzfileLine, header.ppsfileLine, header.pcmfileLine,
+    header.titleLine, header.composerLine, header.arrangerLine,
+    ...header.memoLines,
+  ];
 
   const encoded = slots.map((s, idx) => {
     const { bytes, unmappable } = encodeCp932(s);
@@ -50,36 +82,30 @@ function buildMemoBlock(header, startOff) {
     return bytes;
   });
 
-  const tableOff = startOff;
-  const tableBytes = (slots.length + 1) * 2; // 各エントリ2byte + 終端0x0000
-  const stringsOff = tableOff + tableBytes;
-
-  let cursor = stringsOff;
+  let cursor = stringsStartOff;
   const stringOffsets = encoded.map((bytes) => {
     const off = cursor;
     cursor += bytes.length + 1; // + null終端
     return off;
   });
 
-  const flagsOff = cursor;
-  const totalLen = flagsOff + 4;
+  const tableOff = cursor;
+  const tableBytes = (slots.length + 1) * 2; // 各エントリ2byte + 終端0x0000
+  const totalLen = tableOff + tableBytes;
 
-  const out = new Uint8Array(totalLen - startOff);
+  const out = new Uint8Array(totalLen - stringsStartOff);
   function w16(off, val) {
-    out[off - startOff] = val & 0xff;
-    out[off - startOff + 1] = (val >> 8) & 0xff;
+    out[off - stringsStartOff] = val & 0xff;
+    out[off - stringsStartOff + 1] = (val >> 8) & 0xff;
   }
+  encoded.forEach((bytes, idx) => {
+    out.set(bytes, stringOffsets[idx] - stringsStartOff);
+    out[stringOffsets[idx] - stringsStartOff + bytes.length] = 0; // null終端
+  });
   encoded.forEach((_, idx) => w16(tableOff + idx * 2, stringOffsets[idx]));
   w16(tableOff + slots.length * 2, 0); // 終端
-  encoded.forEach((bytes, idx) => {
-    out.set(bytes, stringOffsets[idx] - startOff);
-    out[stringOffsets[idx] - startOff + bytes.length] = 0; // null終端
-  });
-  w16(flagsOff, tableOff); // toneptr-4 位置(memoptr)
-  out[flagsOff - startOff + 2] = 0x40; // flaglow
-  out[flagsOff - startOff + 3] = 0x00; // flaghigh(未使用)
 
-  return { bytes: out, endOff: totalLen };
+  return { bytes: out, tableOff, endOff: totalLen };
 }
 
 function sizeOfEvent(ev) {
@@ -269,7 +295,18 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   const toneTable = {};
   for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
   if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)
-  if (Object.keys(toneTable).length === 0) toneTable[1] = {}; // 何も定義が無ければ既定音色1個(第1段階からの後方互換)
+  // hasExplicitTones: 出力(トーンテーブル)を決めるためのフラグ。既定音色を合成する
+  // *前*の時点(=利用者が実際に@n定義かtonesオプションを与えたかどうか)で確定させる。
+  const hasExplicitTones = Object.keys(toneTable).length > 0;
+  // 2026-08-18: 検査(validation)用には引き続き既定音色@1を合成する(第1段階からの
+  // 後方互換。tools/verify_pmd_recompile_after_error.mjs のFIXED_MML='A o4 c4 d4 e4 @1'
+  // のように、本文中に@n定義ブロックが無いまま`@1`で既定音色を選択するケースが既存の
+  // 検証群に存在し、これをエラーにしない設計だったため)。ただし**出力バイト列**では
+  // この合成した既定音色を書かない: 参照.M実測(pmdbasic.M/pmdhdrmt.M/pmdhdrpc.M、
+  // 3ケース)で、MC.EXEは`@`定義が1つも無い場合に26byteの音色エントリを一切書かず、
+  // トーンテーブル終端マーカ(下記TONE_TERMINATOR)だけを置くことを確認した。
+  // 出力への反映は`hasExplicitTones`で分岐する(下のtoneEntries参照)。
+  if (Object.keys(toneTable).length === 0) toneTable[1] = {};
 
   const errors = [];
   // MML中で使われている音色番号がすべて toneTable に存在するか検査
@@ -294,11 +331,12 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   //   → A-F(未使用)の終端バイトがG本体より前、0x1a-0x1fに1byteずつ連続で並ぶ。
   //   これはヘッダindex順(A,B,C,D,E,F,G,...)で処理しないと再現できない配置であり、
   //   「使用パートを先に全部並べてから未使用の終端をまとめて置く」という単純化では出せない。
-  const SLOT_LETTERS = [...PART_LETTERS, 'K', null]; // idx0-9=A-J、idx10=K(リズム、常に空)、idx11=r_offset(常に空)
+  const SLOT_LETTERS = [...PART_LETTERS, 'K', null]; // idx0-9=A-J、idx10=K(リズム、常に空)、idx11=r_offset
   let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
   const slotAddr = new Array(SLOT_LETTERS.length); // 各スロットがヘッダに書き込むポインタ値
   const emptySlotAddrs = []; // 未使用スロットの終端バイト(0x80)を書き込むアドレス
+  let rhythmFixedAddr = null; // r_offset固定領域(8byte)の先頭アドレス
   for (let idx = 0; idx < SLOT_LETTERS.length; idx++) {
     const letter = SLOT_LETTERS[idx];
     const events = letter && letter !== 'K' ? tracks.get(letter) : null;
@@ -308,6 +346,21 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
       trackLayout[letter] = { startAddr, termAddr, events };
       slotAddr[idx] = startAddr;
       cursor = endAddr;
+    } else if (idx === 11) {
+      // r_offset(RHYTHMパート\0-\n等のパターン定義ポインタテーブル、
+      // fmdriver_pmd.c:5440 `pmd->r_offset + cmd*2`で参照される)。K/Rパートの
+      // 実装自体は今回のスコープ外だが、参照.M(tools/pmd-reference/、pmdunimp.M
+      // (K/R使用)を除く18ケース全て)は**K/Rを一切使わない曲でもこの8byte領域を
+      // 必ず確保する**ことを実測で確認した(r_offsetからtone_ptrまで常に12byte
+      // = この8byte + flags4byte)。5byte目以降(index1-7)は全ケースで0x00固定。
+      // 先頭byte(index0)は0x16〜0x80の間でケースごとに揺れており、単純な
+      // MML内容(パート構成/T値/使用コマンド)との相関を確認したが規則を特定できな
+      // かった(MC.EXE内部の未使用パターン0番ポインタの残留値と見られる。K/R自体が
+      // 未実装のため実害はない値)。指示書が名指しした3ケース(pmdbasic/pmdhdrmt/
+      // pmdhdrpc)はいずれも0x60で一致していたため、既定値として採用する。
+      slotAddr[idx] = cursor;
+      rhythmFixedAddr = cursor;
+      cursor += 8;
     } else {
       slotAddr[idx] = cursor;
       emptySlotAddrs.push(cursor);
@@ -315,42 +368,64 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
     }
   }
 
-  // ヘッダ命令(#Title/#Composer/#Arranger/#Memo)が1つでもあれば、tone_ptr直前に
-  // メモテーブルを差し込む(buildMemoBlock、doc参照)。無ければ従来通り何も挟まない
-  // (後方互換: ヘッダ命令を使わないMMLの出力バイト列は変化しない)。
+  // ヘッダ命令(#Title/#Composer/#Arranger/#Memo/#PCMfile/#PPZfile/#PPSfile)が
+  // 1つでもあれば、flags(4byte)をtone_ptrの直前に置く。無ければ従来通り何も挟まない
+  // (後方互換: ヘッダ命令を使わないMMLでは、この2026-08-18のヘッダ機能追加より前と
+  // 同じ「トーンテーブルの直前にflagsが無い」構造のまま)。
   const hasHeader = header.title != null || header.composer != null
-    || header.arranger != null || header.memo.length > 0;
-  let memoBlock = null;
+    || header.arranger != null || header.memo.length > 0
+    || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null;
+
+  // hasExplicitTonesがfalseの場合、toneTableには検査用に合成した既定音色(@1)しか
+  // 無い。出力(toneEntries)には反映しない(TONE_TERMINATORだけを置く。上のコメント参照)。
+  const toneNums = hasExplicitTones ? Object.keys(toneTable).map(Number).sort((a, b) => a - b) : [];
+  const toneEntries = toneNums.map((tn) => buildToneEntry({ ...toneTable[tn], tonenum: tn }));
+
+  // 2026-08-18: トーンテーブルは常に2byteの終端マーカ`00 FF`で終わる(参照.M実測、
+  // pmdbasic.M(@未使用、entries=0)・pmdtone.M/pmdton2.M(@使用、entries=1)の
+  // 双方で確認)。@未使用時はこのマーカだけがトーンテーブルの中身になる。
+  const TONE_TERMINATOR = [0x00, 0xff];
+
+  let flagsOff = null;
+  if (hasHeader) {
+    flagsOff = cursor;
+    cursor += 4; // flags(memoTableOff 2byte + flaglow + flaghigh)。値は末尾で書く
+  }
+  const toneOff = cursor; // tone_ptr
+  cursor = toneOff + toneEntries.length * 26 + TONE_TERMINATOR.length;
+
+  // メモ本体(文字列+ポインタテーブル)は、旧実装が置いていた「tone_ptrの直前」ではなく
+  // 「トーンテーブルの直後」に置く(buildMemoTailのコメント参照、参照.M実測で訂正済み)。
+  let memoTail = null;
   if (hasHeader) {
     try {
-      memoBlock = buildMemoBlock(header, cursor);
+      memoTail = buildMemoTail(header, cursor);
     } catch (e) {
       return { file: null, errors: [{ line: header.titleLine ?? 1, message: e.message }], layout: null };
     }
-    cursor = memoBlock.endOff;
+    cursor = memoTail.endOff;
   }
 
-  const toneNums = Object.keys(toneTable).map(Number).sort((a, b) => a - b);
-  const toneOff = cursor;
-  const toneEntries = toneNums.map((tn) => buildToneEntry({ ...toneTable[tn], tonenum: tn }));
-  const relLen = toneOff + toneEntries.length * 26;
-
+  const relLen = cursor;
   const rel = new Uint8Array(relLen);
   function w16(off, val) {
     rel[off] = val & 0xff;
     rel[off + 1] = (val >> 8) & 0xff;
   }
-  if (memoBlock) rel.set(memoBlock.bytes, memoBlock.endOff - memoBlock.bytes.length);
 
   // ヘッダ: 11パート分(FM1-6, SSG1-3, ADPCM, RHYTHM。doc 1.2節の順)。
   // PART_LETTERS(pmd_mml_parser.mjs)の配列indexが、そのままこのヘッダindexと一致するよう設計してある
   // (A-F=idx0-5=FM1-6, G-I=idx6-8=SSG1-3, J=idx9=ADPCM。v2 step3でJを追加)。
   // idx10=K(リズム)、idx11(0x16)=r_offset。値はいずれも上のslotAddrで確定済み。
   for (let idx = 0; idx < 11; idx++) w16(idx * 2, slotAddr[idx]);
-  w16(0x16, slotAddr[11]); // r_offset(常に未使用)
+  w16(0x16, slotAddr[11]); // r_offset
   w16(0x18, toneOff); // tone_ptr
 
   for (const addr of emptySlotAddrs) rel[addr] = 0x80;
+
+  // r_offset固定領域(8byte): 先頭byteは実測どおりの既定値、残り7byteは常に0x00。
+  rel[rhythmFixedAddr] = 0x60;
+  for (let i = 1; i < 8; i++) rel[rhythmFixedAddr + i] = 0x00;
 
   for (const letter of Object.keys(trackLayout)) {
     const { events, termAddr } = trackLayout[letter];
@@ -359,6 +434,16 @@ export function compileMml(source, { tones, opmFlag = 0 } = {}) {
   }
 
   toneEntries.forEach((entry, idx) => rel.set(entry, toneOff + idx * 26));
+  const toneTermAddr = toneOff + toneEntries.length * 26;
+  rel[toneTermAddr] = TONE_TERMINATOR[0];
+  rel[toneTermAddr + 1] = TONE_TERMINATOR[1];
+
+  if (memoTail) {
+    rel.set(memoTail.bytes, memoTail.endOff - memoTail.bytes.length);
+    w16(flagsOff, memoTail.tableOff); // toneptr-4 位置(memoptr)
+    rel[flagsOff + 2] = 0x48; // flaglow(常に+2シフト。MC.EXE実測どおり常時この値)
+    rel[flagsOff + 3] = 0xfe; // flaghigh(flaglow!=0x40のため常に0xfe必須)
+  }
 
   const file = new Uint8Array(1 + relLen);
   file[0] = opmFlag & 0xff;

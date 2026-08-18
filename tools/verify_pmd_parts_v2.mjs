@@ -94,9 +94,11 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
       read16le(0x12) !== read16le(0x00));
 
     // ADPCMトラックの中身: 0xfd(vol) 0x7f(v16->V127) / 0xff(tonenum選択) 0x01 /
-    // note(oct4,c=0)=noteByte(4,0)=0x40 / len=4分音符=96/4=24=0x18 / 0x80(終端)。
+    // note(既定オクターブ,c=0)。'J v16 @1 c4'は'o'省略なので既定オクターブ(MMLのo4相当)、
+    // nibbleはそれより1小さい3(PMDMML.MAN §4-4、docs/pmd-compiler-spec-v2.md 6章、
+    // 参照.M実測で確定)=noteByte(3,0)=0x30 / len=4分音符=96/4=24=0x18 / 0x80(終端)。
     // (トラック書式はFM/SSGと共通、doc 1.2節)。
-    const expectedTrack = Uint8Array.from([0xfd, 0x7f, 0xff, 0x01, noteByte(4, 0), 24, 0x80]);
+    const expectedTrack = Uint8Array.from([0xfd, 0x7f, 0xff, 0x01, noteByte(3, 0), 24, 0x80]);
     const actualTrack = rel.subarray(ADPCM_TRACK_OFF, ADPCM_TRACK_OFF + expectedTrack.length);
 
     // ヘッダのRHYTHM(index10, offset0x14)は未対応のまま未使用スロットを指す。新レイアウトでは
@@ -111,7 +113,7 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
       arraysEqual(actualTrack, expectedTrack),
       `actual=${hex(actualTrack)} expected=${hex(expectedTrack)}`);
     check('1f. [陽性対照] 1byte違う誤り期待値とは一致しない',
-      !arraysEqual(actualTrack, Uint8Array.from([0xfd, 0x7f, 0xff, 0x02, noteByte(4, 0), 24, 0x80])));
+      !arraysEqual(actualTrack, Uint8Array.from([0xfd, 0x7f, 0xff, 0x02, noteByte(3, 0), 24, 0x80])));
 
     check('1g. layout.tracksにJパートが記録されている', layout && Object.prototype.hasOwnProperty.call(layout.tracks, 'J'));
   }
