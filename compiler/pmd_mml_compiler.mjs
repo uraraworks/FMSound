@@ -457,6 +457,72 @@ function emitEvent(ev, out, offset) {
   }
 }
 
+// トラック1本分(ループ展開込み)の総クロック数を計算する。
+// r_offset固定領域(8byte、K/R未使用時)の先頭byteが「全パート中で最長のパートの
+// 総クロック数(下位8bit)」であることが判明した(下のcomputeLongestPartTicksのコメント参照)。
+// その"総クロック数"の定義はここで確定した内容:
+//   - note/rest/portamento の`clocks`をそのまま加算する。
+//   - ループ(`[`...`]n`、`:`で脱出区間を分ける)は、実際に鳴る回数ぶん展開して数える。
+//     `:`が無ければ本体(before)をn回。`:`があれば「最終回(n回目)だけ`:`以降(after)を
+//     再生せず抜ける」ため、before×n + after×(n-1)になる
+//     (fmdriver_pmd.c由来の0xf7 ':' の実行時挙動「最終回のみ':'~']'区間をスキップして
+//     ']'の直後へ脱出する」通り。tools/pmd-reference/pmdloopx.mml(4パート、ネスト2重・
+//     単純ループ両方を含む)で実測し、この式でのみ全パート一致することを確認済み)。
+//   - ネストしたループは、内側の展開後クロック数を外側の1イベント分として加算する。
+function trackTotalTicks(events) {
+  const stack = [];
+  let cur = { before: 0, after: 0, sawExit: false };
+  for (const ev of events) {
+    if (ev.type === 'loopOpen') {
+      stack.push(cur);
+      cur = { before: 0, after: 0, sawExit: false };
+      continue;
+    }
+    if (ev.type === 'loopExit') {
+      cur.sawExit = true;
+      continue;
+    }
+    if (ev.type === 'loopClose') {
+      const n = ev.count;
+      const total = cur.sawExit ? (cur.before * n + cur.after * (n - 1)) : (cur.before * n);
+      const parent = stack.pop();
+      parent.before += total;
+      cur = parent;
+      continue;
+    }
+    let clocks = 0;
+    if (ev.type === 'note' || ev.type === 'rest' || ev.type === 'portamento') clocks = ev.clocks;
+    if (cur.sawExit) cur.after += clocks; else cur.before += clocks;
+  }
+  return cur.before;
+}
+
+// 全パート(FM1-6/SSG1-3/ADPCM、および#PPZExtendで宣言されたPPZ8パート)のうち、
+// 最も総クロック数が長いパートの値を返す(K/Rパート自体はここでは見ない。
+// K/R使用時はr_offset固定領域が別構造(索引表)になり、この値の出番が無いため)。
+//
+// 2026-08-19実測(tools/pmd-reference/README.md「既知の差分」参照): 新規9ケース
+// (pmddt/pmdsl/pmdsl2/pmdefm/pmdnoise/pmdwecho/pmdwecho2/pmdwecho3/pmdmpover)は
+// いずれもファイル長・他バイトが完全一致し、r_offset固定領域の先頭byteだけが
+// 自作(固定値0x60=96)と参照で食い違っていた(参照は0x18=24または0x30=48)。
+// 各ケースの「最長パートの総クロック数」を数えたところ参照値と一致し
+// (l4の1音=24、o4l2/l4cd/l4c+l4d=48等)、既存corpus(pmdtone等)が偶然96クロックに
+// そろっていたため無症状だっただけと判明した。全corpus(43ケース、pmd-reference/*.mml)
+// を突き合わせ、K/R使用の3ケース(pmdrhbit/pmdrhpan/pmdunimp、r_offsetが別構造になる
+// ため対象外)を除く全40ケースでこの定義が成立することを確認済み
+// (pmdwhole.mmlは対象外の既存differenceがあるため元々100%不一致で対照外)。
+function computeLongestPartTicks(tracks, header) {
+  const letters = [...PART_LETTERS, ...(header.ppzExtend ? header.ppzExtend.split('') : [])];
+  let max = 0;
+  for (const letter of letters) {
+    const raw = tracks.get(letter);
+    if (!raw || raw.length === 0) continue;
+    const ticks = trackTotalTicks(raw);
+    if (ticks > max) max = ticks;
+  }
+  return max;
+}
+
 // events に相対アドレス(_addr)を付与する。トラック終端(0x80)のアドレスも返す。
 function layoutTrack(events, startAddr) {
   let addr = startAddr;
@@ -875,8 +941,10 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     }
     for (let i = 0; i < 8; i++) rel[mysteryAddr + i] = 0x00;
   } else {
-    // r_offset固定領域(8byte、K/R未使用時): 先頭byteは実測どおりの既定値、残り7byteは常に0x00。
-    rel[rhythmFixedAddr] = 0x60;
+    // r_offset固定領域(8byte、K/R未使用時): 先頭byteは「全パート中最長のパートの
+    // 総クロック数」の下位8bit(2026-08-19判明、computeLongestPartTicksのコメント参照)、
+    // 残り7byteは常に0x00。
+    rel[rhythmFixedAddr] = computeLongestPartTicks(tracks, header) & 0xff;
     for (let i = 1; i < 8; i++) rel[rhythmFixedAddr + i] = 0x00;
   }
 
