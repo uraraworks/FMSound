@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T02:08:44.181Z",
+  "generatedAt": "2026-08-18T02:50:56.948Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -57,6 +57,13 @@
       "totalParts": 11,
       "byteMatchRate": 0.4146341463414634
     },
+    "pmdmp": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.7333333333333333
+    },
     "pmdmulti": {
       "status": "compared",
       "identical": true,
@@ -77,6 +84,13 @@
       "matchedParts": 10,
       "totalParts": 11,
       "byteMatchRate": 0.6470588235294118
+    },
+    "pmdq1b": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
     },
     "pmdrelv": {
       "status": "compared",

@@ -519,13 +519,44 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     }
 
     if (c === 'M') {
-      // ソフトウエアLFO本体。PMDMML.MAN §9-1。`.M`側 0xf2は常に4byte固定(v2 3.6節)。
+      // ソフトウエアLFO本体。PMDMML.MAN §9-1。`.M`側 0xf2(LFO1)/0xbf(LFO2)は常に
+      // 4byte固定(v2 3.6節)。MA/MBでLFO1/LFO2を明示できる(§9-1)。
       // 「delayのみ」省略形(v2 3.6節「未解明」→今回マニュアル実測で解決): §9-1に
       // 「delayのみ単独で指定すると、現在のdelay値のみ変更します」と明記されている。
-      // 0xf2は常に4byte書く必要があるため、コンパイラ側でspeed/depthA/depthBの
+      // 0xf2/0xbfは常に4byte書く必要があるため、コンパイラ側でspeed/depthA/depthBの
       // 直前値を保持し、delayだけ差し替えて4byte全部を再送出する(state.lfoParams)。
-      // MA/MB/LFO2(0xbf)は今回も範囲外(Mのみ)。
       i++;
+      let lfoNum = 1;
+      if (body[i] === 'P') {
+        // MP/MPA/MPB(上昇/下降専用LFO指定、コマンド名は"MP"+"A"/"B"の順)。
+        // PMDMML.MAN §9-6。実データ(実測)で
+        // 発見: 「M書式バリエーション」と見えたエラーの実体はほぼ全てこれだった
+        // (通常のM 4値形/delay単独省略形は実データ上0件、MP系のみが未対応だった)。
+        // マニュアル記載「実際にはMA(またはMB) 数値2,数値3,数値1,255 とするのと
+        // 同じ」+「LFOをONにします」を、参照.M実測(tools/pmd-reference/pmdmp.mml)で
+        // 確定: 0xf2/0xbf(delay=数値2省略時0, speed=数値3省略時1, depthA=数値1,
+        // depthB=255固定) に続けて 0xf1/0xbe(LFOスイッチ) に固定値1(音程+同期)を
+        // 書く2コマンド構成。状態保持(state.lfoParams)はMP自身は使わない
+        // (常に3値とも自己完結)が、後続のdelay単独M省略形のために更新はしておく。
+        i++;
+        if (body[i] === 'A') { i++; } else if (body[i] === 'B') { i++; lfoNum = 2; }
+        const m = /^([+-]?\d+)(?:\s*,\s*(\d+))?(?:\s*,\s*(\d+))?/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'MP'/'MPA'/'MPB' の後に±数値1がありません(PMDMML.MAN §9-6)`);
+        i += m[0].length;
+        const depthA = parseInt(m[1], 10);
+        const delay = m[2] != null ? parseInt(m[2], 10) : 0;
+        const speed = m[3] != null ? parseInt(m[3], 10) : 1;
+        const depthB = 255;
+        if (depthA < -128 || depthA > 127) throw new ParseError(line, `'MP'系の数値1(depth)が範囲外です(-128〜127): ${depthA}`);
+        if (delay < 0 || delay > 255) throw new ParseError(line, `'MP'系の数値2(delay)が範囲外です(0-255): ${delay}`);
+        if (speed < 0 || speed > 255) throw new ParseError(line, `'MP'系の数値3(speed)が範囲外です(0-255): ${speed}`);
+        events.push({ type: 'lfoBody', line, lfo: lfoNum, delay, speed, depthA, depthB });
+        events.push({ type: 'lfoSwitch', line, lfo: lfoNum, value: 1 });
+        if (lfoNum === 1) state.lfoParams = { speed, depthA, depthB };
+        continue;
+      }
+      if (body[i] === 'A') { i++; } else if (body[i] === 'B') { i++; lfoNum = 2; }
+
       const full = /^(\d+)\s*,\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)/.exec(body.slice(i));
       let delay, speed, depthA, depthB;
       if (full) {
@@ -534,11 +565,11 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
         speed = parseInt(full[2], 10);
         depthA = parseInt(full[3], 10);
         depthB = parseInt(full[4], 10);
-        state.lfoParams = { speed, depthA, depthB };
+        if (lfoNum === 1) state.lfoParams = { speed, depthA, depthB };
       } else {
         const delayOnly = /^\d+/.exec(body.slice(i));
         if (!delayOnly) {
-          throw new ParseError(line, `'M' の書式が不正です(delay,speed,depthA,depthBの4値、またはdelay単独の省略形のいずれかが必要)`);
+          throw new ParseError(line, `'M'/'MA'/'MB' の書式が不正です(delay,speed,depthA,depthBの4値、delay単独の省略形、またはMP系(§9-6)のいずれかが必要)`);
         }
         i += delayOnly[0].length;
         delay = parseInt(delayOnly[0], 10);
@@ -551,18 +582,25 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       if (speed < 0 || speed > 255) throw new ParseError(line, `'M'のspeedが範囲外です(0-255): ${speed}`);
       if (depthA < -128 || depthA > 127) throw new ParseError(line, `'M'のdepthAが範囲外です(-128〜127): ${depthA}`);
       if (depthB < 0 || depthB > 255) throw new ParseError(line, `'M'のdepthBが範囲外です(0-255): ${depthB}`);
-      events.push({ type: 'lfoBody', line, delay, speed, depthA, depthB });
+      events.push({ type: 'lfoBody', line, lfo: lfoNum, delay, speed, depthA, depthB });
       continue;
     }
 
     if (c === 'q') {
       // 音の切り方の指定2。PMDMML.MAN §4-13。数値2→0xb1(gate_rand_range)、
-      // 数値3→0xb3(gate_min)は確定済み(v2 3.3節)。数値1(固定カット量)は
-      // `.M`側のバイト表現が未解明のため今回は非対応のまま(推測で埋めない)。
+      // 数値3→0xb3(gate_min)は既に確定済み(v2 3.3節)。数値1(固定カット量)は
+      // 今回、参照.M実測(tools/pmd-reference/pmdq1b.mml)で確定: 0xfe
+      // (`pmd_cmdfe_gate_abs`)へ数値1をそのまま1byteで書くだけ(Q(大文字)との
+      // 合成は無い。Q自体は本コンパイラ未実装のまま)。バイト列上の並びは
+      // 実測で 0xfe(数値1) → 0xb1(数値2) → 0xb3(数値3) の順だったため、
+      // pushもこの順で行う。
       i++;
       const m1 = /^\d+/.exec(body.slice(i));
+      let num1 = null;
       if (m1) {
-        throw new ParseError(line, `'q'の数値1(固定カット量)は未対応です(バイト表現が未解明。docs/pmd-compiler-spec-v2.md 3.3/5章参照)`);
+        i += m1[0].length;
+        num1 = parseInt(m1[0], 10);
+        if (num1 < 0 || num1 > 255) throw new ParseError(line, `'q'の数値1が範囲外です(0-255。0xfe): ${num1}`);
       }
       let num2 = null;
       if (body[i] === '-') {
@@ -582,15 +620,35 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
         num3 = parseInt(m3[0], 10);
         if (num3 < 0 || num3 > 255) throw new ParseError(line, `'q'の数値3が範囲外です(0-255): ${num3}`);
       }
-      if (num2 == null && num3 == null) {
-        throw new ParseError(line, `'q'の書式が不正です(数値2('-n')または数値3(',n')の少なくとも一方が必要。単独の数値1は未対応)`);
+      if (num1 == null && num2 == null && num3 == null) {
+        throw new ParseError(line, `'q'の書式が不正です(数値1・数値2('-n')・数値3(',n')の少なくとも一つが必要)`);
+      }
+      if (num1 != null) {
+        events.push({ type: 'gateAbs', line, value: num1 });
+        state.qNum1 = num1; // 数値1は省略時に前の値を保留(PMDMML.MAN §4-13)
       }
       if (num2 != null) {
-        // bit7=1(減算方向)に固定する設計判断: 0xb1のbit7は「1なら減算方向」
-        // (fmdriver_pmd.c:1473-1483)。qは「後ろカット」(発音を短くする)コマンドなので
-        // 減算方向で統一する。数値1省略時にどちらの方向を選ぶべきかの一次情報は無く、
-        // これは実装上の設計判断であることを明記する(v2 3.3節/5章の未解明とは別軸)。
-        events.push({ type: 'gateRandRange', line, value: 0x80 | num2 });
+        // 今回の実測(tools/pmd-reference/pmdq1b.mml、q50-30,15 と q30-90,2の2ケース、
+        // どちらも数値1を明示)で判明: 数値1が明示されているとき、0xb1の下位7bitは
+        // 数値2そのものではなく |数値1(保留値含む)-数値2| の差分で、bit7は固定ではなく
+        // 符号で決まる: 数値2<数値1(=50,30)は0x94=0x80|20(bit7=1)、数値2>数値1
+        // (=30,90)は0x3c=0|60(bit7=0)と、2方向とも実測して確認した。
+        // 一方、数値1が一度も明示されていない場合(既存corpus pmdgate.mmlの
+        // q-10,5等)は参照.M側に説明の付かない先頭の`fe 01`が現れ、今回の式
+        // (既定0との差分)だけでは再現できないことが分かった(未解明のまま。
+        // docs/pmd-compiler-spec-v2.md 5章に記録)。そのため退行を避けるべく、
+        // 数値1が一度もこのパートで明示されていない場合は、これまで通り
+        // 数値2をそのままbit7=1固定で書く旧仕様(既存の設計判断)を維持する。
+        let value;
+        if (state.qNum1 != null) {
+          const heldNum1 = state.qNum1;
+          const range = Math.abs(heldNum1 - num2);
+          if (range > 127) throw new ParseError(line, `'q'の数値1と数値2の差が範囲外です(127以内。0xb1下位7bit): |${heldNum1}-${num2}|=${range}`);
+          value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
+        } else {
+          value = 0x80 | num2;
+        }
+        events.push({ type: 'gateRandRange', line, value });
       }
       if (num3 != null) {
         events.push({ type: 'gateMin', line, value: num3 });

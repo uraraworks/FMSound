@@ -128,6 +128,23 @@ function compileTrackABytes(body) {
     const { errors } = compileMml('A M10\n');
     return errors.length > 0;
   })());
+
+  // MP/MPA/MPB(上昇/下降専用LFO指定、PMDMML.MAN §9-6)。当初「M書式バリエーション」
+  // の一種と見えたが、実データ(第三者MML、リポジトリには非同梱)の実測調査で
+  // 「通常のM 4値形/delay省略形は実データ上0件、エラーの実体は全てMP系だった」と
+  // 判明。参照.M実測(tools/pmd-reference/pmdmp.mml、MC.EXE ver4.8s)で
+  // 0xf2/0xbf(delay=数値2省略時0,speed=数値3省略時1,depthA=数値1,depthB=255固定) +
+  // 0xf1/0xbe(LFOスイッチ、固定値1)の2コマンド構成と確定。
+  const actualMP = compileTrackABytes('MP-77');
+  const expectedMP = [0xf2, 0, 1, 0xb3, 0xff, 0xf1, 1]; // depthA=-77 -> 0xb3
+  check('MP-77(上昇/下降LFO・数値1のみ)の出力が仕様どおり', arraysEqual(actualMP, expectedMP), `actual=${hex(actualMP)}`);
+
+  const wrongMP = [0xf2, 0, 1, 0xb3, 0xff, 0xf1, 2]; // *スイッチの値を1違えた誤り期待値
+  check('[陽性対照] MP-77の出力は*スイッチ値が1違う誤り期待値とは一致しない', !arraysEqual(actualMP, wrongMP), `actual=${hex(actualMP)} wrong=${hex(wrongMP)}`);
+
+  const actualMPB = compileTrackABytes('MPB39');
+  const expectedMPB = [0xbf, 0, 1, 39, 0xff, 0xbe, 1]; // LFO2は0xbf/0xbe
+  check('MPB39(LFO2側)の出力が仕様どおり(0xbf/0xbe)', arraysEqual(actualMPB, expectedMPB), `actual=${hex(actualMPB)}`);
 }
 
 // --- 6. qの数値2/3(0xb1/0xb3) ---
@@ -144,8 +161,29 @@ function compileTrackABytes(body) {
   const expectedNum3Only = [0xb3, 7];
   check('q,7(数値3のみ)の出力が仕様どおり(0xb3)', arraysEqual(actualNum3Only, expectedNum3Only), `actual=${hex(actualNum3Only)}`);
 
-  check('qの数値1単独(固定カット量)は未解明のため今回も未対応(エラー継続)', (() => {
-    const { errors } = compileMml('A q10\n');
+  // qの数値1(固定カット量、0xfe)。当初は「.M側のバイト表現が未解明」として
+  // 非対応・エラー継続としていたが、参照.M実測(tools/pmd-reference/pmdq1b.mml、
+  // MC.EXE ver4.8s実測)で0xfe(pmd_cmdfe_gate_abs)に1byteそのまま書くだけと
+  // 判明したため実装した(docs/pmd-compiler-spec-v2.md 3.3節・5章更新)。
+  const actualNum1Only = compileTrackABytes('q10');
+  const expectedNum1Only = [0xfe, 10];
+  check('q10(数値1のみ)の出力が仕様どおり(0xfe)', arraysEqual(actualNum1Only, expectedNum1Only), `actual=${hex(actualNum1Only)}`);
+
+  const wrongNum1 = [0xfe, 11];
+  check('[陽性対照] q10の出力は数値1が1違う誤り期待値とは一致しない', !arraysEqual(actualNum1Only, wrongNum1), `actual=${hex(actualNum1Only)} wrong=${hex(wrongNum1)}`);
+
+  // 数値1明示時、数値2(0xb1)は「数値2そのもの」ではなく「|数値1-数値2|」の差分
+  // (符号がbit7)。tools/pmd-reference/pmdq1b.mml(q50-30,15 / q30-90,2)で実測確認。
+  const actualNum1Num2 = compileTrackABytes('q50-30,15');
+  const expectedNum1Num2 = [0xfe, 50, 0xb1, 0x80 | 20, 0xb3, 15]; // |50-30|=20, 減算方向
+  check('q50-30,15(数値1+数値2+数値3)の出力が仕様どおり(数値2は差分)', arraysEqual(actualNum1Num2, expectedNum1Num2), `actual=${hex(actualNum1Num2)}`);
+
+  const actualNum1Num2Flip = compileTrackABytes('q30-90,2');
+  const expectedNum1Num2Flip = [0xfe, 30, 0xb1, 60, 0xb3, 2]; // |30-90|=60, 加算方向(bit7=0)
+  check('q30-90,2(数値2>数値1で符号反転)の出力が仕様どおり', arraysEqual(actualNum1Num2Flip, expectedNum1Num2Flip), `actual=${hex(actualNum1Num2Flip)}`);
+
+  check('qの数値1が範囲外(256)はエラーになる', (() => {
+    const { errors } = compileMml('A q256\n');
     return errors.length > 0;
   })());
 }

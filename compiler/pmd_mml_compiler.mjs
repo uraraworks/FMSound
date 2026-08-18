@@ -128,6 +128,7 @@ function sizeOfEvent(ev) {
     case 'volInc': case 'volDec': return 2; // 0xe3/0xe2 + 1byte(v2 3.1節)
     case 'gateRandRange': return 2; // 0xb1 + 1byte(v2 3.3節)
     case 'gateMin': return 2; // 0xb3 + 1byte(v2 3.3節)
+    case 'gateAbs': return 2; // 0xfe + 1byte(qの数値1。今回参照.M実測で確定)
     case 'portamento': return 4; // 0xda + note1(1byte) + note2(1byte) + clocks(1byte)(v2 3.5節、今回実測で解決)
     case 'transposeAbs': return 2; // 0xf5 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
     case 'transposeRel': return 2; // 0xe7 + 1byte符号付き(PMDMML.MAN §4-14、今回実測で解決)
@@ -221,12 +222,12 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xec;
       out[offset + 1] = ev.value & 0xff;
       return;
-    case 'lfoSwitch': // ソフトウエアLFOスイッチ(v2 3.7節)
-      out[offset] = 0xf1;
+    case 'lfoSwitch': // ソフトウエアLFOスイッチ(v2 3.7節)。lfo===2ならLFO2(0xbe)、既定はLFO1(0xf1)。
+      out[offset] = ev.lfo === 2 ? 0xbe : 0xf1;
       out[offset + 1] = ev.value & 0xff;
       return;
-    case 'lfoBody': // ソフトウエアLFO本体(v2 3.6節)。常に4byte固定。
-      out[offset] = 0xf2;
+    case 'lfoBody': // ソフトウエアLFO本体(v2 3.6節)。常に4byte固定。lfo===2ならLFO2(0xbf)、既定はLFO1(0xf2)。
+      out[offset] = ev.lfo === 2 ? 0xbf : 0xf2;
       out[offset + 1] = ev.delay & 0xff;
       out[offset + 2] = ev.speed & 0xff;
       out[offset + 3] = signedByte(ev.depthA);
@@ -246,6 +247,10 @@ function emitEvent(ev, out, offset) {
       return;
     case 'gateMin': // qの数値3(v2 3.3節)
       out[offset] = 0xb3;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'gateAbs': // qの数値1(固定カット量。今回参照.M実測で確定)
+      out[offset] = 0xfe;
       out[offset + 1] = ev.value & 0xff;
       return;
     case 'portamento': // ポルタメント(v2 3.5節。0xda + note1 + note2 + clocks)
