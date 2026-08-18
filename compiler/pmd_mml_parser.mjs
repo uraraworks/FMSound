@@ -466,9 +466,33 @@ function applyDots(baseClocks, dotCount, line) {
 // globalState: {measLen} 。`C`(全音符長設定)は全パート共通のグローバル設定
 // (PMDMML.MAN §4-11「いずれかのパートの頭に設定すれば、すべてのパートに有効」)
 // のため、呼び出し元(parseMml)が1つのオブジェクトをすべてのパートへ使い回す。
-function tokenizeBody(body, line, state, events, partKind, globalState) {
+// partLetter: 呼び出し元(parseMml)が「同じ行を複数パートへ流す」ためにパートごとに
+// 1回ずつこの関数を呼ぶ際の、今回の呼び出し対象パート文字(1文字)。`|`(MML Skip
+// Control、PMDMML.MAN §16-2、WebFetch実測: pigu-a.github.io/pmddocs/pmdmml.htm
+// "16.2. MML Skip Control 1")の対象判定に使う。
+function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partLetter) {
   let i = 0;
   const n = body.length;
+  // `|`(§16-2)によるパート限定。書式は`| [!] [パート文字列]`。
+  //   - `|`単独(直後にパート文字が無い)は限定解除(=全パートが対象。既定状態と同じ)。
+  //     ヘッダに複数パートを列挙した行の区切りとして「小節線」のように見た目だけ
+  //     使われるケース(実データに頻出)は、この「解除」が常にno-opになることで
+  //     自然に「無視される」動作になる。
+  //   - `|ABC`はA/B/Cのみを対象にする。`|!ABC`はA/B/C**以外**を対象にする
+  //     (§16-2実測: 「| [part letters]」で対象を絞り、`!`を前置すると反転)。
+  //   - 対象外の間は、後続コマンドを通常通り字句解析はする(カーソルは進める)が、
+  //     このtokenizeBody呼び出し(=1パート分)のイベント列には積まない。
+  //     これを「events.push」だけを条件付きにするProxyで実現し、既存の大量の
+  //     `events.push(...)`呼び出し箇所(本関数内40箇所超)を書き換えずに済ませる。
+  let active = true;
+  const events = new Proxy(rawEvents, {
+    get(target, prop, receiver) {
+      if (prop === 'push') {
+        return (ev) => { if (active) target.push(ev); return target.length; };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 
   function readLengthSpec() {
     // 戻り値: クロック値、または null(長さ指定なし=デフォルト長を使う)
@@ -565,6 +589,45 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     const c = body[i];
     if (/\s/.test(c)) { i++; continue; }
 
+    // `|`(MML Skip Control 1、PMDMML.MAN §16-2。WebFetch実測、
+    // pigu-a.github.io/pmddocs/pmdmml.htm "16.2. MML Skip Control 1"): 同じ行に
+    // 複数パート文字を並べて書いた場合(例: `ABI |AB o5 @183|I o4@1|  e32&...`)に、
+    // `|`以降を「一部のパートだけに向けた内容」へ限定するための区切り。
+    //   書式: `|` (対象指定なし。限定解除=全パート対象に戻す)
+    //        `|<パート文字列>` (指定パートのみを対象にする)
+    //        `|!<パート文字列>` (指定パート以外を対象にする)
+    // 対象外のパートに対しては、このtokenizeBody呼び出し(=partLetter 1個分)の
+    // イベント列に何も積まない(上のeventsプロキシがactive=falseの間push を
+    // 素通しせず捨てる)が、字句解析(カーソル移動)自体は他パート向け内容と
+    // 同じ経路でそのまま進める(=パースは共通、出力先だけをパートごとに絞る設計)。
+    // 単独の`|`(対象指定なし)は「限定解除」のno-opとして働くため、実データに
+    // 頻出する「小節線」的な飾り用法(`|`を区切りとしてただ並べるだけ)は、
+    // その都度「全パート対象」を再宣言しているだけで見た目通り無視される。
+    if (c === '|') {
+      i++;
+      const negate = body[i] === '!';
+      if (negate) i++;
+      // パート文字は大文字のみを対象指定として拾う(実データ・マニュアル例とも
+      // すべて大文字表記)。音符名(c/d/e/f/g/a/b)は常に小文字であり、この本体
+      // (tokenizeBody)ではパート指定文字(A-J)と音符名を大小文字で区別している
+      // (例: 'D'=デチューン、'd'=音符レ)。もし大文字・小文字両方を対象指定に
+      // 含めてしまうと、`|`直後にスペース無しで音符が続く「限定解除して即座に
+      // 音符へ戻る」パターン(実データ`...|H f32|<`等)で、直後の小文字音符名まで
+      // 対象指定として誤って呑み込んでしまう(実測で発覚。`|d4`を`|`+パート指定'd'
+      // と誤認識し、後続の'4'が未対応文字エラーになっていた)。
+      const m = /^[A-Z]*/.exec(body.slice(i));
+      const restrictLetters = m[0];
+      i += restrictLetters.length;
+      if (restrictLetters === '') {
+        active = true; // 対象指定なし(`!`だけの場合も含む) = 限定解除
+      } else {
+        const upperLetters = restrictLetters.toUpperCase();
+        const included = partLetter != null && upperLetters.includes(partLetter.toUpperCase());
+        active = negate ? !included : included;
+      }
+      continue;
+    }
+
     if (c === '\\') {
       // リズム音源直接コマンド(`\`系、PMDMML.MAN §14)。「総てのパートに指定する事が
       // 可能」(§14冒頭)なため、FM/SSG/ADPCMパートでもここで受理する。
@@ -633,15 +696,20 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
           if (events[k].type === 'note') { prevNote = events[k]; break; }
           if (events[k].type !== 'tie') break; // タイ以外を挟んだら直前の音符とみなせない
         }
-        if (!prevNote) {
+        // `|`(§16-2)でこのパートが対象外(active=false)の間は、直前の音符が
+        // このパートの出力に無くても構文エラーにしない(その音符は別パート向けの
+        // 内容であり、このパートには元々関係が無いため。読み飛ばすだけでよい)。
+        if (!prevNote && active) {
           throw new ParseError(line, `'&' の直後に音長がありますが、直前に音符がありません(PMDMML.MAN §4-10)`);
         }
         const clocks = readLengthSpec();
-        if (clocks < 1 || clocks > 255) {
-          throw new ParseError(line, `音長クロック値が1byteに収まりません: ${clocks}`);
+        if (active) {
+          if (clocks < 1 || clocks > 255) {
+            throw new ParseError(line, `音長クロック値が1byteに収まりません: ${clocks}`);
+          }
+          events.push({ type: 'tie', line });
+          events.push({ type: 'note', line, octave: prevNote.octave, noteIndex: prevNote.noteIndex, clocks });
         }
-        events.push({ type: 'tie', line });
-        events.push({ type: 'note', line, octave: prevNote.octave, noteIndex: prevNote.noteIndex, clocks });
         continue;
       }
       events.push({ type: 'tie', line });
@@ -1742,7 +1810,7 @@ export function parseMml(source) {
       for (const p of partLetters) {
         const trackInfo = tracks.get(p);
         const kind = ppzExtendSet.has(p) ? 'ppz' : PART_KIND[p];
-        tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState);
+        tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState, p);
       }
     } catch (e) {
       if (e instanceof ParseError) {
