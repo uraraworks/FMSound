@@ -497,6 +497,29 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   const { tracks, tones: parsedTones, header, rhythmPatterns, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
+  // #FM3Extend(FM3ch拡張パート、PMDMML.MAN §2-20)は構文レベル(pmd_mml_parser.mjs、
+  // collectFm3Extend/kind='fm')までは対応済みだが、.M側の出力(upstream/98fmplayer/
+  // fmdriver/fmdriver_pmd.c:3554 pmd_cmdc6_fm3ex_initが読む、3スロット×2byteポインタの
+  // 0xc6コマンド)を**どのトラックの・どの位置に**MC.EXEが書くかは実測できていない
+  // (#PPZExtendの0xb4は tools/pmd-reference/pmdppzord.mml等のMC.EXE ver4.8s実測で
+  // 「ADPCM(J)トラック先頭」という配置を確定させたが、今回はその実測パイプライン
+  // 〈WebNP2+MC.EXE、tools/webnp2-mc-pipeline/〉を使う余地が無かった)。
+  // 推測で「もっともらしい」配置(例: C=FM3本体トラックの先頭)を実装すると、
+  // 実機と一致しない.Mを黙って生成しかねない(PPZ8の0xb4も当初「ファイル末尾」という
+  // 推測が実測で誤りと判明した実績がある。既存の教訓「もっともらしい値は正しい
+  // 番地の証明にならない」)。そのため構文としては受理しつつ、.M生成はここで
+  // 明示的に止める。将来MC.EXE実測で配置が確定したら、この分岐を実装に置き換える。
+  if (header.fm3ExtendLetters && header.fm3ExtendLetters.length > 0) {
+    return {
+      file: null,
+      errors: [{
+        line: header.fm3ExtendLine ?? 1,
+        message: `#FM3Extend は構文としては解釈できていますが、.M側の出力位置(PMDMML.MAN §2-20、fmdriver_pmd.c:3554の0xc6コマンド)がMC.EXE実測で未確定のため、.M生成にはまだ対応していません(パート ${header.fm3ExtendLetters.join(',')})`,
+      }],
+      layout: null,
+    };
+  }
+
   const toneTable = {};
   for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
   if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)

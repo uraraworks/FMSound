@@ -189,6 +189,78 @@ function collectPpzExtend(lines) {
   return { letters, letterLine, errors };
 }
 
+// #FM3Extend(FM音源3チャネル目のパート拡張、PMDMML.MAN §2-20。WebFetch経由で取得した
+// PMDMML.MANの生バイト列をCP932デコード+NEL(0x85)を改行として展開した上で原文確認。
+// grepがNEL区切り行を無言で読み飛ばす既知の落とし穴(このファイル冒頭の教訓)があるため、
+// 単純なgrepではなくPythonでbytes→text変換してから該当節全文を読んだ)。
+//
+// [書式] #FM3Extend パート記号1[パート記号2[パート記号3]]] (最大3つ、区切り文字なし)
+// [記号] LMNOPQSTUVWXYZabcdefghijklmnopqrstuvwxyz のうちのいずれか
+//   →#PPZExtend(§2-25)と全く同じ記号表(原文を突き合わせて確認済み)。従って
+//   小文字'k'を除外する理由・大文字Rを含まない理由もPPZEXTEND_ALLOWED_CHARSと同じ
+//   (Kパート混在処理・Rパターン定義行との衝突回避)。
+// [説明] 「FM音源3のパートを、指定したパート記号で拡張します。最大３ｃｈ分設定可能です。
+//   FM音源3チャネル目は、独立して最大４つまでのパートを演奏する事が可能ですが、
+//   デフォルトでは(略)、１パートしか定義されていませんので、このコマンドで新たに
+//   パート記号を定義します。」
+//   本プロジェクトが採用している表2(PMDB2/PMD86/PMDVA、v1 7.3節)では、C=FM3のみが
+//   既定で定義されており、D/E/F は既にFM4-6として独立パート(§1-1-3表2)なので、
+//   表1(PMD/PMDVA1、D/E/Fを差し替える)の記述はこの実装には適用されない
+//   (#FM3Extendで宣言した記号は既存パートを置き換えず、単純に新規追加される)。
+const FM3EXTEND_ALLOWED_CHARS = PPZEXTEND_ALLOWED_CHARS;
+const FM3EXTEND_HEADER_RE = /^[ \t]*#FM3Extend[ \t]+(.*)$/i;
+const FM3EXTEND_MAX_LETTERS = 3;
+
+// #PPZExtendと同じ理由(ファイル中の出現順に依存させない事前確定)でparseMml本体
+// ループより前に呼ぶ。ただし2026-08-19時点では「宣言・パート文字としての受理」までが
+// 実装範囲で、.M側の出力(0xc6コマンド、upstream/98fmplayer/fmdriver/fmdriver_pmd.c
+// :3554 pmd_cmdc6_fm3ex_initが読む3スロット×2byteポインタ表)の**配置場所**は
+// MC.EXE実測で確認できていない(#PPZExtendの0xb4はpmdppzord.mml等のMC.EXE実測で
+// 配置を確定させたが、この作業ではWebNP2+MC.EXEパイプラインを使う余地が無かった)。
+// 「もっともらしい値は正しい番地の証明にならない」という既存の教訓(実際、PPZ8の
+// 0xb4配置は最初「ファイル末尾」という推測が外れ、実測で「RHYTHM直後」に訂正された
+// 実績がある)を踏まえ、配置を推測実装せず、compiler.mjs側で「構文としては解釈できるが
+// .M生成は未対応」という専用エラーで止める(下記compileMml参照)。
+function collectFm3Extend(lines) {
+  let letters = null;
+  let letterLine = null;
+  const errors = [];
+  for (let li = 0; li < lines.length; li++) {
+    const m = FM3EXTEND_HEADER_RE.exec(lines[li]);
+    if (!m) continue;
+    const lineNo = li + 1;
+    const arg = m[1].trim();
+    if (arg.length === 0) {
+      errors.push({ line: lineNo, message: `#FM3Extend の後にパート記号がありません(PMDMML.MAN §2-20)` });
+      continue;
+    }
+    if (arg.length > FM3EXTEND_MAX_LETTERS) {
+      errors.push({ line: lineNo, message: `#FM3Extend は最大${FM3EXTEND_MAX_LETTERS}パートまでです(PMDMML.MAN §2-20「パート記号1[パート記号2[パート記号3]]]」「最大３ｃｈ分設定可能」): "${arg}"` });
+      continue;
+    }
+    const chars = [...arg];
+    const seen = new Set();
+    let ok = true;
+    for (const ch of chars) {
+      if (!FM3EXTEND_ALLOWED_CHARS.has(ch)) {
+        errors.push({ line: lineNo, message: `#FM3Extend に使えない記号です(PMDMML.MAN §2-20 [記号] LMNOPQSTUVWXYZabcdefghijklmnopqrstuvwxyz のいずれか。小文字kは本実装では未対応): '${ch}'` });
+        ok = false;
+        break;
+      }
+      if (seen.has(ch)) {
+        errors.push({ line: lineNo, message: `#FM3Extend で同じパート記号が重複しています: '${ch}'` });
+        ok = false;
+        break;
+      }
+      seen.add(ch);
+    }
+    if (!ok) continue;
+    letters = chars;
+    letterLine = lineNo;
+  }
+  return { letters, letterLine, errors };
+}
+
 // (a) PCMファイル指定系ヘッダ。出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の
 // pmd_init()(6043-6066) が pmd_get_memo(pmd, -2)=PPZ, -1=PPS, 0=PCM(PPC) を読んで
 // pmd->ppzfile/ppsfile/ppcfile へコピーする(ppzfileはさらに','以降をppzfile2へ分離)。
@@ -277,6 +349,14 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
     // が本体ループより前に一括して行う(このファイルの他ヘッダ同様の情報記録のみここで行う)。
     header.ppzExtend = ppzM[1].trim();
     header.ppzExtendLine = lineNo;
+    return true;
+  }
+
+  const fm3M = FM3EXTEND_HEADER_RE.exec(raw);
+  if (fm3M) {
+    // #PPZExtendと同じ二段階方式: 検証・宣言順の確定はparseMml冒頭のcollectFm3Extend()。
+    header.fm3Extend = fm3M[1].trim();
+    header.fm3ExtendLine = lineNo;
     return true;
   }
 
@@ -1727,6 +1807,7 @@ export function parseMml(source) {
     pcmfileLine: null, ppzfileLine: null, ppsfileLine: null,
     fffile: null, fffileLine: null,
     ppzExtend: null, ppzExtendLine: null, ppzExtendLetters: [],
+    fm3Extend: null, fm3ExtendLine: null, fm3ExtendLetters: [],
     detuneExtend: null, detuneExtendLine: null,
     lfoSpeedExtend: null, lfoSpeedExtendLine: null,
     envSpeedExtend: null, envSpeedExtendLine: null,
@@ -1749,6 +1830,23 @@ export function parseMml(source) {
   const ppzExtendLetters = ppzResult.letters ?? [];
   const ppzExtendSet = new Set(ppzExtendLetters);
   header.ppzExtendLetters = ppzExtendLetters;
+
+  // #FM3Extend(v2への追記、PMDMML.MAN §2-20)もPPZExtendと同じく本体ループより前に
+  // 確定させる(collectFm3Extendのコメント参照)。
+  const fm3Result = collectFm3Extend(lines);
+  for (const e of fm3Result.errors) errors.push(e);
+  const fm3ExtendLetters = fm3Result.letters ?? [];
+  const fm3ExtendSet = new Set(fm3ExtendLetters);
+  header.fm3ExtendLetters = fm3ExtendLetters;
+  // #PPZExtendと#FM3Extendの記号は同じ文字表を共有するため、両方に同じ文字を
+  // 宣言すると「その文字はPPZ8拡張なのかFM3ch拡張なのか」が一意に決まらなくなる。
+  // マニュアルに明記は無いが、他の重複宣言(同一ヘッダ内の重複)と同様、黙って
+  // 片方を採用するより宣言時点でエラーにする方が安全側(このプロジェクトの一貫方針)。
+  for (const ch of fm3ExtendLetters) {
+    if (ppzExtendSet.has(ch)) {
+      errors.push({ line: fm3Result.letterLine ?? 1, message: `#FM3Extend の記号 '${ch}' は #PPZExtend でも宣言されています(同じ記号を両方で使うことはできません)` });
+    }
+  }
 
   for (let li = 0; li < lines.length; li++) {
     const lineNo = li + 1;
@@ -1896,7 +1994,7 @@ export function parseMml(source) {
       // (通常パート文字A-Jはtoupperで寛容に受理するが、PPZExtendの記号表は大文字L-Z
       // (Rを除く)と小文字a-zの両方を含み、既存のFM/SSG/ADPCM文字と衝突しないよう
       // 設計されているため、宣言された記号そのものと完全一致で判定する)。
-      if (ppzExtendSet.has(ch)) {
+      if (ppzExtendSet.has(ch) || fm3ExtendSet.has(ch)) {
         partLetters.push(ch);
         continue;
       }
@@ -1904,7 +2002,7 @@ export function parseMml(source) {
       if (!PART_LETTERS.includes(upper)) {
         errors.push({
           line: lineNo,
-          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J, リズム=K に対応。PPZ8拡張パートを使うには#PPZExtendで先に宣言してください。PMDMML.MAN §2-25）`,
+          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J, リズム=K に対応。PPZ8拡張パートを使うには#PPZExtend、FM3ch拡張パートを使うには#FM3Extendで先に宣言してください。PMDMML.MAN §2-25/§2-20）`,
         });
         continue;
       }
@@ -1932,7 +2030,13 @@ export function parseMml(source) {
         // '/'(コンパイル打ち切り、PMDMML.MAN §16-4)で既に打ち切られたパートは、
         // 以降の行に同じパート文字が再度現れても一切コンパイルしない。
         if (trackInfo.state.terminated) continue;
-        const kind = ppzExtendSet.has(p) ? 'ppz' : PART_KIND[p];
+        // FM3Extendパートは実体がFM3chの拡張(§2-20「FM音源3のパートを...拡張します」)
+        // なのでkind='fm'(FM用のv/V変換表・オクターブ範囲・Eコマンド禁止などが
+        // 通常のFMパートA-Fと同じに扱われる。実データ実測(MSO_FM_FS_PPZ.MML:108行の
+        // `y ... !e`)でも、FM系パートとして'E'(ソフトウエアエンベロープ)が
+        // 拒否されるのが正しい挙動だと確認できる=既存のFM系エラーメッセージが
+        // そのままyにも出るのが期待通り)。
+        const kind = ppzExtendSet.has(p) ? 'ppz' : (fm3ExtendSet.has(p) ? 'fm' : PART_KIND[p]);
         tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState, p);
       }
     } catch (e) {
