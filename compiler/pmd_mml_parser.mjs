@@ -213,16 +213,12 @@ const FFFILE_HEADER_RE = /^[ \t]*#FFFile[ \t]+(.*)$/i;
 // 未解明のヘッダ。黙って読み飛ばすと「コンパイルは通るのに音が違う」という最悪の壊れ方に
 // なるため、実装せず専用のエラーメッセージで止める(指示書の原則)。ヘッダ名は
 // 大文字小文字を無視して照合する(他ヘッダと同様、寛容側に倒す)。
-// 2026-08-18: #Detuneは実装済み(DETUNE_HEADER_RE、別途処理するためここには残さない。
-// 復活させないよう明記しておく)。#LFOSpeed/#EnvelopeSpeedは、対応するMXA/MXB/EXコマンド
-// 自体の出力バイトを実機参照.Mで実測できず(WebNP2ブラウザ操作環境がその場で
-// document.visibilityState==='hidden'/rAF停止に陥り、insert_disk等が全滅した。
-// 詳細はdocs/pmd-compiler-spec-v2.md該当節)、値を推測で埋めると「動作を変える
-// 可能性があるヘッダを黙って壊れた形で実装する」ことになるため、今回は見送って
-// 引き続きエラーにする(指示書の原則通り)。
+// 2026-08-18: #Detune/#LFOSpeed/#EnvelopeSpeedはいずれも実装済み(DETUNE_HEADER_RE /
+// LFOSPEED_HEADER_RE / ENVSPEED_HEADER_RE、別途処理するためここには残さない。
+// 復活させないよう明記しておく)。現時点でこの表は空だが、今後同種の「意味は
+// マニュアルに明記されているが.M側出力バイトが未実測」なヘッダが出た場合の
+// 置き場として残す。
 const KNOWN_UNIMPLEMENTED_HEADERS = {
-  'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。等価コマンド(MXA/MXB)の.M側出力バイトを実機参照.Mで実測できておらず未実装',
-  'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。等価コマンド(EX)の.M側出力バイトを実機参照.Mで実測できておらず未実装',
 };
 
 // #Detune Extend/Normal(PMDMML.MAN §2-16)。「Extend」はSSGパート(G,H,I)の頭全てに
@@ -233,6 +229,22 @@ const KNOWN_UNIMPLEMENTED_HEADERS = {
 // (§2-16「ノーマル仕様の場合」)なのでヘッダを見た記録だけ残し、合成コマンドは
 // 何も追加しない。
 const DETUNE_HEADER_RE = /^[ \t]*#Detune[ \t]+(Extend|Normal)[ \t]*$/i;
+
+// #LFOSpeed Extend/Normal(PMDMML.MAN §2-17)。「Extend」はFM/SSG/ADPCMパート(A〜J)の
+// 頭全てに等価なコマンド"MXA1 MXB1"を指定したのと同じ効果になる、とマニュアルに
+// 明記されている(推測ではない)。対象パートはA〜J全部(Detuneと異なりSSGに限らない)。
+// 実測(PMDLFOXT.MML: #LFOSpeed Extendの参照.MでA〜J全10パートが各+4byte、
+// 未使用パートでも増分することを確認。K/L等の非レター枠は変化しない)で裏取りした。
+// 「Normal」は既定状態そのものなのでヘッダを見た記録だけ残す。
+const LFOSPEED_HEADER_RE = /^[ \t]*#LFOSpeed[ \t]+(Extend|Normal)[ \t]*$/i;
+
+// #EnvelopeSpeed Extend/Normal(PMDMML.MAN §2-18)。「Extend」はSSG/PCMパート(G〜J)の
+// 頭全てに等価なコマンド"EX1"を指定したのと同じ効果になる、とマニュアルに明記されている。
+// 対象パートはG〜Jの4パート(SSG3+PCM1。LFOSpeedと異なりA〜Fには効かない)。
+// 実測(PMDENVXT.MML: #EnvelopeSpeed Extendの参照.MでG〜Jのみ各+2byte、A〜Fは
+// 変化しないことを確認)で裏取りした。
+const ENVSPEED_HEADER_RE = /^[ \t]*#EnvelopeSpeed[ \t]+(Extend|Normal)[ \t]*$/i;
+
 // 汎用ヘッダ行判定(#で始まる行すべてを拾う。上記いずれにも一致しない未知のヘッダも
 // ここで捕まえて専用メッセージを出す。'#'始まりの行が「パート指定または音色定義で
 // 始まる必要があります」という無関係なエラーになるのを避けるため)。
@@ -290,6 +302,20 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
     return true;
   }
 
+  const lfospeedM = LFOSPEED_HEADER_RE.exec(raw);
+  if (lfospeedM) {
+    header.lfoSpeedExtend = lfospeedM[1].toLowerCase() === 'extend' ? 'Extend' : 'Normal';
+    header.lfoSpeedExtendLine = lineNo;
+    return true;
+  }
+
+  const envspeedM = ENVSPEED_HEADER_RE.exec(raw);
+  if (envspeedM) {
+    header.envSpeedExtend = envspeedM[1].toLowerCase() === 'extend' ? 'Extend' : 'Normal';
+    header.envSpeedExtendLine = lineNo;
+    return true;
+  }
+
   const genM = GENERIC_HEADER_RE.exec(raw);
   if (genM) {
     const nameRaw = genM[1];
@@ -298,7 +324,7 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
     // ここまで落ちてきたのは引数が Extend/Normal のどちらでもない(typo・省略等)
     // ケースなので、専用の分かりやすいメッセージで止める(黙って読み飛ばすと動作が
     // 変わるヘッダなので、想定外はエラーにする方針)。
-    if (/^detune$/i.test(nameRaw)) {
+    if (/^(detune|lfospeed|envelopespeed)$/i.test(nameRaw)) {
       errors.push({ line: lineNo, message: `#${nameRaw} の引数が不正です(Extend または Normal のいずれかが必要): "${genM[2] ?? ''}"` });
       return true;
     }
@@ -749,6 +775,26 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       continue;
     }
 
+    if (c === 'E') {
+      // ソフトウエアエンベロープ速度設定(テンポ非依存化)。PMDMML.MAN §8-2。`.M`側
+      // 0xc9 + 1byte(値0-1)。#EnvelopeSpeed Extend(§2-18)の実体そのもの(実測:
+      // PMDENVXT.MML、G〜Jパートの頭で c9 01 の2byteとして確認、
+      // docs/pmd-compiler-spec-v2.md参照)。無印の'E'(エンベロープ再発行、§8-1)は
+      // 今回対象外のため未実装のまま(未対応の文字エラーへ落ちる)。
+      i++;
+      if (body[i] === 'X') {
+        i++;
+        const m = /^\d+/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'EX' の後に数値がありません`);
+        i += m[0].length;
+        const val = parseInt(m[0], 10);
+        if (val < 0 || val > 1) throw new ParseError(line, `'EX'の値が範囲外です(0-1): ${val}`);
+        events.push({ type: 'envSpeedExtend', line, value: val });
+        continue;
+      }
+      i--; // 'E'単独(無印、未実装)は未対応の文字エラーに落とすため位置を戻す
+    }
+
     if (c === 'p') {
       // パン設定1。PMDMML.MAN §13-1。`.M`側 0xec(v2 3.2節)。範囲0-3。
       i++;
@@ -783,6 +829,23 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       // 直前値を保持し、delayだけ差し替えて4byte全部を再送出する(state.lfoParams)。
       i++;
       let lfoNum = 1;
+      if (body[i] === 'X') {
+        // ソフトウエアLFO速度設定(テンポ非依存化)。PMDMML.MAN §9-5。MX/MXA/MXB。
+        // `.M`側 MXA=0xca / MXB=0xbb + 1byte(値0-1)。MXはMXAと同等(マニュアル
+        // 「MX は MXA と同等です」、実測でも同一バイト列0xca 0x01を確認)。
+        // #LFOSpeed Extend(§2-17)の実体そのもの(実測: PMDLFOXT.MML、A〜J全パートの
+        // 頭で ca 01 bb 01 の4byteとして確認、docs/pmd-compiler-spec-v2.md参照)。
+        i++;
+        let target = 'A'; // MX/MXA=LFO1(0xca)、MXB=LFO2(0xbb)
+        if (body[i] === 'A') { i++; } else if (body[i] === 'B') { i++; target = 'B'; }
+        const m = /^\d+/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'MX'/'MXA'/'MXB' の後に数値がありません`);
+        i += m[0].length;
+        const val = parseInt(m[0], 10);
+        if (val < 0 || val > 1) throw new ParseError(line, `'MX${target === 'A' ? 'A' : 'B'}'の値が範囲外です(0-1): ${val}`);
+        events.push({ type: 'lfoSpeedExtend', line, target, value: val });
+        continue;
+      }
       if (body[i] === 'P') {
         // MP/MPA/MPB(上昇/下降専用LFO指定、コマンド名は"MP"+"A"/"B"の順)。
         // PMDMML.MAN §9-6。実データ(実測)で
@@ -1392,6 +1455,8 @@ export function parseMml(source) {
     fffile: null, fffileLine: null,
     ppzExtend: null, ppzExtendLine: null, ppzExtendLetters: [],
     detuneExtend: null, detuneExtendLine: null,
+    lfoSpeedExtend: null, lfoSpeedExtendLine: null,
+    envSpeedExtend: null, envSpeedExtendLine: null,
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);

@@ -149,6 +149,8 @@ function sizeOfEvent(ev) {
     // ポインタ、2byte LE×8。0なら該当chは未使用)。fmdriver_pmd.c:4253-4260実測どおり。
     case 'ppz8Init': return 17;
     case 'detuneExtend': return 2; // DX + 1byte(0xcc、PMDMML.MAN §7-3。実測はpmd_mml_compiler.mjs先頭のコメント参照)
+    case 'lfoSpeedExtend': return 2; // MXA=0xca / MXB=0xbb + 1byte(値0-1、PMDMML.MAN §9-5)
+    case 'envSpeedExtend': return 2; // EX=0xc9 + 1byte(値0-1、PMDMML.MAN §8-2)
 
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -396,6 +398,14 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xcc;
       out[offset + 1] = ev.value & 0xff;
       return;
+    case 'lfoSpeedExtend': // ソフトウエアLFO速度設定(PMDMML.MAN §9-5。MXA=0xca/MXB=0xbb + 1byte)
+      out[offset] = ev.target === 'B' ? 0xbb : 0xca;
+      out[offset + 1] = ev.value & 0xff;
+      return;
+    case 'envSpeedExtend': // ソフトウエアエンベロープ速度設定(PMDMML.MAN §8-2。0xc9 + 1byte、値0-1)
+      out[offset] = 0xc9;
+      out[offset + 1] = ev.value & 0xff;
+      return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -541,6 +551,31 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // #Detune Extend(PMDMML.MAN §2-16)の対象パート。SSG(G,H,I)のみ(A-F/Jには効かない。
   // 実測: pmdhdrxt.M参照。下のSLOT_LETTERSループ内コメント参照)。
   const DETUNE_EXTEND_LETTERS = new Set(['G', 'H', 'I']);
+  // #LFOSpeed Extend(PMDMML.MAN §2-17)の対象パート。FM/SSG/ADPCM(A〜J)全部
+  // (実測: PMDLFOXT.MML、A〜J全10パートが未使用でも各+4byte増加を確認)。
+  const LFO_SPEED_EXTEND_LETTERS = new Set(PART_LETTERS);
+  // #EnvelopeSpeed Extend(PMDMML.MAN §2-18)の対象パート。SSG/PCM(G〜J)のみ
+  // (実測: PMDENVXT.MML、G〜Jのみ未使用でも各+2byte増加、A〜Fは無変化を確認)。
+  const ENV_SPEED_EXTEND_LETTERS = new Set(['G', 'H', 'I', 'J']);
+  // 3つのExtendヘッダを同時に使うパート(実データSS_TENGで実際に発生する: G〜Iは
+  // Detune+LFOSpeed+EnvelopeSpeed、JはLFOSpeed+EnvelopeSpeed+PPZExtendが重なる)での
+  // 並び順を実機参照.Mで確定した(COMBOG.MML/COMBOJ.MML実測、
+  // docs/pmd-compiler-spec-v2.md参照): DX(detune) → EX(envSpeed) → MXA,MXB(lfoSpeed)
+  // の順で頭に並ぶ。PPZExtend(0xb4のppz8Init)がある場合はさらにその前(先頭)に来る。
+  function buildExtendPrefixEvents(letter) {
+    const prefix = [];
+    if (DETUNE_EXTEND_LETTERS.has(letter) && header.detuneExtend === 'Extend') {
+      prefix.push({ type: 'detuneExtend', line: header.detuneExtendLine ?? 1, value: 1 });
+    }
+    if (ENV_SPEED_EXTEND_LETTERS.has(letter) && header.envSpeedExtend === 'Extend') {
+      prefix.push({ type: 'envSpeedExtend', line: header.envSpeedExtendLine ?? 1, value: 1 });
+    }
+    if (LFO_SPEED_EXTEND_LETTERS.has(letter) && header.lfoSpeedExtend === 'Extend') {
+      prefix.push({ type: 'lfoSpeedExtend', line: header.lfoSpeedExtendLine ?? 1, target: 'A', value: 1 });
+      prefix.push({ type: 'lfoSpeedExtend', line: header.lfoSpeedExtendLine ?? 1, target: 'B', value: 1 });
+    }
+    return prefix;
+  }
   let ppz8InitEvent = null; // idx===9で確保、idx===10直後で.ptrsを確定させる
   let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
@@ -557,7 +592,10 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
       ppz8InitEvent = { type: 'ppz8Init', line: header.ppzExtendLine ?? 1, ptrs: new Array(8).fill(0) };
       const jRaw = tracks.get('J');
       const jEvents = jRaw ? mergeAdjacentRests(mergeSamePitchTies(jRaw)) : [];
-      const combinedEvents = [ppz8InitEvent, ...jEvents];
+      // #LFOSpeed/#EnvelopeSpeed Extend と #PPZExtend が同時に使われる場合の並び順
+      // (実測: COMBOJ.MML、docs/pmd-compiler-spec-v2.md参照): ppz8Init(0xb4)が最初、
+      // その後にEX/MXA/MXBが続く(Detuneは対象外レターのためJには付かない)。
+      const combinedEvents = [ppz8InitEvent, ...buildExtendPrefixEvents('J'), ...jEvents];
       const startAddr = cursor;
       const { endAddr, termAddr } = layoutTrack(combinedEvents, startAddr);
       trackLayout.J = { startAddr, termAddr, events: combinedEvents };
@@ -571,13 +609,15 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     // 終端も他パートと同じ0x80、pmdunimp.M実測で確認済み)。
     const rawEvents = letter ? tracks.get(letter) : null;
     let events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : null;
-    // #Detune Extend(PMDMML.MAN §2-16)。SSGパート(G,H,I)の頭全てに"DX1"を
-    // 指定したのと同じ効果(マニュアル記載通り)。パートが未使用でも、その事実自体は
-    // 変わらず「頭に置く」ため、DX1単独の1イベントだけの新規トラックとして生成する
-    // (実測: pmdhdrxt.M、G/H/Iが未使用でも cc 01 80 の3byteトラックになっていた)。
-    if (DETUNE_EXTEND_LETTERS.has(letter) && header.detuneExtend === 'Extend') {
-      const dxEvent = { type: 'detuneExtend', line: header.detuneExtendLine ?? 1, value: 1 };
-      events = events ? [dxEvent, ...events] : [dxEvent];
+    // #Detune/#LFOSpeed/#EnvelopeSpeed Extend(PMDMML.MAN §2-16/§2-17/§2-18)。対象
+    // パートの頭全てに等価コマンド(DX1/EX1/MXA1 MXB1)を指定したのと同じ効果
+    // (マニュアル記載通り)。パートが未使用でも、その事実自体は変わらず「頭に置く」
+    // ため、prefixイベントだけの新規トラックとして生成する(実測: pmdhdrxt.M/
+    // PMDLFOXT.MML/PMDENVXT.MML、いずれも未使用パートでも増分することを確認済み)。
+    // 3つ同時に有効な場合の並び順はDX→EX→MXA,MXBで固定(COMBOG.MML実測)。
+    const extendPrefix = letter ? buildExtendPrefixEvents(letter) : [];
+    if (extendPrefix.length > 0) {
+      events = events ? [...extendPrefix, ...events] : extendPrefix;
     }
     if (events && events.length > 0) {
       const startAddr = cursor;

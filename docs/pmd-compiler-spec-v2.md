@@ -1260,41 +1260,84 @@ ALG/FB)も試したが、オペレータ行の数値バイトがずれた壊れ�
   ずらしたところ、`tools/verify_pmd_reference_corpus.mjs`が`pmdhdrxt`の一致パート数
   10→4への悪化としてFAILを検出した(検出可能性を確認後、正しい集合へ戻した)。
 
-### 11.3 `#LFOSpeed Extend`/`MX MXA MXB`・`#EnvelopeSpeed Extend`/`EX`(未実装のまま見送り)
+### 11.3 `#LFOSpeed Extend`/`MX MXA MXB`・`#EnvelopeSpeed Extend`/`EX`(実装済み、2026-08-18続き)
 
-書式・意味論はマニュアルで確定している(範囲・対象パートとも§2-17/§9-5、
-§2-18/§8-2に明記。対象パートはLFOSpeedがFM,SSG,ADPCM=A〜J全部、EnvelopeSpeedは
-SSG,PCM=G〜Jのみ、と`#Detune`とは範囲が異なる)。実装しなかった理由は意味論の
-不明ではなく、**`.M`側の出力バイト(MXA/MXB/EXの実際のオペコード)を実機`MC.EXE`で
-測る手段が今回のセッション中ずっと塞がっていたため**:
+前回のセッションでは、WebNP2をブラウザ操作(`mcp__Claude_Browser__*`)で動かす
+参照生成パイプラインが、操作対象タブの`document.visibilityState === 'hidden'`
+固定(rAFが1回も発火しない)により全滅し、実装を見送っていた。今回はユーザーに
+ペインを表示してもらい、作業開始前に`requestAnimationFrame`が実際に回っている
+こと(1.5秒で90回、`visibilityState==='visible'`)を確認してから着手した。作業中も
+rAFは止まらなかった(WebNP2の起動・十数回のMC.EXEコンパイルを通じて安定動作)。
 
-- WebNP2をブラウザ操作(`mcp__Claude_Browser__*`)で動かす既存パイプライン
-  (`pmd_work/MEMO.md`参照)で`insert_disk`を呼ぶと、常に
-  「FDドライブの準備がタイムアウトしました」で失敗した。
-- 原因を追ったところ、自動操作対象のタブが`document.visibilityState === 'hidden'`
-  に固定されており(新規タブを作っても同じ)、WebNP2側の挿入完了待ち
-  (`src/api/webnp2.ts`の`pollUntilReady()`)が`requestAnimationFrame`ベースの
-  ポーリングを使っているため、rAFが一度も呼ばれず待ちが進行しなかった
-  (`_webnp2_fdd_ready`自体はwasm export経由で直接読めるが、その値を進める
-  ゲスト側フレームの実行自体もrAF駆動のメインループに乗っており、
-  hidden中は止まっていた。音声(AudioWorklet)は別経路で動き続けるため
-  一見「動いている」ように見えるが、ディスク挿入の遅延カウントダウンは
-  進まない)。既存メモ(`feedback_headless_raf_never_runs.md`)の
-  「自動ブラウザのrAFは環境依存」を、今回は0回側で踏んだ。
-- 値を実測できない以上、DXで確定した`0xcc`に近いバイト(空いている0xc0-0xcf帯の
-  別値)を推測で割り当てることもできたが、これは「動作を変える可能性がある
-  ヘッダを黙って壊れた形で実装する」ことになり、指示書の原則(想定外はエラーに
-  する)に反するため見送った。`KNOWN_UNIMPLEMENTED_HEADERS`に留め、引き続き
-  明示的なエラーで止める。
+**実測で確定したバイト**(`pmd_work/MXT1.MML`〜`EXT1.MML`、単一コマンドのみの
+最小MML×4本で確認):
 
-### 11.4 実データでの効果
+- `MX 数値` / `MXA 数値`: いずれも `.M`側 `0xca` + 1byte(値)。マニュアル
+  「`MX`は`MXA`と同等です」の通り、バイト列も完全に同一(`ca 01`)だった。
+- `MXB 数値`: `.M`側 `0xbb` + 1byte(値)。
+- `EX 数値`: `.M`側 `0xc9` + 1byte(値)。
 
-SS_TENGのコンパイルエラーは3件→2件に減少(`#Detune Extend`のみ解消。
-`#LFOSpeed Extend`/`#EnvelopeSpeed Extend`が残っているため、SS_TENG自体は
-まだ全体コンパイルには至らない)。JSM(0件→0件)・YDの参照`.M`とのバイト差
-(JSM +50byte/offset13、YD -35byte/offset3、いずれも本対応と無関係な既知の
-別課題)は本対応の前後で変化なし。
+**ヘッダの等価コマンド列と対象パート範囲**(`pmd_work/PMDLFOXT.MML`/
+`LFOXTB.MML`(Extend/Baseの対比)、`PMDENVXT.MML`/`ENVXTB.MML`で確認。
+すべて実機`MC.EXE`ver4.8sを`/V`オプション付きでコンパイルした参照
+(`/V`無しだとFM音色テーブルポインタ(tone_ptr)フィールド自体が省略され
+ヘッダ長が2byte短くなる=別フォーマットになるため、`compile_pipeline_v.py`
+経由で必ず`/V`付きで生成する必要があった。既存corpus 30本もすべて`/V`付きで
+生成済みだったことを、今回ヘッダ長不一致から逆算して確認した)):
 
-`node tools/verify_pmd_reference_corpus.mjs`は34件PASS/0件FAIL(完全一致
-12/30本、`pmdhdrxt`は失敗→成功に改善したがバイト完全一致には届かず
-71.43%。上記11.2の陽性対照参照)。
+- `#LFOSpeed Extend` → **A〜J全10パートの頭に`MXA1 MXB1`**(`ca 01 bb 01`、
+  4byte)。使用有無に関係なく全10パートに付く(実測: Extend版とBase版の
+  ファイルサイズ差が厳密に40byte=10パート×4byte)。K/効果スロットは対象外。
+- `#EnvelopeSpeed Extend` → **G,H,I,J(SSG3+PCM)の頭に`EX1`**(`c9 01`、
+  2byte)。同様に使用有無を問わない(サイズ差8byte=4パート×2byte)。A〜Fは
+  対象外(実測: `pmd_work/PMDENVXT.MML`でA部分のバイト列が無変化)。
+
+**複数ヘッダ同時使用時の並び順**(実データSS_TENGが`#Detune Extend`+
+`#LFOSpeed Extend`+`#EnvelopeSpeed Extend`+`#PPZExtend`を同時に使うため、
+実測で確認する必要があった。`pmd_work/COMBOG.MML`(Detune+LFO+Env on G)、
+`pmd_work/COMBOJ.MML`(LFO+Env+PPZExtend on J)):
+
+- `DX(detune)` → `EX(envSpeed)` → `MXA,MXB(lfoSpeed)` の順で固定(G,H,Iで確認)。
+- PPZExtendの`0xb4`初期化(既存実装)がある場合は、そのさらに前(最先頭)に来る
+  (Jで確認: `b4`+16byte → `c9 01` → `ca 01 bb 01` → 実トラック本体)。
+
+実装は`compiler/pmd_mml_compiler.mjs`の`buildExtendPrefixEvents(letter)`に
+集約し、通常パートのループとPPZExtend専用分岐(idx===9)の両方から呼ぶ形にした
+(3ヘッダの対象範囲・並び順を1箇所で管理し、範囲を取り違えたときに全ケースへ
+波及して陽性対照に引っかかるようにする狙い)。コマンド自体(`MX`/`MXA`/`MXB`/
+`EX`)もMML本文中で直接使えるよう`compiler/pmd_mml_parser.mjs`へ実装した
+(`D`/`DX`と同じ位置付け、パート種別の制限は検査していない)。
+
+**[陽性対照]** `LFO_SPEED_EXTEND_LETTERS`をA〜Jから`G,H,I,J`へ、
+`ENV_SPEED_EXTEND_LETTERS`を`G,H,I,J`から`F,G,H,I`へ、それぞれ一時的に
+ずらしたところ、`tools/verify_pmd_reference_corpus.mjs`が新規追加した
+`pmdlfoxtm`/`pmdxthdr`/`pmdenvxtm`のいずれかを悪化としてFAILで検出した
+(検出可能性を確認後、正しい範囲へ戻した)。
+
+### 11.4 実データでの効果(2026-08-18続き)
+
+**SS_TENGのコンパイルエラーが2件→0件になった**(`#LFOSpeed Extend`/
+`#EnvelopeSpeed Extend`の実装により、残っていた最後の2件が解消。前回の
+`#Detune Extend`対応時点の3件→2件と合わせ、実データ3曲すべてがエラー無しで
+コンパイルできるようになった)。参照`.M`(`SS_TENG_ppz.m`、要`V5.FF`の
+`#FFFile`解決)とのバイト差は**-72byte、最初の不一致オフセット15**(今回
+初めて計測。原因は本対応のスコープ外、未解明のまま)。
+
+JSM(+50byte/offset13)・YD(-35byte/offset3)は本対応の前後で**変化なし**
+(悪化していないことを確認済み)。
+
+`node tools/verify_pmd_reference_corpus.mjs`は**37件PASS/0件FAIL**(完全一致
+14/33本。新規追加した自作corpus 3本のうち`pmdenvxtm`/`pmdxthdr`は完全一致、
+`pmdlfoxtm`は既存の未解明バグ(11.5参照)により10/11パート・89.38%一致)。
+
+### 11.5 【スコープ外の既知バグを発見】K/R未使用時のfiller領域1byte不一致
+
+本対応の作業中、`#LFOSpeed Extend`を含まない最小限のMML(`A`+`G`パートのみ、
+`#Title`のみ・音色定義無し)でも、実機参照`.M`と自作コンパイラの出力が
+r_offset直前の固定8byte領域(K/Rパターン未使用時のfiller)で1byteだけ食い違う
+ことを発見した(`0x80`であるべき箇所が`0x60`になる)。`git stash`で本対応の
+変更を退避した状態(コミット`e2e96ae`時点)でも同じ食い違いが再現したため、
+**本対応(LFOSpeed/EnvelopeSpeed)とは無関係な既存バグ**と判断し、深追いは
+せずスコープ外の別タスクとして切り出した(`spawn_task`で発行済み)。
+`pmdenvxtm`/`pmdxthdr`は同種の構造でも完全一致したため、発生条件はまだ
+特定できていない。

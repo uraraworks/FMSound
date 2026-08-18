@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T07:21:06.852Z",
+  "generatedAt": "2026-08-18T07:54:08.937Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -23,6 +23,13 @@
       "byteMatchRate": 1
     },
     "pmddet": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdenvxtm": {
       "status": "compared",
       "identical": true,
       "matchedParts": 11,
@@ -70,6 +77,13 @@
       "matchedParts": 9,
       "totalParts": 11,
       "byteMatchRate": 0.4146341463414634
+    },
+    "pmdlfoxtm": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.8938053097345132
     },
     "pmdloopx": {
       "status": "compared",
@@ -210,6 +224,13 @@
       "matchedParts": 8,
       "totalParts": 11,
       "byteMatchRate": 0.43243243243243246
+    },
+    "pmdxthdr": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
     }
   }
 }

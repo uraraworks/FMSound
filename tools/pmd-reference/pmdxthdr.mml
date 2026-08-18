@@ -1,0 +1,7 @@
+#Title Corpus Xtend Header Combo
+#Detune Normal
+#LFOSpeed Extend
+#EnvelopeSpeed Extend
+A t100 v7 o4 l4 cdef
+G t90 v6 o3 l4 gab
+J t110 V80 o4 l6 cde
