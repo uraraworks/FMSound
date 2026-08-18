@@ -1158,7 +1158,42 @@ function tokenizeRhythmKBody(body, line, events, globalState) {
     }
     if (c === ':') { i++; events.push({ type: 'loopExit', line }); continue; }
     if (c === 'L') { i++; events.push({ type: 'globalLoop', line }); continue; }
-    throw new ParseError(line, `Kパートで未対応の文字です: '${c}'（Rパターン選択(R数値)・ループ([ ] :)・全体ループ(L)・\\系コマンドのみ対応）`);
+    if (c === 'T' || c === 't') {
+      // テンポ(絶対値0xfc/相対値も同じ0xfc、tokenizeBody側と同じ書式)。
+      // Kパート(リズム)もfmdriver_pmd.cのコマンド分岐テーブルを共有しており、
+      // pmd_cmd_table_rhythm(upstream/98fmplayer/fmdriver/fmdriver_pmd.c:4473-4477)の
+      // cmd=0xfc(テーブルindex 3、`cmd^0xff`)には他パート表(pmd_cmd_table_fm/ssg/adpcm)
+      // と同じ pmd_cmdfc_tempo が割り当てられている(null関数ではない)ため、
+      // テンポコマンドはKパートでも実際に機能する「共通コマンド」であると確認できる
+      // (v/V/q等、同テーブルでpmd_cmd_nullになっているものとは異なり、テンポは
+      // Kパートのトラックに出力しても実際にテンポを変更する)。よってo/l/Cと違い
+      // 読み捨てず、他パートと同じtempoAbs/tempoRelイベントを積む。
+      const isTimerB = c === 'T';
+      i++;
+      if (body[i] === '+' || body[i] === '-') {
+        const sign = body[i] === '-' ? -1 : 1;
+        i++;
+        const m = /^\d+/.exec(body.slice(i));
+        if (!m) throw new ParseError(line, `'${c}${sign < 0 ? '-' : '+'}' の後に数値がありません`);
+        i += m[0].length;
+        const delta = sign * parseInt(m[0], 10);
+        if (delta < -128 || delta > 127) throw new ParseError(line, `テンポ相対値が1byte符号付きに収まりません: ${delta}`);
+        events.push({ type: 'tempoRel', line, isTimerB, delta });
+        continue;
+      }
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'${c}' の後に数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (isTimerB) {
+        if (val < 0 || val > 250) throw new ParseError(line, `TimerB絶対値(T)は0-250です: ${val}`);
+      } else {
+        if (val < 0 || val > 255) throw new ParseError(line, `テンポ絶対値(t)は0-255です: ${val}`);
+      }
+      events.push({ type: 'tempoAbs', line, isTimerB, val });
+      continue;
+    }
+    throw new ParseError(line, `Kパートで未対応の文字です: '${c}'（Rパターン選択(R数値)・ループ([ ] :)・全体ループ(L)・テンポ(T/t)・\\系コマンドのみ対応）`);
   }
 }
 
@@ -1310,26 +1345,43 @@ function parseToneHeader(cleaned, line) {
 }
 
 // オペレータ1行("AR DR SR RR SL TL KS ML DT AMS"、10個)を解析する。
-// 出典: PMDMML.MAN §3-1 [書式1]・[範囲]。
-// DTは仕様上「-3〜3 または 0〜7」の二重表記だが、符号→ビットパターンの対応が
-// fmdriver_pmd.c単体からは確認できていない(docs/pmd-compiler-spec.md 1.6.1節「未解明」)。
-// v1では安全側に倒し、DTは生の3bit値(0-7)のみ受理する(-3〜3の符号表記は非対応、doc 6.6節に明記)。
+// 出典: PMDMML.MAN §3-1 [書式1]・[範囲](WebFetchで原文確認、
+// https://pigu-a.github.io/pmddocs/pmdmml.htm)。
+// DTは仕様上「-3〜3 または 0〜7」の二重表記(§3-1 Rangeテーブル "DT — -3–3 or 0–7"、
+// 同節Example 1の実例でも "18 10  0  6  0   0  0  4 -3   0" のように符号付きの生値が
+// そのままMML本文に書かれている)。符号→3bit値の変換規則自体はPMDMML.MAN/
+// fmdriver_pmd.c(このリポジトリのupstream/98fmplayer/fmdriver/fmdriver_pmd.cは
+// .M再生側のみでMC.EXE側のコンパイル規則は含まない)のどちらにも明記が無いが、
+// これはPMD固有の取り決めではなくYM2612/YM2608のDT1レジスタ(reg 0x30系bit6-4)
+// そのものの符号付きマグニチュード表現であり(独立した外部一次資料で確認:
+// https://www.plutiedev.com/ym2612-registers 「highest bit indicates whether to
+// increase(0) or decrease(1)...lowest two bits indicate the magnitude」、
+// https://jsgroth.dev/blog/posts/emulating-ym2612-part-2/ 同旨)、
+// raw 0-3=DT+0..+3、raw 4-7=DT -0..-3(下位2bitが絶対値、bit2が符号)という
+// 業界標準のテーブルに従う。よってv2では:
+//   入力が0以上ならそのまま生の3bit値として扱う(従来通り、0-7)。
+//   入力が負(-3〜-1)なら 4+|value| に変換する(-1→5, -2→6, -3→7)。
+// 有効な入力全体は -3〜7 (0-3は「符号無し生値」と「符号付き値」が同じ意味になるため重複)。
 function parseToneOperatorLine(cleaned, line, opIndex) {
   const nums = parseIntList(cleaned, line, 10, `音色定義オペレータ${opIndex + 1}行(AR DR SR RR SL TL KS ML DT AMS)`);
   if (!nums) {
     throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行の書式が不正です(AR DR SR RR SL TL KS ML DT AMSの10個の数値が必要): "${cleaned}"`);
   }
-  const [ar, dr, sr, rr, sl, tl, ks, ml, dt, ams] = nums;
+  const [ar, dr, sr, rr, sl, tl, ks, ml, dtRaw, ams] = nums;
   const checks = [
     ['AR', ar, 0, 31], ['DR', dr, 0, 31], ['SR', sr, 0, 31], ['RR', rr, 0, 15],
     ['SL', sl, 0, 15], ['TL', tl, 0, 127], ['KS', ks, 0, 3], ['ML', ml, 0, 15],
-    ['DT', dt, 0, 7], ['AMS', ams, 0, 1],
+    ['AMS', ams, 0, 1],
   ];
   for (const [name, val, lo, hi] of checks) {
     if (val < lo || val > hi) {
       throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行の${name}が範囲外です(${lo}-${hi}): ${val}`);
     }
   }
+  if (dtRaw < -3 || dtRaw > 7) {
+    throw new ParseError(line, `音色定義オペレータ${opIndex + 1}行のDTが範囲外です(-3〜3 または 0〜7。PMDMML.MAN §3-1): ${dtRaw}`);
+  }
+  const dt = dtRaw < 0 ? 4 + (-dtRaw) : dtRaw; // 符号付き表記 -1〜-3 を生の3bit値5〜7へ変換(上のコメント参照)
   return { ar, dr, sr, rr, sl, tl, ks, ml, dt, ams };
 }
 
@@ -1543,8 +1595,32 @@ export function parseMml(source) {
       continue;
     }
 
-    const m = /^([A-Za-z]+)(?:\s+(.*))?$/.exec(trimmed);
+    // パート指定直後の数字(「小節番号」的な飾り記法)。PMDMML.MAN §1-1-2実測
+    // (WebFetchで原文確認): 「AC1 @1v13cdefg」の例に対し「"1" is ignored.」と明記
+    // されている(=チャンネル記号の直後に数字を書いても構文エラーにならず、
+    // その数字自体は単に読み捨てられる。§1-1-2「especially useful for rhythm
+    // parts」ともあり、可読性のための飾り記法)。数字の直後はSPACE/TABを挟んで
+    // 本文が続く(§1-1-1「通常はSPACE/TAB区切りが必要」)ため、正規表現も
+    // [A-Za-z]+ の直後に任意の数字列を許し、その後は従来通り空白+本文または
+    // 行末を要求する形にする。
+    const m = /^([A-Za-z]+)\d*(?:[ \t]+(.*))?$/.exec(trimmed);
     if (!m) {
+      // 装飾のみの行(例: 「++++++++++++++++++++++++++++++」「---」「++ [ M A I N
+      // T H E M E ] ++」)。PMDMML.MAN §1-1-1 Incorrect Example 1(WebFetchで原文確認):
+      // 行頭がチャンネル記法として認識できない行について「Because MML does not
+      // recognize this, it will not treat it as a command.」と明記されており、
+      // エラーにはならず単に「コマンドとして扱われない」(=無視される)。
+      // §1-1-2にも「存在しないチャンネルを指定してもエラーにならずスキップされる」
+      // という同種の寛容な扱いが明記されている。本実装ではこの原則を、行頭が
+      // レター/@/#/!のいずれでもない(=このパーサが構文として解釈しうる可能性が
+      // 一切無い)行に限定して適用する: 数字始まりや通常のアルファベット始まりの
+      // 崩れた行は引き続きエラーにし(実データのタイプミス等を検出する診断価値を
+      // 残す)、記号だけの飾り行だけを安全側に「読み飛ばす」。提供者よりPMD98
+      // ver4.8lでのコンパイル確認済みと明記されている実データの「+++」「---」系
+      // 飾りコメント行はこの原則で説明できる。
+      if (!/^[A-Za-z0-9@#!]/.test(trimmed)) {
+        continue;
+      }
       errors.push({ line: lineNo, message: `行はパート指定(A-I)または音色定義(@)で始まる必要があります: "${trimmed}"` });
       continue;
     }
