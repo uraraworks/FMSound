@@ -608,7 +608,45 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       continue;
     }
 
-    if (c === '&') { i++; events.push({ type: 'tie', line }); continue; }
+    if (c === '&') {
+      i++;
+      // タイ(&)の直後に音長を書く記法(PMDMML.MAN §4-10 書式3「&[音長][.]」)。
+      // 「&の直後に音長を指定すると、l+コマンドと同等の扱いとなり、直前の音長に
+      // 指定した音長を加算する」(§4-10実測、WebFetch/wikiwiki.jp thtools該当節)。
+      // 例: `a8&2` = `a8l+2` = `a8&a2`(直前と同じ音程の音符を指定音長で発行し、
+      // タイで繋ぐ)。実装は「tieイベント + 直前ノートと同じ音程・指定音長のnote
+      // イベント」を素直に積むだけでよい: 直後のmergeSamePitchTies(同ファイル内、
+      // pmd_mml_compiler.mjs)が同音程タイを1個のnoteへ圧縮する処理を既に持っており、
+      // それがそのまま「加算」を実現する。`&&`(スラー、書式2/4)は対象外
+      // (実データに出現せず、docs/pmd-compiler-spec.md「&&＝スラーとの区別は未解明」
+      // のまま。誤って同一視しない)。
+      if (body[i] === '&') {
+        // '&&'(スラー)は本バッチのスコープ外。未対応の文字として従来通りエラーにする
+        // (下のNOTE_LETTER_TO_BASE_INDEX等どのケースにも該当しない2文字目'&'が
+        // そのまま「未対応の文字です」に落ちる)。
+        events.push({ type: 'tie', line });
+        continue;
+      }
+      if (body[i] === '%' || /\d/.test(body[i] ?? '') || body[i] === '.') {
+        let prevNote = null;
+        for (let k = events.length - 1; k >= 0; k--) {
+          if (events[k].type === 'note') { prevNote = events[k]; break; }
+          if (events[k].type !== 'tie') break; // タイ以外を挟んだら直前の音符とみなせない
+        }
+        if (!prevNote) {
+          throw new ParseError(line, `'&' の直後に音長がありますが、直前に音符がありません(PMDMML.MAN §4-10)`);
+        }
+        const clocks = readLengthSpec();
+        if (clocks < 1 || clocks > 255) {
+          throw new ParseError(line, `音長クロック値が1byteに収まりません: ${clocks}`);
+        }
+        events.push({ type: 'tie', line });
+        events.push({ type: 'note', line, octave: prevNote.octave, noteIndex: prevNote.noteIndex, clocks });
+        continue;
+      }
+      events.push({ type: 'tie', line });
+      continue;
+    }
 
     if (c === 'o' || c === 'O') {
       i++;
