@@ -35,6 +35,15 @@ const V_LOWERCASE_FM_TABLE = [85, 87, 90, 93, 95, 98, 101, 103, 106, 109, 111, 1
 // 素通し(v=V)になっていると推測される。マニュアルにSSG用の変換テーブル記載は無く、
 // **この等価性は未実測・未解明のまま採用している**(docs/pmd-compiler-spec.md 6.6節に明記)。
 
+// 'v'(大雑把な音量)のPPZ8拡張パート用変換テーブル。PMDMML.MAN §5-1「PCM音源の場合」
+// V(1)表(#PCMVolumeがExtendでない既定値。V(2)表は#PCMVolume Extend用、本実装は
+// #PCMVolume自体が未対応(既知の未対応ヘッダとして別途エラーになる)のためV(1)固定)。
+// v0〜v16 -> 0,16,32,...,240,255(v16のみ256ではなく255、マニュアル表の実測値そのまま)。
+// 2026-08-18、自作corpus(tools/pmd-reference/pmdppzord.mml等、MC.EXE ver4.8s実測)で
+// v7/v9/v10/v11/v12/v13の6点(いずれもn*16の値)が0xfd(音量絶対値)の引数バイトと
+// 1byte単位で完全一致することを確認済み。
+const PPZ_V_TABLE = [0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 255];
+
 class ParseError extends Error {
   constructor(line, message) {
     super(message);
@@ -119,6 +128,67 @@ function expandVariables(text, varMap, sortedNames, line, stack) {
 const HEADER_LINE_RE = /^[ \t]*#(Title|Composer|Arranger|Memo)[ \t]+(.*)$/i;
 const MEMO_MAX_LINES = 128; // PMDMML.MAN §2-9 "複数指定が可能で、順に定義されます。最大は128行までです。"
 
+// #PPZExtend(PPZ8用パート拡張、PMDMML.MAN §2-25、WebFetchで原文確認)。
+// [書式] #PPZExtend パート記号1[パート記号2...](8つまで)
+// [記号] LMNOPQSTUVWXYZabcdefghijklmnopqrstuvwxyz のうちのいずれか
+// 本実装は上記からさらに小文字'k'を除外する: 既存のKパート(リズム)混在処理
+// (下のparseMml、`/k/i.test(letters)`および`letters.replace(/k/gi,'')`)が
+// 大文字小文字を区別せず'k'を全部リズムKとして剥がしてしまうため、小文字'k'を
+// PPZExtendの記号として declare すると値が正しく素通りしない(=文字が消える)。
+// これは黙って壊れるより宣言時点でエラーにする方が安全という実装判断であり、
+// マニュアル自体が小文字kを禁じているわけではない(注意点として明記)。
+// 大文字Rは元々リズムパターン定義行(`R数値`)の専用記号として除外されているため
+// 記号表にも含まれない。小文字rはRパターン行regex(大文字Rのみに一致)と衝突しないため許可する。
+const PPZEXTEND_ALLOWED_CHARS = new Set('LMNOPQSTUVWXYZabcdefghijlmnopqrstuvwxyz'.split(''));
+const PPZEXTEND_HEADER_RE = /^[ \t]*#PPZExtend[ \t]+(.*)$/i;
+
+// #PPZExtendは本体のパート文字判定(parseMml本体ループ)より前に確定させておく必要がある
+// (ファイル中の出現順に依存させないための安全策。#PPZExtendは通常ファイル先頭に書かれる
+// 慣習だが、他のヘッダと同様に「後勝ち」を採用しつつ、body側の文字判定はファイル全体の
+// 宣言に対して一貫させる。collectVariableDefsと同じ設計判断)。
+// パート記号とPPZ_1〜PPZ_8の対応規則(=宣言順、大文字小文字を区別する固定の対応表では
+// ない)は2026-08-18、自作corpus(tools/pmd-reference/ppz*.mml、MC.EXE ver4.8s実測)で
+// 確定した。docs/pmd-compiler-spec-v2.md 2.1節参照。
+function collectPpzExtend(lines) {
+  let letters = null; // 最後に見つかった有効な#PPZExtend行の文字配列(宣言順を保持、後勝ち)
+  let letterLine = null;
+  const errors = [];
+  for (let li = 0; li < lines.length; li++) {
+    const m = PPZEXTEND_HEADER_RE.exec(lines[li]);
+    if (!m) continue;
+    const lineNo = li + 1;
+    const arg = m[1].trim();
+    if (arg.length === 0) {
+      errors.push({ line: lineNo, message: `#PPZExtend の後にパート記号がありません(PMDMML.MAN §2-25)` });
+      continue;
+    }
+    if (arg.length > 8) {
+      errors.push({ line: lineNo, message: `#PPZExtend は最大8パートまでです(PMDMML.MAN §2-25「パート記号...(8つまで)」): "${arg}"` });
+      continue;
+    }
+    const chars = [...arg];
+    const seen = new Set();
+    let ok = true;
+    for (const ch of chars) {
+      if (!PPZEXTEND_ALLOWED_CHARS.has(ch)) {
+        errors.push({ line: lineNo, message: `#PPZExtend に使えない記号です(PMDMML.MAN §2-25 [記号] LMNOPQSTUVWXYZabcdefghijklmnopqrstuvwxyz のいずれか。小文字kは本実装では未対応): '${ch}'` });
+        ok = false;
+        break;
+      }
+      if (seen.has(ch)) {
+        errors.push({ line: lineNo, message: `#PPZExtend で同じパート記号が重複しています: '${ch}'` });
+        ok = false;
+        break;
+      }
+      seen.add(ch);
+    }
+    if (!ok) continue;
+    letters = chars;
+    letterLine = lineNo;
+  }
+  return { letters, letterLine, errors };
+}
+
 // (a) PCMファイル指定系ヘッダ。出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の
 // pmd_init()(6043-6066) が pmd_get_memo(pmd, -2)=PPZ, -1=PPS, 0=PCM(PPC) を読んで
 // pmd->ppzfile/ppsfile/ppcfile へコピーする(ppzfileはさらに','以降をppzfile2へ分離)。
@@ -144,7 +214,8 @@ const FFFILE_HEADER_RE = /^[ \t]*#FFFile[ \t]+(.*)$/i;
 // なるため、実装せず専用のエラーメッセージで止める(指示書の原則)。ヘッダ名は
 // 大文字小文字を無視して照合する(他ヘッダと同様、寛容側に倒す)。
 const KNOWN_UNIMPLEMENTED_HEADERS = {
-  'ppzextend': 'PPZ8用パート拡張(PMDMML.MAN §2-25)。指定した文字列の出現順とPPZ_1〜_8の対応規則が未解明(docs/pmd-compiler-spec-v2.md 2.1節)',
+  // 2026-08-18: #PPZExtend は実装済み(collectPpzExtend、PPZEXTEND_HEADER_RE経由で
+  // 別途処理するためここには残さない。detune等と混同して復活させないよう明記しておく)。
   'detune': 'デチューン数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
   'lfospeed': 'LFO速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
   'envelopespeed': 'エンベロープ速度数値レンジ拡張モード(引数 Extend)。.M側への反映方法が未解明',
@@ -172,6 +243,15 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
       header[key] = text; // 最後に書かれたものが有効(§2 全般注記)
       header[`${key}Line`] = lineNo;
     }
+    return true;
+  }
+
+  const ppzM = PPZEXTEND_HEADER_RE.exec(raw);
+  if (ppzM) {
+    // 実際の検証(文字種・重複・8つ以内)と宣言順の確定はparseMml冒頭のcollectPpzExtend()
+    // が本体ループより前に一括して行う(このファイルの他ヘッダ同様の情報記録のみここで行う)。
+    header.ppzExtend = ppzM[1].trim();
+    header.ppzExtendLine = lineNo;
     return true;
   }
 
@@ -544,22 +624,32 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
     }
 
     if (c === 'V') {
-      // 音量指定2(細かい値、絶対値)。PMDMML.MAN §5-2。FM:0-127 / SSG:0-15 / PCM(ADPCM):0-255
+      // 音量指定2(細かい値、絶対値)。PMDMML.MAN §5-2。FM:0-127 / SSG:0-15 / PCM(ADPCM):0-255。
       // (doc本文/pmd-compiler-spec.md 7.2節)。
+      // PPZ8拡張パート: マニュアル同節の[範囲]表には「0〜15(SSG音源,SSGリズム,PPZパート)」
+      // という記述もあるが、実測(0xfd引数、上のPPZ_V_TABLEのコメント参照)ではv変換後の値が
+      // 208等15を大きく超えており、根拠となる0xfdコマンド自体は1byte(0-255)を素直に読む
+      // 実装のため15までに制限する理由がない。このタスクで実測・既知の2件(Rパターン範囲・
+      // ALG/FB5行目)と同種の「マニュアル記載と実機の食い違い」と判断し、実測(v変換表と
+      // 同じPCM系0-255)を採用する。#PCMVolume等の未対応ヘッダは別途エラーになるため、
+      // ここでの選択が音を壊す実害は無い(常にこの1byteをそのまま出力するだけ)。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'V' の後に音量数値がありません`);
       i += m[0].length;
       const val = parseInt(m[0], 10);
-      const max = partKind === 'ssg' ? 15 : partKind === 'adpcm' ? 255 : 127;
+      const max = partKind === 'ssg' ? 15 : (partKind === 'adpcm' || partKind === 'ppz') ? 255 : 127;
       if (val < 0 || val > max) {
-        throw new ParseError(line, `'V' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : partKind === 'adpcm' ? 'PCMは0-255' : 'FMは0-127'}): ${val}`);
+        throw new ParseError(line, `'V' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : (partKind === 'adpcm' || partKind === 'ppz') ? 'PCMは0-255' : 'FMは0-127'}): ${val}`);
       }
       events.push({ type: 'volAbs', line, value: val });
       continue;
     }
     if (c === 'v') {
       // 音量指定1(大雑把な値)。PMDMML.MAN §5-1。FM/PCM:0-16(変換テーブル経由でVへ)/ SSG:0-15(素通し、未解明)。
+      // PPZ8拡張パートはPCM_V_TABLE(V(1)表、上のコメント参照)を使う(FMのV_LOWERCASE_FM_TABLEとは別表。
+      // 実測で確認済み)。ADPCM(J)は既存実装を変更せずV_LOWERCASE_FM_TABLEのまま
+      // (このタスクのスコープはPPZExtendのみ。ADPCMのv変換がマニュアル通りか否かは別課題として触れない)。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'v' の後に音量数値がありません`);
@@ -569,7 +659,7 @@ function tokenizeBody(body, line, state, events, partKind, globalState) {
       if (val < 0 || val > max) {
         throw new ParseError(line, `'v' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : 'FM/PCMは0-16'}): ${val}`);
       }
-      const converted = partKind === 'ssg' ? val : V_LOWERCASE_FM_TABLE[val];
+      const converted = partKind === 'ssg' ? val : partKind === 'ppz' ? PPZ_V_TABLE[val] : V_LOWERCASE_FM_TABLE[val];
       events.push({ type: 'volAbs', line, value: converted });
       continue;
     }
@@ -1257,6 +1347,7 @@ export function parseMml(source) {
     pcmfile: null, ppzfile: null, ppsfile: null,
     pcmfileLine: null, ppzfileLine: null, ppsfileLine: null,
     fffile: null, fffileLine: null,
+    ppzExtend: null, ppzExtendLine: null, ppzExtendLetters: [],
   };
   const errors = [];
   const lines = source.split(/\r\n|\r|\n/);
@@ -1268,6 +1359,14 @@ export function parseMml(source) {
   // 二段階処理。定義自体はプリプロセス段階のみで完結し`.M`側のバイトは持たない)。
   const varMap = collectVariableDefs(lines);
   const varSortedNames = [...varMap.keys()].sort((a, b) => b.length - a.length);
+
+  // #PPZExtend(v2 2.1節)も同様に本体ループより前に確定させる(collectPpzExtendの
+  // コメント参照)。宣言順=PPZ_1〜_8の対応(2026-08-18確定)。
+  const ppzResult = collectPpzExtend(lines);
+  for (const e of ppzResult.errors) errors.push(e);
+  const ppzExtendLetters = ppzResult.letters ?? [];
+  const ppzExtendSet = new Set(ppzExtendLetters);
+  header.ppzExtendLetters = ppzExtendLetters;
 
   for (let li = 0; li < lines.length; li++) {
     const lineNo = li + 1;
@@ -1382,11 +1481,19 @@ export function parseMml(source) {
 
     const partLetters = [];
     for (const ch of lettersToScan) {
+      // PPZ8拡張パート(#PPZExtendで宣言済みの記号、v2 2.1節)は大文字小文字を区別する
+      // (通常パート文字A-Jはtoupperで寛容に受理するが、PPZExtendの記号表は大文字L-Z
+      // (Rを除く)と小文字a-zの両方を含み、既存のFM/SSG/ADPCM文字と衝突しないよう
+      // 設計されているため、宣言された記号そのものと完全一致で判定する)。
+      if (ppzExtendSet.has(ch)) {
+        partLetters.push(ch);
+        continue;
+      }
       const upper = ch.toUpperCase();
       if (!PART_LETTERS.includes(upper)) {
         errors.push({
           line: lineNo,
-          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J, リズム=K に対応。PPZ8拡張パートは未解明のため対象外）`,
+          message: `未対応のパート指定です: '${ch}'（FM1-6=A-F, SSG1-3=G-I, ADPCM=J, リズム=K に対応。PPZ8拡張パートを使うには#PPZExtendで先に宣言してください。PMDMML.MAN §2-25）`,
         });
         continue;
       }
@@ -1411,7 +1518,8 @@ export function parseMml(source) {
       // (PMD慣習通り。パートごとに別オブジェクトへ積む必要があるため、パートごとに1回ずつ字句解析する)
       for (const p of partLetters) {
         const trackInfo = tracks.get(p);
-        tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, PART_KIND[p], globalState);
+        const kind = ppzExtendSet.has(p) ? 'ppz' : PART_KIND[p];
+        tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState);
       }
     } catch (e) {
       if (e instanceof ParseError) {

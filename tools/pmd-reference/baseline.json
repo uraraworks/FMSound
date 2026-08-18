@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-18T06:12:39.938Z",
+  "generatedAt": "2026-08-18T06:52:12.574Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -112,6 +112,27 @@
       "matchedParts": 10,
       "totalParts": 11,
       "byteMatchRate": 0.6470588235294118
+    },
+    "pmdppznote": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.8356164383561644
+    },
+    "pmdppzord": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdppzsub": {
+      "status": "compared",
+      "identical": false,
+      "matchedParts": 10,
+      "totalParts": 11,
+      "byteMatchRate": 0.7818181818181819
     },
     "pmdq1b": {
       "status": "compared",

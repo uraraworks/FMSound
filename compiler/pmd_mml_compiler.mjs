@@ -145,6 +145,9 @@ function sizeOfEvent(ev) {
     case 'rhVolIndivRel': return 3; // 0xe5 + 対象1byte + 符号付き差分1byte
     case 'rhPan': return 2; // 0xe9 + 1byte(上位3bit=対象1-6/下位2bit=l=2,m=3,r=1)
     case 'rhSelect': return 1; // cmd(=パターン番号、0-127)のみ。オペコード無し(cmd<0x80が識別子)
+    // PPZ8初期化(#PPZExtend、v2 2.2節)。0xb4 + 16byte固定引数(PPZ_1〜_8のデータ先頭
+    // ポインタ、2byte LE×8。0なら該当chは未使用)。fmdriver_pmd.c:4253-4260実測どおり。
+    case 'ppz8Init': return 17;
     default: throw new Error(`未知のイベント種別: ${ev.type}`);
   }
 }
@@ -383,6 +386,10 @@ function emitEvent(ev, out, offset) {
     case 'rhSelect': // Kパート: Rパターン選択(v2 1.3節。cmd(<0x80)そのものがパターン番号)
       out[offset] = ev.pattern & 0x7f;
       return;
+    case 'ppz8Init': // PPZ8初期化(v2 2.2節。0xb4 + PPZ_1〜_8ポインタ16byte、0=未使用)
+      out[offset] = 0xb4;
+      for (let k = 0; k < 8; k++) w16(offset + 1 + k * 2, ev.ptrs[k] & 0xffff);
+      return;
     default:
       throw new Error(`未知のイベント種別: ${ev.type}`);
   }
@@ -515,6 +522,17 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   //   これはヘッダindex順(A,B,C,D,E,F,G,...)で処理しないと再現できない配置であり、
   //   「使用パートを先に全部並べてから未使用の終端をまとめて置く」という単純化では出せない。
   const SLOT_LETTERS = [...PART_LETTERS, 'K', null]; // idx0-9=A-J、idx10=K(リズム、常に空)、idx11=r_offset
+  // #PPZExtend(v2 2.1/2.2節)。宣言済みなら、ADPCM(J、idx9)の先頭に0xb4(PPZ8初期化、
+  // 16byte引数=PPZ_1〜_8のデータ先頭ポインタ)を埋め込む。実測(下記idx===10直後の
+  // ブロックのコメント参照)により、実機はPPZ8のトラック本体を「RHYTHMスロット(idx10)の
+  // 直後・r_offset(idx11)の手前」に置く。しかしJのバイト内容(0xb4の16byte引数)は
+  // そのPPZ8トラック群のアドレスに依存するため、idx9の時点ではJの**サイズ**
+  // (0xb4+16byteは常に固定17byteなので、アドレスの値が未確定でもサイズは確定できる)
+  // だけ先に確保し、ptrsは後段(idx10直後)で確定してから同じイベントオブジェクトへ
+  // 書き戻す(sizeOfEventはptrsの値を見ないため、後から書き換えてもレイアウト全体の
+  // アドレスには影響しない)。
+  const ppzExtendLetters = header.ppzExtendLetters ?? [];
+  let ppz8InitEvent = null; // idx===9で確保、idx===10直後で.ptrsを確定させる
   let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
   const slotAddr = new Array(SLOT_LETTERS.length); // 各スロットがヘッダに書き込むポインタ値
@@ -523,6 +541,21 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   let rhythmIndexInfo = null; // K/R使用時: {tableAddr, patAddrs, patternLayouts, mysteryAddr}
   for (let idx = 0; idx < SLOT_LETTERS.length; idx++) {
     const letter = SLOT_LETTERS[idx];
+    if (idx === 9 && ppzExtendLetters.length > 0) {
+      // ADPCM(J): 0xb4(PPZ8初期化)をパート先頭に置き、Jが実際に使われていればその
+      // トラック本体を続ける(fmdriver_pmd.c:4249、ADPCMパートの拡張コマンドとしてのみ
+      // 機能する。「どこに置くか」はコンパイラの自由、docs/pmd-compiler-spec-v2.md 2.2節)。
+      ppz8InitEvent = { type: 'ppz8Init', line: header.ppzExtendLine ?? 1, ptrs: new Array(8).fill(0) };
+      const jRaw = tracks.get('J');
+      const jEvents = jRaw ? mergeAdjacentRests(mergeSamePitchTies(jRaw)) : [];
+      const combinedEvents = [ppz8InitEvent, ...jEvents];
+      const startAddr = cursor;
+      const { endAddr, termAddr } = layoutTrack(combinedEvents, startAddr);
+      trackLayout.J = { startAddr, termAddr, events: combinedEvents };
+      slotAddr[idx] = startAddr;
+      cursor = endAddr;
+      continue;
+    }
     // 2026-08-18(K/R実装): Kパートは他パートと同じ「実トラック」として扱う
     // (letter!=='K'の除外を撤廃。中身は tokenizeRhythmKBody が作るrhSelect/loop/
     // \系イベント列で、layoutTrack/emitEventは通常パートと同じ経路をそのまま使える。
@@ -590,15 +623,69 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
       emptySlotAddrs.push(cursor);
       cursor += 1; // このスロット専用の終端バイト(0x80)
     }
+
+    // PPZ8拡張パート(#PPZExtend、v2 2.1/2.2節)のトラック本体は、RHYTHMスロット
+    // (idx===10、Kパート)の直後・r_offset(idx===11)の手前に置く。
+    // 2026-08-18、自作corpus(tools/pmd-reference/pmdppzord.mml「#PPZExtend cba」・
+    // pmdppzsub.mml「#PPZExtend edc」・pmdppznote.mml、いずれもMC.EXE /V ver4.8s実測)で、
+    // 実機の出力ヘッダがちょうどこの位置([ADPCM(0xb4付き)]→[RHYTHM]→[PPZ8トラック群]
+    // →[r_offset])になっていることを確認して、当初「末尾にまとめて追加」としていた
+    // 配置を訂正した(末尾配置だと自作出力のADPCM/RHYTHM/r_offsetの各ポインタが
+    // 参照.Mと2byteどころか大きくずれ、pmdunimp.M等の既存K/R使用ケースとも整合しない
+    // ことが実測で判明したため)。
+    //   - パート記号とPPZ_1〜_8の対応=「#PPZExtendでの宣言順」であることは、同じ実測で
+    //     確定した: pmdppzord.mml「#PPZExtend cba」の3トラック(c/b/a、vol=v10/v11/v12で
+    //     互いに非対称)が、0xb4引数の1番目/2番目/3番目のポインタ先にそれぞれ
+    //     ちょうどこの順で現れた(宣言順1番目のcがPPZ_1)。pmdppzsub.mml「#PPZExtend edc」
+    //     (e/d/c、vol=v9/v13/v7)でも同様にe→PPZ_1,d→PPZ_2,c→PPZ_3の順で確認し、
+    //     「宣言順」説と「記号自体の固定値」説を切り分けた(後者なら両ファイルで
+    //     結果が食い違うはずだが、両方とも宣言順どおりだった。docs/pmd-compiler-spec-v2.md
+    //     2.1節参照)。実データSS_TENGの「#PPZExtend abcdef」(a,bのみ使用、a→PPZ_1,
+    //     b→PPZ_2)もこの規則と矛盾しない。
+    //   - 0xb4の配置場所(ADPCM先頭)は、fmdriver_pmd.c:4249 pmd_cmdb4_ppz8_initが
+    //     ADPCMパートの拡張コマンドとしてのみ機能すること(tools/verify_pmd_ppz8_used_columns.mjs
+    //     のコメント参照)から導いた。ADPCM(J)が実際に使われている場合は、その
+    //     トラック本体の直前に0xb4を1回だけ挟む(この組み合わせ自体は未実測だが、
+    //     spec 2.2節の「どこに置くかはコンパイラの自由」という設計上の余地の範囲内)。
+    //   - 宣言されたが本文で一度も使われない文字は、他の未使用パートと同様に1byteの
+    //     終端(0x80)だけを指すプレースホルダとして扱う(ptrはnonzero、実データSS_TENGの
+    //     未使用c-fパートも同様にnonzeroポインタを持つことを確認済み)。
+    //   - 8個を超えるスロット(宣言数より後ろ)は0のまま=未使用スキップ(fmdriver_pmd.c:4256
+    //     `if(!ptr) continue`)。
+    if (idx === 10 && ppzExtendLetters.length > 0) {
+      const ppzAddrs = new Array(8).fill(0);
+      for (let k = 0; k < ppzExtendLetters.length; k++) {
+        const ppzLetter = ppzExtendLetters[k];
+        const rawEvents = tracks.get(ppzLetter);
+        const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        if (events.length > 0) {
+          const startAddr = cursor;
+          const { endAddr, termAddr } = layoutTrack(events, startAddr);
+          trackLayout[ppzLetter] = { startAddr, termAddr, events };
+          ppzAddrs[k] = startAddr;
+          cursor = endAddr;
+        } else {
+          ppzAddrs[k] = cursor;
+          emptySlotAddrs.push(cursor);
+          cursor += 1;
+        }
+      }
+      if (ppz8InitEvent) ppz8InitEvent.ptrs = ppzAddrs;
+    }
   }
 
   // ヘッダ命令(#Title/#Composer/#Arranger/#Memo/#PCMfile/#PPZfile/#PPSfile)が
   // 1つでもあれば、flags(4byte)をtone_ptrの直前に置く。無ければ従来通り何も挟まない
   // (後方互換: ヘッダ命令を使わないMMLでは、この2026-08-18のヘッダ機能追加より前と
   // 同じ「トーンテーブルの直前にflagsが無い」構造のまま)。
+  // 2026-08-18: #PPZExtendも他のヘッダ命令と同じくflags/メモテーブル出力の
+  // トリガーになることを自作corpus実測(pmdppzord.mml等、#PPZExtend以外のヘッダ命令を
+  // 一切含まない最小ファイル)で確認した。実測前はTitle等の文字列系ヘッダのみを
+  // 見ていたため、#PPZExtend単体のファイルでtone_ptrが4byteずれていた。
   const hasHeader = header.title != null || header.composer != null
     || header.arranger != null || header.memo.length > 0
-    || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null;
+    || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null
+    || header.ppzExtend != null;
 
   // 出力トーンテーブルに載せるのは「FMパートの@nで実際に参照されている番号」のみ
   // (fmUsedToneNums、上のコメント参照)。toneTableには検証用にSSG/ADPCM由来の

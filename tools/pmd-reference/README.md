@@ -83,9 +83,14 @@ v1公開後まで検出できずにいたことが判明した。原因は、そ
   取り違えると検出できる)。実機コンパイラは問題なく通るが、自作コンパイラは
   `K`/`R` パート指定自体を未対応としてエラーを返す
   (`compiler/pmd_mml_parser.mjs` のコメント参照)。
-- PPZ8拡張パート(`#PPZExtend`)は corpus に含めていない。MML書式の裏付け
-  (`PMDMML.MAN` §2-25/§2-26)は取れているが、実機での動作確認まで手が回らなかった
-  ため今回は見送った。追加する場合は同じ非対称データの方針を踏襲すること。
+- PPZ8拡張パート(`#PPZExtend`)は2026-08-18に実装・corpus追加済み(`pmdppzord.mml`
+  「#PPZExtend cba」・`pmdppzsub.mml`「#PPZExtend edc」・`pmdppznote.mml`、いずれも
+  MC.EXE ver4.8s `/V`実測)。パート記号とPPZ_1〜_8の対応は「#PPZExtendでの宣言順」
+  (記号自体の固定値ではない)と確定した。`pmdppzord`は11/11パート一致・バイト完全一致。
+  `pmdppzsub`/`pmdppznote`はPPZ8関連部分は完全一致だが、K/R未使用時のr_offset固定
+  領域の先頭byte(既存の未解明点、上記「既知の差分」参照)がケースごとに異なる値を
+  取るため全体一致には至っていない(PPZ8実装とは無関係)。詳細はdocs/pmd-compiler-spec-v2.md
+  2章を参照。
 
 ## ヘッダ命令(`#Title`/`#Composer`/`#Memo`/`#PCMfile`/`#PPZfile`)のメモテーブル形式
 
