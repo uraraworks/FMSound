@@ -1058,6 +1058,7 @@ function linkLoops(events, partLetter) {
         throw new ParseError(ev.line, `パート${partLetter}: 対応する '[' が無い ':' があります`);
       }
       ev.openRef = stack[stack.length - 1];
+      ev.openRef.hasExit = true;
     } else if (ev.type === 'loopClose') {
       if (stack.length === 0) {
         throw new ParseError(ev.line, `パート${partLetter}: 対応する '[' が無い ']' があります`);

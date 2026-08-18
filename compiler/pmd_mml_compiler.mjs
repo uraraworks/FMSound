@@ -265,13 +265,17 @@ function emitEvent(ev, out, offset) {
     case 'loopClose': {
       out[offset] = 0xf8;
       out[offset + 1] = ev.count & 0xff;
-      // カウンタ初期値: 従来0固定としていたが、今回K/R実装の副産物として
-      // tools/pmd-reference/pmdunimp.M(ループ使用corpus唯一の既存ケース)を実測した
-      // ところ、コンパイル直後の値は0ではなく数値1(count)と同じ値だった(0xf8 04 04 ...)。
-      // 「実行時に自己書き換えされる」こと自体は変わらない(コンパイル時点のスナップショット)が、
-      // 初期値はcountそのものだったため合わせる。他corpusにループ使用ケースが無く
-      // 退行の懸念は無い(grep確認済み)。
-      out[offset + 2] = ev.count & 0xff;
+      // カウンタ初期値: 2026-08-18、実データ3曲(JSM/YD、リポジトリ非同梱)の全ループ
+      // 73件(JSM 54件+YD 19件、`node`で機械抽出・全数照合済み)を実測し、以下の規則を
+      // 確定した:
+      //   このループ(`[`...`]n`)の中に脱出マーカ`:`が1つでもあれば counter初期値=n-1、
+      //   無ければ counter初期値=n。
+      // ネストの深さ・パート種別(FM/SSG/ADPCM/RHYTHM)・countの値によらず一貫しており、
+      // 73件全て(ネスト有り含む)がこの規則だけで説明できた(片方に合わせて他方が壊れる
+      // ケースは無し)。以前「pmdnestではn、実データではn-1」に見えていた食い違いは、
+      // pmdnestのループが`:`を含まない(n)ケースしか無かったための見かけ上の矛盾で、
+      // 規則自体に矛盾は無かった。
+      out[offset + 2] = (ev.openRef && ev.openRef.hasExit ? ev.count - 1 : ev.count) & 0xff;
       const ptr = ev.openRef._addr + 1;
       w16(offset + 3, ptr);
       return;

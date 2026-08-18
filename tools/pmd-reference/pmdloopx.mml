@@ -1,0 +1,5 @@
+;Title LoopColonProbe
+A o4 [ c8 d8 e8 : f8 g8 ]5 a8
+B o4 [ c8 d8 e16 e16 ]6 f8
+C o4 [ c8 [ d8 e8 : f8 ]7 g8 ]4 a8
+D o4 [ c8 [ d8 e8 ]8 : f8 g8 ]3 a8
