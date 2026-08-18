@@ -21,13 +21,11 @@
 // 唯一の説明であり、compiler/pmd_mml_parser.mjsもこれに合わせて「mod 256で
 // -128〜127へ正規化してから受理する」実装にした(拒否ではなく切り捨て)。
 //
-// 【未確定】この「mod 256切り捨て」という具体的な出力バイトの式そのものは、
-// -230のようなマニュアル範囲外の値についてMC.EXE実機が実際に書き出すバイト列を
-// tools/pmd-reference/ の参照.M(MC.EXE ver4.8s実測)で直接確認できたわけではない
-// (pmdmp.M はMP-77/MPB39という範囲内の値のみを収録している)。範囲内の値
-// (MP-77・MPB39)がMC.EXE実測と一致することは既存のtools/verify_pmd_mml_v2_commands.mjs
-// で確認済みだが、範囲外の値の切り捨て式そのものは「拒否しない」という事実と
-// 1byte格納という資料上の制約から導いた推論であり、バイト単位の実機確認はできていない。
+// 【実測済み】2026-08-19、WebNP2+FreeDOS上の実機MC.EXE ver4.8sをPMP.MMLで実測し、
+// 「mod 256切り捨て」という出力バイトの式そのものを直接確認した(バッチ5)。
+// `MP-230`と`MP26`をコンパイルした参照.Mはバイト完全一致(どちらもdepthA=0x1a=26)で、
+// 上の推論(2の補数切り捨て)が実機の挙動そのものであると裏付けられた
+// (tools/pmd-reference/pmdmpover.mml・pmdmpover.M、FINDINGS.md項目5参照)。
 //
 // 実行: node tools/verify_pmd_mp_depth_overflow.mjs
 
