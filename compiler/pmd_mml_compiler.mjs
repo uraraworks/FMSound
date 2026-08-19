@@ -496,7 +496,13 @@ function trackTotalTicks(events) {
       const n = ev.count;
       const total = cur.sawExit ? (cur.before * n + cur.after * (n - 1)) : (cur.before * n);
       const parent = stack.pop();
-      parent.before += total;
+      // ネストしたループの展開後クロック数を親へ加算する際も、他の生イベント(note/rest/
+      // portamento)と同じく「親がすでに`:`(exit)を通過済みならafter側」というルールに
+      // 従う必要がある。従来は無条件にparent.beforeへ加算しており、「外側ループの`:`より
+      // 後ろに、さらに別のループ([...]n)が続く」構造(2026-08-19、実データ
+      // MSO_OF_Into_the_Palace_N.mmlのFパート等で実測)で総クロック数を過大に計算していた
+      // (r_offset固定領域8byteの実測値と食い違うことから発見)。
+      if (parent.sawExit) parent.after += total; else parent.before += total;
       cur = parent;
       continue;
     }
@@ -689,14 +695,26 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // #FM3Extend(PMDMML.MAN §2-20)の宣言済み拡張パート文字(最大3文字、宣言順)。
   const fm3ExtendLetters = header.fm3ExtendLetters ?? [];
   // #Detune Extend(PMDMML.MAN §2-16)の対象パート。SSG(G,H,I)のみ(A-F/Jには効かない。
-  // 実測: pmdhdrxt.M参照。下のSLOT_LETTERSループ内コメント参照)。
+  // 実測: pmdhdrxt.M参照。下のSLOT_LETTERSループ内コメント参照)。PPZExtend/FM3Extendの
+  // 拡張パートでの挙動は未実測(実データALPHA/SSTENG/MSOFMFSのいずれも#Detune Extendを
+  // 宣言していても拡張パートの先頭にdetuneExtendコマンドは現れなかったので、対象外のまま
+  // で問題ない)。
   const DETUNE_EXTEND_LETTERS = new Set(['G', 'H', 'I']);
   // #LFOSpeed Extend(PMDMML.MAN §2-17)の対象パート。FM/SSG/ADPCM(A〜J)全部
   // (実測: PMDLFOXT.MML、A〜J全10パートが未使用でも各+4byte増加を確認)。
-  const LFO_SPEED_EXTEND_LETTERS = new Set(PART_LETTERS);
+  // 2026-08-19: PPZExtend(a-h)・FM3Extend(x,y,z等)の拡張パートにも同様に適用される
+  // (実データALPHA/SSTENG/MSOFMFS実測: 各PPZ8拡張パート・FM3拡張パートの先頭に
+  // `ca 01 bb 01`(target A/Bのlfo_speed_extend)が漏れなく出ており、既存実装は
+  // これを一切出力していなかった。ALPHA/SSTENGの「拡張パート1本あたり6byte不足」の
+  // 正体はこの欠落+PPZ拡張のみ追加で出るenvSpeedExtend(下記)だった)。
+  const LFO_SPEED_EXTEND_LETTERS = new Set([...PART_LETTERS, ...ppzExtendLetters, ...fm3ExtendLetters]);
   // #EnvelopeSpeed Extend(PMDMML.MAN §2-18)の対象パート。SSG/PCM(G〜J)のみ
   // (実測: PMDENVXT.MML、G〜Jのみ未使用でも各+2byte増加、A〜Fは無変化を確認)。
-  const ENV_SPEED_EXTEND_LETTERS = new Set(['G', 'H', 'I', 'J']);
+  // 2026-08-19: PPZExtend(a-h、J=ADPCMと同じPCM系)にも適用される(実データ実測、
+  // 上のLFO_SPEED_EXTEND_LETTERSのコメント参照)。FM3Extend(x,y,z等)はFM系(A-F)と
+  // 同様に対象外(実データMSOFMFS実測: FM3拡張パートの先頭は`ca 01 bb 01`のみで
+  // envSpeedExtend(`c9 01`)は出ない)。
+  const ENV_SPEED_EXTEND_LETTERS = new Set(['G', 'H', 'I', 'J', ...ppzExtendLetters]);
   // 3つのExtendヘッダを同時に使うパート(実データSS_TENGで実際に発生する: G〜Iは
   // Detune+LFOSpeed+EnvelopeSpeed、JはLFOSpeed+EnvelopeSpeed+PPZExtendが重なる)での
   // 並び順を実機参照.Mで確定した(COMBOG.MML/COMBOJ.MML実測、
@@ -879,7 +897,12 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
       for (let k = 0; k < fm3ExtendLetters.length && k < 3; k++) {
         const fm3Letter = fm3ExtendLetters[k];
         const rawEvents = tracks.get(fm3Letter);
-        const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        const bodyEvents = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        // FM3拡張パートもLFOSpeed Extend(#LFOSpeed Extend、FM系パートA-Fと同じ扱い)の
+        // 対象(2026-08-19実測、上のLFO_SPEED_EXTEND_LETTERSのコメント参照)。宣言だけで
+        // 本文未使用でも、他のExtend同様プレフィクスだけのトラックとして出力する
+        // (実データMSOFMFS実測、未使用のFM3拡張パートでも`ca 01 bb 01 80`が出ることを確認)。
+        const events = [...buildExtendPrefixEvents(fm3Letter), ...bodyEvents];
         if (events.length > 0) {
           const startAddr = cursor;
           const { endAddr, termAddr } = layoutTrack(events, startAddr);
@@ -899,7 +922,13 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
       for (let k = 0; k < ppzExtendLetters.length; k++) {
         const ppzLetter = ppzExtendLetters[k];
         const rawEvents = tracks.get(ppzLetter);
-        const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        const bodyEvents = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        // PPZ8拡張パートもADPCM(J)と同じPCM系としてLFOSpeed Extend・EnvelopeSpeed Extendの
+        // 対象(2026-08-19実測、上のLFO_SPEED_EXTEND_LETTERS/ENV_SPEED_EXTEND_LETTERSの
+        // コメント参照)。宣言だけで本文未使用でも、他のExtend同様プレフィクスだけの
+        // トラックとして出力する(実データALPHA/SSTENG/MSOFMFS実測、未使用のPPZ拡張パートでも
+        // `c9 01 ca 01 bb 01 80`が出ることを確認)。
+        const events = [...buildExtendPrefixEvents(ppzLetter), ...bodyEvents];
         if (events.length > 0) {
           const startAddr = cursor;
           const { endAddr, termAddr } = layoutTrack(events, startAddr);
@@ -994,11 +1023,31 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     }
     for (let i = 0; i < 8; i++) rel[mysteryAddr + i] = 0x00;
   } else {
-    // r_offset固定領域(8byte、K/R未使用時): 先頭byteは「全パート中最長のパートの
-    // 総クロック数」の下位8bit(2026-08-19判明、computeLongestPartTicksのコメント参照)、
-    // 残り7byteは常に0x00。
-    rel[rhythmFixedAddr] = computeLongestPartTicks(tracks, header) & 0xff;
-    for (let i = 1; i < 8; i++) rel[rhythmFixedAddr + i] = 0x00;
+    // r_offset固定領域(8byte、K/R未使用時)。従来「先頭byteだけが総クロック数の下位8bit、
+    // 残り7byteは常に0x00」としていたが、実データ(POPFUL/INTOPAL/MULE/MSOFMFS、
+    // いずれもK/R未使用)を突き合わせたところ、総クロック数が256を超えるケース
+    // (実データはほぼ全て該当。既存corpusが256未満に収まっていたため気づけなかった)では
+    // 上位バイトも書かれており、単純な「下位8bitのみ」では説明できないと判明した
+    // (2026-08-19)。実測できた構造は次の通り(offsetはこの8byte領域内の相対位置):
+    //   [0]=総クロック数の下位byte、[1]=上位byte、[2..4]=0x00固定、
+    //   [5]=[1]と同じ値(上位byteの複製)、[6..7]=0x00固定。
+    // 4本(POPFUL/INTOPAL/MULE/MSOFMFS)全てで一致を確認済み。ただしALPHA(#PPZExtend
+    // 6パート使用)だけは[5]が複製にならず0x00だった。ALPHAは既知の別バグ
+    // (#PPZExtend拡張パート1本あたり6byte不足、docs/pmd-compiler-real-data-diff-*.md参照)
+    // により拡張パート領域の長さ自体がずれているため、この[5]の複製規則との関係は
+    // 未確定(そちらのバグを解消してから再検証が必要)。[1..4]の「総クロック数」の
+    // 定義自体はcomputeLongestPartTicksのコメント参照。
+    const longest = computeLongestPartTicks(tracks, header) & 0xffff;
+    const lo = longest & 0xff;
+    const hi = (longest >> 8) & 0xff;
+    rel[rhythmFixedAddr] = lo;
+    rel[rhythmFixedAddr + 1] = hi;
+    rel[rhythmFixedAddr + 2] = 0x00;
+    rel[rhythmFixedAddr + 3] = 0x00;
+    rel[rhythmFixedAddr + 4] = 0x00;
+    rel[rhythmFixedAddr + 5] = hi;
+    rel[rhythmFixedAddr + 6] = 0x00;
+    rel[rhythmFixedAddr + 7] = 0x00;
   }
 
   for (const letter of Object.keys(trackLayout)) {

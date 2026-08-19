@@ -175,6 +175,93 @@ ADPCM/RHYTHM/tone_ptr等のポインタ値のずれ)経由で下流バイト列�
 「全体一致率(位置基準)」の指標だけがたまたま0.5pt下がった、という二次的なポインタずれ
 (クラス3解消時と同種の現象)。パート整列済みの指標は不変なので実質的な後退は無い。
 
+## 追記(2026-08-19、4周目セッション: POPFUL完全一致・ALPHA/SSTENGの6byte原因特定)
+
+このセッションでは、POPFULの残り4byte差分の解消(完全一致到達)と、ALPHA/SSTENGの
+「PPZ8拡張パート1本あたり6byte不足」の原因特定・修正を行った。副産物としてMULE/DS4MAIAも
+大きく改善した。before(前回追記時点)→afterの一致率(位置基準、`tools/verify_pmd_real_data_corpus.mjs`):
+
+| stem | before | after |
+|---|---|---|
+| POPFUL | 99.8% | **100.0%(完全一致)** |
+| ALPHA | 79.9% | 99.9% |
+| SSTENG | 78.9% | 99.6% |
+| DS4MAIA | 97.3% | 99.8% |
+| MULE | 96.8% | 97.1% |
+| MSOFMFS | 23.6% | 22.8%(誤差範囲。既知の別バグ、後述) |
+| MSOET | 49.9% | 50.0% |
+| INTOPAL | 13.9% | 13.8%(誤差範囲、対象外) |
+
+実データ8本は引き続き8/8コンパイル可能。既存回帰テスト(`verify_pmd_reference_corpus.mjs`
+65件・`verify_pmd_*.mjs`合計39ファイル)は全てPASS(2件は今回の実装変更に伴い期待値/検出対象
+コードの更新が必要だったので更新済み: `verify_pmd_parts_v2.mjs`のADPCM`v`変換値、
+`verify_pmd_rhythm_fixed_area_ticks.mjs`の陽性対照コード片)。
+
+### POPFULの2バグ(完全一致に到達)
+
+1. **ADPCM(J)の`v`(大雑把な音量)変換テーブルが誤り**: 従来`V_LOWERCASE_FM_TABLE`
+   (FMと共通)を使っていたが、実データ実測(`v12`→参照`fd c0`=192)で`PPZ_V_TABLE`
+   (PPZ8拡張と同じPCM系テーブル、`v12`→192)が正しいと判明。`compiler/pmd_mml_parser.mjs`
+   の`v`ハンドラで`partKind==='adpcm'`も`'ppz'`と同じ分岐に統合した。
+2. **r_offset固定領域(8byte、K/R未使用時)の先頭byteがループ集計バグで過大**:
+   `trackTotalTicks()`内、ネストしたループの展開後クロック数を親へ加算する際に
+   `parent.before += total`を無条件に行っており、「親のさらに外側で`:`(exit)を
+   通過済み」の場合でも`after`側ではなく`before`側に加算していた(他の生イベントと
+   扱いが不統一だった)。実データ(`MSO_OF_Into the Palace_N.mml`のFパート等)で
+   この式が過大な値を生むケースが見つかり修正。加えて、この8byte領域自体も
+   「先頭byteだけが総クロック数下位8bit、残り7byteは常に0x00」という従来の理解が
+   誤りで、実データ(総クロック数が256を超えるケース)では上位byteも書かれている
+   ([0]=下位byte,[1]=上位byte,[2..4]=0x00,[5]=[1]と同じ値の複製,[6..7]=0x00)と判明。
+   ただしこの`[5]`複製規則はALPHA(下記のPPZExtend関連バグの影響で当時は未解決)では
+   成立しなかった(ALPHAは`[5]=0x00`)。PPZExtend側のバグを解消した後は未再検証。
+
+### ALPHA/SSTENGの「拡張パート1本あたり6byte」の正体(解決)
+
+PPZ8拡張パート(`#PPZExtend`)・FM3拡張パート(`#FM3Extend`)のトラック本体に、
+`#LFOSpeed Extend`・`#EnvelopeSpeed Extend`ヘッダの適用が漏れていた。実データ実測
+(ALPHA/SSTENG/MSOFMFS、`c9 01 ca 01 bb 01`(envSpeedExtend+lfoSpeedExtend A/B)が
+全PPZ8拡張パート・空パートでも先頭に出ており、`ca 01 bb 01`(lfoSpeedExtendのみ)が
+全FM3拡張パートの先頭に出ている)で確認した:
+- PPZ8拡張パート(a-h): ADPCM(J)と同じPCM系として`envSpeedExtend`+`lfoSpeedExtend`の
+  対象(`detuneExtend`は対象外、実データで確認)。
+- FM3拡張パート(x,y,z等): FM(A-F)と同じとして`lfoSpeedExtend`のみ対象
+  (`envSpeedExtend`・`detuneExtend`は対象外)。
+
+`compiler/pmd_mml_compiler.mjs`の`LFO_SPEED_EXTEND_LETTERS`/`ENV_SPEED_EXTEND_LETTERS`に
+`ppzExtendLetters`/`fm3ExtendLetters`を追加し、PPZ8拡張・FM3拡張のトラック生成ループで
+`buildExtendPrefixEvents(letter)`を呼ぶよう修正(未使用の宣言のみパートでもプレフィクス
+だけのトラックとして出力する)。ALPHA/SSTENGとも出力長が参照.Mと完全一致(9662/9662、
+6706/6706)するようになった。
+
+### MULE/DS4MAIAで追加判明した2件
+
+- **Gパートの`C`(measLen)重複時の挿入位置**: 従来「行内で直後に複製」としていたが、
+  実データ(`MULE_op_loop.mml`、Cより前の行で既に`transposeAbs`がGトラックへ積まれている
+  ケース)で「複製はGトラック絶対先頭に入る」(行内直後ではない)と判明。`transposeAbs`より
+  複製Cが前に出る。`compiler/pmd_mml_parser.mjs`のG重複ロジックを`unshift`方式に修正。
+- **`(`/`)`(音量相対変化)の%無し数値の倍率がパート種別依存**: 従来FM同様の×4を全パート
+  一律適用していたが、実データ(`DS4_MAIA.mml`のSSGパート`(3`→参照`e2 03`=3そのまま、
+  `MSO_FM_FS_PPZ.MML`のPPZ8拡張パート`(2`→参照`e2 20`=2×16=32)で、SSGは×1(無変換)・
+  PPZ8は×16と判明。FM=×4のまま、ADPCMは未実測のためFMと同じ×4を暫定維持。
+
+### 未解決のまま残った項目(実測が必要)
+
+- **MULE SSG3の`P`(トーン/ノイズ選択)変換値**: 実データで`P1`→参照`0xed 0x07`、
+  `P2`→参照`0xed 0x38`(自作は現在も無変換の1,2のまま)。0x07/0x38はチャンネル非依存の
+  固定値らしい(下位3bit全部/上位3bit全部)パターンに見えるが、`P3`の値は実データに
+  出現せず未確認。**測定案**: `G P1 c` `G P2 c` `G P3 c`をそれぞれSSGの3チャンネル
+  (G/H/I)で1つずつMC.EXEに通し、`0xed`引数を実測して対応表を確定する。
+- **DS4MAIAのRHYTHM Rパターン内、`\h`直後の無指定`r`(休符)の長さ**: 実データで
+  `\hr`(数値無し)→参照は6クロック相当だが、自作はRパターンのデフォルト音長
+  (現在ハードコード24)を使ってしまい一致しない(同じ行の`\hr32`(明示32)は一致)。
+  現在のmeasLen=96の状況で6=96/16なので「デフォルト音長がl16相当」という説と
+  「measLenに連動しない固定値」という説を切り分けられていない。**測定案**:
+  `C96`と`C192`それぞれで`K R0 \br`(数値無し)を最小MMLでMC.EXEに通し、休符クロックが
+  6のまま固定か、measLenに比例して変わるかを確認する。
+- **MSOFMFSのFM1-6ヘッダポインタが今回の修正と無関係に+2byteずつ複数箇所でずれる**
+  (修正前から存在、pre-existing。`cf 0c`/`cf c0`というFM3拡張パート内の別コマンドの
+  値差異も見つかったが今回未着手)。INTOPAL/MSOFMFSは元々対象外(クラス4/5、別原因)。
+
 ## 使ったツール
 
 - `tools/verify_pmd_real_data_corpus.mjs`(このセッションで新規作成。環境変数

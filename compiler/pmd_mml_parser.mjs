@@ -624,9 +624,17 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
   }
 
   // '(' ')' (音量相対変化、基本形のみ。v2 3.1節)。[%] [数値]、数値省略時は1。
-  // %付きは指定値そのまま(0-255)、%無しは指定値×4(0xe3/0xe2は1byte引数のため、
-  // ×4後に1byteへ収まるよう無指定時の数値域を0-63に制限する。doc本文には明記が無いが
-  // バイト長の制約から一意に導ける値域)。
+  // %付きは指定値そのまま(0-255)。%無し(数値のみ)の倍率はパート種別で異なる
+  // (2026-08-19、実データDS4_MAIA.mml(SSG)・MSO_FM_FS_PPZ.MML(PPZ8拡張)実測で判明。
+  // 従来は全パート一律×4としていたが、それはFMパートでのみ確認できていた値だった):
+  //   - FM: ×4(既存確認分。0xe2/0xe3は1byte引数のため、無指定時の数値域を0-63に
+  //     制限する。doc本文には明記が無いがバイト長の制約から一意に導ける値域)。
+  //   - SSG(partKind==='ssg'): ×1(無変換。DS4_MAIA.mmlのG/H/Iパート、`(3`→
+  //     参照.Mは`e2 03`(=3そのまま)、自作(旧実装)は`e2 0c`(=3×4=12)で食い違っていた)。
+  //   - PPZ8拡張(partKind==='ppz'): ×16(MSO_FM_FS_PPZ.MMLのPPZ8拡張パート、
+  //     `(2`→参照.Mは`e2 20`(=2×16=32)、自作(旧実装)は`e2 08`(=2×4=8))。
+  //   - ADPCM(partKind==='adpcm'): 未実測。他のPCM系(PPZ)と同じ×16と推測されるが
+  //     未確認のため、実測できるまではFMと同じ×4のまま(既存の後方互換動作を維持)。
   function readVolRelArg() {
     let percent = false;
     if (body[i] === '%') { percent = true; i++; }
@@ -644,8 +652,10 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (num < 0 || num > 255) throw new ParseError(line, `'('/')' の%指定値が範囲外です(0-255): ${num}`);
       return { value: num, isDefault };
     }
-    if (num < 0 || num > 63) throw new ParseError(line, `'('/')' の数値が範囲外です(0-63。無指定時は×4され1byteに収める制約から算出): ${num}`);
-    return { value: num * 4, isDefault };
+    const multiplier = partKind === 'ssg' ? 1 : partKind === 'ppz' ? 16 : 4;
+    const maxNum = Math.floor(255 / multiplier);
+    if (num < 0 || num > maxNum) throw new ParseError(line, `'('/')' の数値が範囲外です(0-${maxNum}。無指定時は×${multiplier}され1byteに収める制約から算出): ${num}`);
+    return { value: num * multiplier, isDefault };
   }
 
   // '{ }' 内(ポルタメント音程指定、v2 3.5節→今回実測で解決)は c/d/e/f/g/a/b/o/</>
@@ -1016,10 +1026,13 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       continue;
     }
     if (c === 'v') {
-      // 音量指定1(大雑把な値)。PMDMML.MAN §5-1。FM/PCM:0-16(変換テーブル経由でVへ)/ SSG:0-15(素通し、未解明)。
+      // 音量指定1(大雑把な値)。PMDMML.MAN §5-1。FM:0-16(V_LOWERCASE_FM_TABLE経由)/
+      // SSG:0-15(素通し、未解明)/ PCM(ADPCM・PPZ8拡張):0-16(PPZ_V_TABLE経由)。
       // PPZ8拡張パートはPCM_V_TABLE(V(1)表、上のコメント参照)を使う(FMのV_LOWERCASE_FM_TABLEとは別表。
-      // 実測で確認済み)。ADPCM(J)は既存実装を変更せずV_LOWERCASE_FM_TABLEのまま
-      // (このタスクのスコープはPPZExtendのみ。ADPCMのv変換がマニュアル通りか否かは別課題として触れない)。
+      // 実測で確認済み)。ADPCM(J)も同じPPZ_V_TABLEを使う(2026-08-19、実データ
+      // POPFUL_HOSHI.mml実測で確定: `v12`→参照.Mは`fd c0`(=PPZ_V_TABLE[12]=192)で、
+      // 従来のV_LOWERCASE_FM_TABLE[12]=117とは食い違う。ADPCMもPCM系の音量スケールを
+      // 共有すると判明したため、'adpcm'を'ppz'と同じ分岐に統合した)。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'v' の後に音量数値がありません`);
@@ -1029,7 +1042,7 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (val < 0 || val > max) {
         throw new ParseError(line, `'v' の値が範囲外です(${partKind === 'ssg' ? 'SSGは0-15' : 'FM/PCMは0-16'}): ${val}`);
       }
-      const converted = partKind === 'ssg' ? val : partKind === 'ppz' ? PPZ_V_TABLE[val] : V_LOWERCASE_FM_TABLE[val];
+      const converted = partKind === 'ssg' ? val : (partKind === 'ppz' || partKind === 'adpcm') ? PPZ_V_TABLE[val] : V_LOWERCASE_FM_TABLE[val];
       events.push({ type: 'volAbs', line, value: converted });
       continue;
     }
@@ -2253,12 +2266,20 @@ export function parseMml(source) {
         // Gのトラックにのみ2回出る(MC.EXEのFM→SSG境界の実装上の癖と思われるが、
         // バイト一致が目的のためそのまま再現する)。重複するのはCコマンドだけで、
         // 同じ行のv/q/*等は対象外。FMを含まない行(GHI/GHIJK等)ではGも1回のまま。
+        //
+        // 複製の挿入位置(2026-08-19、実データMULE_op_loop.mml実測で訂正): 当初は
+        // 「このCイベントの直後」に複製を挿入していたが、PC1〜PCC.MMLはいずれもCが
+        // 行頭かつその時点でGトラックが空だったため、「直後」と「Gトラック全体の
+        // 絶対先頭」を区別できていなかった。実データはCより前の行(`ABCDEFGHI !H`
+        // →transposeAbs)が既にGトラックへ積まれているケースで、参照.Mでは複製が
+        // その`transposeAbs`より**前**(トラック絶対先頭)に来ることを確認した
+        // (自作(旧実装): `f5 00 df c0 df c0`(transpose,C,C) / 参照: `df c0 f5 00 df c0`
+        // (C,transpose,C)。つまり複製は「行内で直後」ではなく「トラック絶対先頭」)。
         if (p === 'G' && partLetters.some((letter) => FM_PART_LETTERS_SET.has(letter))) {
           const newEvents = trackInfo.events.slice(beforeLen);
-          trackInfo.events.length = beforeLen;
-          for (const ev of newEvents) {
-            trackInfo.events.push(ev);
-            if (ev.type === 'measLen') trackInfo.events.push({ ...ev });
+          const measLenEvents = newEvents.filter((ev) => ev.type === 'measLen');
+          if (measLenEvents.length > 0) {
+            trackInfo.events.unshift(...measLenEvents.map((ev) => ({ ...ev })));
           }
         }
       }

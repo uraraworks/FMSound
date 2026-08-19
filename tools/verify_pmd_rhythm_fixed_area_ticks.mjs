@@ -92,7 +92,7 @@ function main() {
   {
     const compilerPath = new URL('../compiler/pmd_mml_compiler.mjs', import.meta.url).pathname;
     const orig = fs.readFileSync(compilerPath, 'utf8');
-    const NEEDLE = 'rel[rhythmFixedAddr] = computeLongestPartTicks(tracks, header) & 0xff;';
+    const NEEDLE = 'rel[rhythmFixedAddr] = lo;';
     if (!orig.includes(NEEDLE)) {
       check('[陽性対照・前提] 対象コードが見つかる', false, 'NEEDLEが一致しない(実装が変わった?)');
     } else {

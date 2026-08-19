@@ -58,8 +58,10 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
 // --- 1. ヘッダ/トラックのバイト一致検証 ---
 {
   // 音色@1(TL=0の既定値。tonenum以外は既定でよい)を定義し、Jパートだけを使うMML。
-  // v16 -> V_LOWERCASE_FM_TABLE[16]=127(v2実装は既存のFM/PCM共通テーブルを再利用、
-  // docs/pmd-compiler-spec.md 7.2節)。
+  // v16 -> PPZ_V_TABLE[16]=255(2026-08-19、実データPOPFUL_HOSHI.mml実測でADPCM(J)の
+  // 'v'変換テーブルがV_LOWERCASE_FM_TABLEではなくPPZ_V_TABLE(PPZ8拡張と同じPCM系)だと
+  // 判明したため訂正。旧仕様(V_LOWERCASE_FM_TABLE[16]=127)は実測に基づかない手書きの
+  // 期待値だった。docs/pmd-compiler-real-data-diff-2026-08-19.md参照)。
   const mml = [
     '@ 1 7 0',
     '31 0 0 0 0 0 0 1 0 0',
@@ -93,12 +95,12 @@ console.log('=== PMD MML v2構文(step3): Jパート(ADPCM)の検証 ===\n');
     check('1c. [陽性対照] index9は他のFM/SSGパートのポインタ(0x1a、空トラック)とは異なる',
       read16le(0x12) !== read16le(0x00));
 
-    // ADPCMトラックの中身: 0xfd(vol) 0x7f(v16->V127) / 0xff(tonenum選択) 0x01 /
+    // ADPCMトラックの中身: 0xfd(vol) 0xff(v16->PPZ_V_TABLE[16]=255) / 0xff(tonenum選択) 0x01 /
     // note(既定オクターブ,c=0)。'J v16 @1 c4'は'o'省略なので既定オクターブ(MMLのo4相当)、
     // nibbleはそれより1小さい3(PMDMML.MAN §4-4、docs/pmd-compiler-spec-v2.md 6章、
     // 参照.M実測で確定)=noteByte(3,0)=0x30 / len=4分音符=96/4=24=0x18 / 0x80(終端)。
     // (トラック書式はFM/SSGと共通、doc 1.2節)。
-    const expectedTrack = Uint8Array.from([0xfd, 0x7f, 0xff, 0x01, noteByte(3, 0), 24, 0x80]);
+    const expectedTrack = Uint8Array.from([0xfd, 0xff, 0xff, 0x01, noteByte(3, 0), 24, 0x80]);
     const actualTrack = rel.subarray(ADPCM_TRACK_OFF, ADPCM_TRACK_OFF + expectedTrack.length);
 
     // ヘッダのRHYTHM(index10, offset0x14)は未対応のまま未使用スロットを指す。新レイアウトでは
