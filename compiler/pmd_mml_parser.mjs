@@ -1112,6 +1112,10 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       const val = parseInt(m[0], 10);
       if (val < 1 || val > 255) throw new ParseError(line, `'C'(全音符長)の値が範囲外です(1-255): ${val}`);
       globalState.measLen = val; // 以降のこのパート・他パートの音長計算に即座に反映する
+      // gInjectMeasLen: パートGへの`C`注入(FINDINGS.md 14番)専用の値追跡。
+      // 通常パート(A-J、この関数=tokenizeBody)の`C`だけがこれを更新する
+      // (KパートのtokenizeRhythmKBody側の`C`は更新しない。下のコメント参照)。
+      globalState.gInjectMeasLen = val;
       events.push({ type: 'measLen', line, value: val });
       continue;
     }
@@ -1555,6 +1559,10 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
       const val = parseInt(m[0], 10);
       if (val < 1 || val > 255) throw new ParseError(line, `'C'(全音符長)の値が範囲外です(1-255): ${val}`);
       globalState.measLen = val;
+      // 注: Kパート内の`C`はglobalState.gInjectMeasLenを更新しない(実測pmdrr96/
+      // pmdrr192(C192、既定値96と異なる非既定値!)でもパートGが空トラックのまま
+      // だったため。パートGへの注入(FINDINGS.md 14番)は通常パート(A-J、
+      // tokenizeBody)側の`C`のみが起点になる)。
       events.push({ type: 'measLen', line, value: val });
       continue;
     }
@@ -2108,7 +2116,17 @@ export function parseMml(source) {
   const lines = source.split(/\r\n|\r|\n/);
   // `C`(全音符長)は全パート共通のグローバル設定(v2 3.8節)。1つの可変オブジェクトを
   // 全パートのtokenizeBody呼び出しで共有する。
-  const globalState = { measLen: DEFAULT_MEAS_LEN };
+  // gInjectMeasLen: パートGへの`C`注入(FINDINGS.md 14番)専用に追跡する値。
+  // 通常パート(A-J)側の`C`コマンドでのみ更新される(Kパート内の`C`では更新しない、
+  // 上のtokenizeRhythmKBody内コメント参照)。実測(実データALPHA_2022_ppz.MML、
+  // `AB T191 C96`のあとに`GHI ...`でGが初めて登場するケース)により、注入の条件は
+  // 「`C`コマンドが一度でも書かれたか」ではなく「その時点の値がDEFAULT_MEAS_LEN(96、
+  // 既定値)と異なるか」だと判明した。ALPHAの`C96`は既定値と同じ値を明示的に
+  // 書いているだけなので注入は起きない(Gトラックの参照.M実測で0x80単独=空トラック
+  // だったことを確認済み)。PG1〜PG9.MML(FINDINGS.md 14番)の実測ケースは全て
+  // 非既定値(72/132/204)だったため、この2つの仮説("Cが使われたか"/"既定値と違うか")
+  // を区別できていなかった。
+  const globalState = { measLen: DEFAULT_MEAS_LEN, gInjectMeasLen: DEFAULT_MEAS_LEN };
 
   // MML変数(`!`, v2 3.4節)の定義を先に一括収集する(ファイル中の出現順に依存しない
   // 二段階処理。定義自体はプリプロセス段階のみで完結し`.M`側のバイトは持たない)。
@@ -2348,7 +2366,22 @@ export function parseMml(source) {
         // 既定オクターブ: PMDMML.MAN §4-4の既定値はo4(1-8系)。nibble表現は
         // -1した3(oコマンド未実装当時の名残でoctave:4だったが、oコマンドの
         // 符号化修正(oct-1)に合わせてここも合わせる)。
-        tracks.set(p, { events: [], state: { octave: 3, defaultLengthSpec: { n: 4, dots: 0 }, terminated: false } });
+        const newTrack = { events: [], state: { octave: 3, defaultLengthSpec: { n: 4, dots: 0 }, terminated: false } };
+        // 2026-08-19実測(FINDINGS.md 14番、PG1〜PG9.MML): MML中に`C`(全音符長)が
+        // 1つでも現れると、パートG(SSG1)の**トラックが作られた時点**で有効だった
+        // `C`の値が、そのトラック絶対先頭に注入される(`0xdf`+1byte)。
+        // ここは「Gがこの行で初めて登場した」瞬間(=このパートの本文がまだ
+        // tokenizeBodyされる前)なので、globalState.measLenは「このG行より前に
+        // 宣言されたC」の値のまま(このG行自身のCがまだ反映されていない)。
+        // これにより`A C72 c`/`G C204 c`のような「Gの行自身にもCがある」ケースでも
+        // 「最後の値」ではなく「Gのトラックが作られた時点の値」(C72)が正しく
+        // 注入される(自身のC204は下のtokenizeBody呼び出しで後ろに追加される)。
+        // 注入条件は「値がDEFAULT_MEAS_LEN(既定値96)と異なるか」(gInjectMeasLen、
+        // 上のglobalState初期化コメント参照。実データALPHAで確定)。
+        if (p === 'G' && globalState.gInjectMeasLen !== DEFAULT_MEAS_LEN) {
+          newTrack.events.push({ type: 'measLen', line: lineNo, value: globalState.gInjectMeasLen });
+        }
+        tracks.set(p, newTrack);
       }
     }
 
@@ -2401,6 +2434,19 @@ export function parseMml(source) {
         throw e;
       }
     }
+  }
+
+  // 2026-08-19実測(FINDINGS.md 14番): MML中の(通常パートA-J側の)`C`がDEFAULT_MEAS_LEN
+  // (既定値96)と異なる値になったのに、パートGが一度も明示的に登場しなかった場合でも、
+  // Gのトラックは(空トラックではなく)`C`の最終値1つだけを積んだトラックとして出力される。
+  // 実測解釈は「Gのトラックが作られた時点で有効だった値」で、Gが明示的に使われない曲では
+  // トラック作成が(ファイル全体を読み終えた)最後になるため、結果的にファイル中最後の
+  // `C`の値になる。
+  if (globalState.gInjectMeasLen !== DEFAULT_MEAS_LEN && !tracks.has('G')) {
+    tracks.set('G', {
+      events: [{ type: 'measLen', line: 0, value: globalState.gInjectMeasLen }],
+      state: { octave: 3, defaultLengthSpec: { n: 4, dots: 0 }, terminated: false },
+    });
   }
 
   // Kから一度も参照されなかった(=定義だけされた)Rパターンも、既存の「パターン番号は

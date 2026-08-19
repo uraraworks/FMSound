@@ -479,3 +479,58 @@ r_offset固定領域(8byte、K/R未使用時。K/R使用時は別領域`mysteryA
 `verify_pmd_part_restriction_pipe.mjs`の陽性対照NEEDLEを`{...}`内の同名コード
 追加により2箇所該当するよう変化したため一意化、新規`verify_pmd_vol_rel_multiplier.mjs`
 でFM/SSG/PPZ/ADPCMの4分岐(陽性対照込み)を追加した。
+
+## 追記(2026-08-19、8周目セッション: pmdwhole残差分の正体特定・パートGへのC注入を実装)
+
+前回節までで実データ8本は全て完全一致していたが、`tools/pmd-reference/pmdwhole.mml`
+(`A C72 c`/`A C132 d`/`A C204 e`)だけが不一致のまま残っていた。MC.EXE実測
+(WebNP2+FreeDOS、`PG1`〜`PG9.MML`、FINDINGS.md 14番)で正体を特定した:
+
+**MML中に`C`(全音符長)が現れると、パートG(SSG1)のトラックが作られた時点で有効だった
+`C`の値が、そのトラックの絶対先頭に注入される(`0xdf`+1byte)。** Gを一度も使わない曲
+では最終的な`C`の値になり(トラック作成が最後になるため)、`A C72 c`/`G C204 c`の
+ような「Gの行自身にも`C`がある」ケースでは「最後の値」ではなく「Gが作られた時点の値
+(C72)」が先に来る。10番(FM+G同居行での`C`重複)とは別現象として両方成立する。
+
+`compiler/pmd_mml_parser.mjs`に実装: 通常パート(A-J)側の`C`ハンドラだけが更新する
+専用の追跡値`globalState.gInjectMeasLen`を新設(KパートのtokenizeRhythmKBody側の
+`C`は更新しない)。パートGのトラックが新規作成される瞬間(行内での初回登場、または
+ファイル終端までGが一度も明示登場しなかった場合の遅延作成)に、この値が
+`DEFAULT_MEAS_LEN`(既定値96)と異なっていれば注入する。
+
+### 実データALPHAで判明した追加の条件(注入は「Cが使われたか」ではなく「既定値と違うか」)
+
+当初PG1〜PG9.MMLの実測(全て非既定値72/132/204)だけを根拠に「`C`コマンドが一度でも
+書かれたら注入」と実装したところ、実データ8本中ALPHAで不一致が発生した(4217byte)。
+ALPHAは`AB T191 C96`(**既定値と同じ96を明示**)のあとに`GHI @6 ...`でGが初めて登場する
+構成で、参照.Mを実測するとGトラックは注入なしの空トラック(`0x80`単独)だった。
+これによりPG系の実測だけでは区別できていなかった2つの仮説
+(「`C`コマンドが使われたか」/「値が既定値と異なるか」)のうち後者が正しいと判明し、
+`gInjectMeasLen !== DEFAULT_MEAS_LEN`を注入条件として実装した(推測ではなく、
+既存の実データALPHAが偶然この境界条件を含んでいたことで解決。追加のMC.EXEセッションは
+不要だった)。
+
+KパートのC(`pmdrr96`/`pmdrr192`、後者は`C192`で既定値と異なる非既定値)がGへ
+注入されないことも実測済みで、`gInjectMeasLen`の更新元をtokenizeBody(A-J)のみに
+限定する実装で再現している。
+
+### 検証結果
+
+- 実データ8本、不一致バイト数は全て0のまま(INTOPAL/MULE/POPFUL/MSOFMFS/ALPHA/
+  SSTENG/DS4MAIA/MSOETの8本、`verify_pmd_real_data_corpus.mjs`で確認)。
+- `pmdwhole`が完全一致に到達。
+- 自前測定用MML `PG1`〜`PG9.MML`を`tools/pmd-reference/pmdginj1`〜`9`として
+  corpusに追加(9本とも完全一致、`baseline.json`に登録済み)。
+  - pmdginj1〜4: Gが一度も明示登場しない曲での最終値/経路依存(A/Bどちらの
+    パートで宣言しても結果が同じこと)の確認。
+  - pmdginj5: Gが自分自身でしか`C`を宣言しない場合は注入なし(陰性対照)。
+  - pmdginj6: Gが(自身に`C`を書かずに)明示登場するケース。
+  - pmdginj7: `C`が1つも無ければ注入なし(陰性対照)。
+  - pmdginj8: 10番(FM+G同居行の`C`重複)との重ね合わせ(`df84`が2回になる
+    ことを確認)。
+  - pmdginj9: Gの行自身にも`C`がある場合、「最後の値」ではなく「Gが作られた
+    時点の値」が先に来ることの確認(`df48`+`df cc`)。
+- `verify_pmd_reference_corpus.mjs`は88件(既存78+新規pmdginj9件+pmdwhole改善+
+  陽性対照)全てPASS(退行なし)。
+- `verify_pmd_*.mjs`/`verify_ppz8_*.mjs`全42ファイル、終了コード0を確認。
+- `probe3.mjs`で実データ8本が引き続き8/8コンパイル可能なことを確認。
