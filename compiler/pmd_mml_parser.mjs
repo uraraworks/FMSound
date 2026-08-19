@@ -1378,7 +1378,14 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (speed < 0 || speed > 255) throw new ParseError(line, `'M'のspeedが範囲外です(0-255): ${speed}`);
       if (depthA < -128 || depthA > 127) throw new ParseError(line, `'M'のdepthAが範囲外です(-128〜127): ${depthA}`);
       if (depthB < 0 || depthB > 255) throw new ParseError(line, `'M'のdepthBが範囲外です(0-255): ${depthB}`);
-      events.push({ type: 'lfoBody', line, lfo: lfoNum, delay, speed, depthA, depthB });
+      // delay単独省略形(上のelse分岐)は、参照.M実測(tools/pmd-reference/pmdlfo.mml、
+      // `M5`が`c2 05`の2byteで出ることを確認)により、4byte全部の再送出ではなく専用の
+      // 短縮コマンドを使うと判明: LFO1=0xc2(`pmd_cmdc2_lfo_delay`、upstream/98fmplayer/
+      // fmdriver/fmdriver_pmd.c:3652)、LFO2=0xb9(`pmd_cmdb9_lfo2_delay`、同ファイルの
+      // コマンドテーブルでc2の7つ後=0xc2-7=0xbb…ではなく実際はテーブル順走査で0xb9、
+      // 4380行目付近)。short=trueのとき出力側(sizeOfEvent/emitEvent)は2byte
+      // (opcode+delay)だけを書く。
+      events.push({ type: 'lfoBody', line, lfo: lfoNum, delay, speed, depthA, depthB, short: !full });
       continue;
     }
 
@@ -1429,12 +1436,16 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
         // 数値2そのものではなく |数値1(保留値含む)-数値2| の差分で、bit7は固定ではなく
         // 符号で決まる: 数値2<数値1(=50,30)は0x94=0x80|20(bit7=1)、数値2>数値1
         // (=30,90)は0x3c=0|60(bit7=0)と、2方向とも実測して確認した。
-        // 一方、数値1が一度も明示されていない場合(既存corpus pmdgate.mmlの
-        // q-10,5等)は参照.M側に説明の付かない先頭の`fe 01`が現れ、今回の式
-        // (既定0との差分)だけでは再現できないことが分かった(未解明のまま。
-        // docs/pmd-compiler-spec-v2.md 5章に記録)。そのため退行を避けるべく、
-        // 数値1が一度もこのパートで明示されていない場合は、これまで通り
-        // 数値2をそのままbit7=1固定で書く旧仕様(既存の設計判断)を維持する。
+        // 数値1が一度も明示されていない場合(既存corpus pmdgate.mmlの`q-10,5`/`q-20`)は
+        // 参照.M側で毎回`fe 01`(gateAbs=1)が先行し、0xb1の値も上と同じ式
+        // |heldNum1-数値2|(heldNum1=1固定、符号も同じ規則)で説明できることが判明
+        // (pmdgate.mml実測: `q-10,5`→`fe 01 b1 09`(=|1-10|、num2>1でbit7=0)、
+        // `q-20`→`fe 01 b1 13`(=|1-20|、bit7=0)の2点とも一致)。つまりMC.EXEは
+        // 数値1省略時、その場でだけ暗黙のbaseline=1を仮定してgate_absを一時的に
+        // 1へ上書きし(この上書きはstate.qNum1には反映されない=毎回re-emitされる。
+        // 2件目のq-20でも`fe 01`が再度現れるのはそのため)、数値2との差分を明示形と
+        // 同じ式で計算していると考えるのが両実測点と整合する唯一の説明。
+        // state.qNum1(実際にこのパートでユーザーが明示したq数値1)は変更しない。
         let value;
         if (state.qNum1 != null) {
           const heldNum1 = state.qNum1;
@@ -1442,7 +1453,11 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
           if (range > 127) throw new ParseError(line, `'q'の数値1と数値2の差が範囲外です(127以内。0xb1下位7bit): |${heldNum1}-${num2}|=${range}`);
           value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
         } else {
-          value = 0x80 | num2;
+          const heldNum1 = 1; // MC.EXE実測(pmdgate.mml)によるbaseline
+          events.push({ type: 'gateAbs', line, value: heldNum1 });
+          const range = Math.abs(heldNum1 - num2);
+          if (range > 127) throw new ParseError(line, `'q'の数値1(baseline=1)と数値2の差が範囲外です(127以内。0xb1下位7bit): |1-${num2}|=${range}`);
+          value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
         }
         events.push({ type: 'gateRandRange', line, value });
       }
@@ -1669,6 +1684,8 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
         state.qNum1 = num1;
       }
       if (num2 != null) {
+        // 数値1が一度も明示されていない場合の`fe 01`(baseline=1)扱いは
+        // tokenizeBody側の'q'実装(pmdgate.mml実測)と同一ロジックを踏襲する。
         let value;
         if (state.qNum1 != null) {
           const heldNum1 = state.qNum1;
@@ -1676,7 +1693,11 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
           if (range > 127) throw new ParseError(line, `'q'の数値1と数値2の差が範囲外です(127以内。0xb1下位7bit): |${heldNum1}-${num2}|=${range}`);
           value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
         } else {
-          value = 0x80 | num2;
+          const heldNum1 = 1;
+          events.push({ type: 'gateAbs', line, value: heldNum1 });
+          const range = Math.abs(heldNum1 - num2);
+          if (range > 127) throw new ParseError(line, `'q'の数値1(baseline=1)と数値2の差が範囲外です(127以内。0xb1下位7bit): |1-${num2}|=${range}`);
+          value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
         }
         events.push({ type: 'gateRandRange', line, value });
       }

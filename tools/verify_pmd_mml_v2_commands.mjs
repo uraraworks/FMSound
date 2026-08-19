@@ -149,13 +149,18 @@ function compileTrackABytes(body) {
 
 // --- 6. qの数値2/3(0xb1/0xb3) ---
 {
+  // 数値1(q1)を一度も明示していない場合、参照.M実測(tools/pmd-reference/pmdgate.mml、
+  // MC.EXE ver4.8s実測)で判明: MC.EXEはbaseline=1を仮定してその都度暗黙の`fe 01`
+  // (gateAbs=1)を先行出力し、0xb1は数値1明示時と同じ式|1-数値2|(符号もnum2<1で
+  // bit7=1、それ以外0)で計算する。旧来の「数値2をそのままbit7=1固定」という
+  // 手書きの推測値は誤りだった(compiler/pmd_mml_parser.mjsの'q'ハンドラ参照)。
   const actualBoth = compileTrackABytes('q-10,5');
-  const expectedBoth = [0xb1, 0x8a, 0xb3, 5]; // 0x80|10=0x8a
-  check('q-10,5(数値2+数値3)の出力が仕様どおり(0xb1 8a, 0xb3 05)', arraysEqual(actualBoth, expectedBoth), `actual=${hex(actualBoth)}`);
+  const expectedBoth = [0xfe, 1, 0xb1, 9, 0xb3, 5]; // |1-10|=9、num2>1でbit7=0
+  check('q-10,5(数値2+数値3)の出力が仕様どおり(fe 01, 0xb1 09, 0xb3 05)', arraysEqual(actualBoth, expectedBoth), `actual=${hex(actualBoth)}`);
 
   const actualNum2Only = compileTrackABytes('q-20');
-  const expectedNum2Only = [0xb1, 0x80 | 20];
-  check('q-20(数値2のみ)の出力が仕様どおり(0xb1)', arraysEqual(actualNum2Only, expectedNum2Only), `actual=${hex(actualNum2Only)}`);
+  const expectedNum2Only = [0xfe, 1, 0xb1, 19]; // |1-20|=19
+  check('q-20(数値2のみ)の出力が仕様どおり(fe 01, 0xb1)', arraysEqual(actualNum2Only, expectedNum2Only), `actual=${hex(actualNum2Only)}`);
 
   const actualNum3Only = compileTrackABytes('q,7');
   const expectedNum3Only = [0xb3, 7];
@@ -286,12 +291,17 @@ function compileTrackABytes(body) {
 // --- 10. `M` delay単独省略形(v2 3.6節「未解明」→今回PMDMML.MAN §9-1実測で解決) ---
 {
   const actual = compileTrackABytes('M10,20,30,40 M5');
-  // 1回目: 0xf2 10 20 30 40。2回目(delay単独=5): speed/depthA/depthBを直前値のまま保持し
-  // 4byteとも書く(0xf2 05 20 30 40)。
-  const expected = [0xf2, 10, 20, 30, 40, 0xf2, 5, 20, 30, 40];
-  check('M10,20,30,40 の後の M5(delay単独)がspeed/depthA/depthBを保持して出力される(PMDMML.MAN §9-1)', arraysEqual(actual, expected), `actual=${hex(actual)}`);
+  // 1回目: 0xf2 10 20 30 40(4byte固定)。2回目(delay単独=5)は、参照.M実測
+  // (tools/pmd-reference/pmdlfo.mml、MC.EXE ver4.8s実測、`M5`が`c2 05`の2byteで
+  // 出ることを確認)により、4byte全部の再送出ではなく短縮コマンド0xc2(LFO1、
+  // `pmd_cmdc2_lfo_delay`、upstream/98fmplayer/fmdriver/fmdriver_pmd.c:3652)+
+  // delay 1byteのみが出力される。旧来の「4byte全部を再送出する」という
+  // 手書きの推測値は誤りだった(compiler/pmd_mml_parser.mjs/pmd_mml_compiler.mjsの
+  // lfoBody実装参照)。
+  const expected = [0xf2, 10, 20, 30, 40, 0xc2, 5];
+  check('M10,20,30,40 の後の M5(delay単独)は短縮コマンド0xc2でdelayのみ出力される(参照.M実測)', arraysEqual(actual, expected), `actual=${hex(actual)}`);
 
-  const wrongExpected = [0xf2, 10, 20, 30, 40, 0xf2, 5, 21, 30, 40]; // speedを1違えた誤り期待値(陽性対照)
+  const wrongExpected = [0xf2, 10, 20, 30, 40, 0xc2, 6]; // delayを1違えた誤り期待値(陽性対照)
   check('[陽性対照] M5(delay単独)の出力は1byte違う誤り期待値とは一致しない', !arraysEqual(actual, wrongExpected), `actual=${hex(actual)} wrong=${hex(wrongExpected)}`);
 
   check('直前のMが無い状態でのdelay単独指定はエラーになる(保持すべき値が無いため)', (() => {

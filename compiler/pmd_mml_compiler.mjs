@@ -128,7 +128,10 @@ function sizeOfEvent(ev) {
     case 'detuneAbs': case 'detuneRel': return 3; // 0xfa/0xd5 + 2byte符号付き(v2 3.9節)
     case 'pan': return 2; // 0xec + 1byte(v2 3.2節)
     case 'lfoSwitch': return 2; // 0xf1 + 1byte(v2 3.7節)
-    case 'lfoBody': return 5; // 0xf2 + 4byte固定(v2 3.6節)
+    // 0xf2/0xbf + 4byte固定(v2 3.6節)。ただしdelay単独省略形(ev.short)は
+    // 短縮コマンド0xc2(LFO1)/0xb9(LFO2) + delay 1byteの2byte固定
+    // (参照.M実測、tools/pmd-reference/pmdlfo.mml)。
+    case 'lfoBody': return ev.short ? 2 : 5;
     // 2026-08-18: 数値/%が完全に無指定(isDefault)の場合、参照.M実測(mso_JSM.MML)で
     // MC.EXEが0引数の専用コマンド(0xf4/0xf3、1byte)を出力すると判明した。明示指定時は
     // 従来通り0xe3/0xe2(2byte、値=数値×4または%指定値そのまま)。
@@ -378,7 +381,14 @@ function emitEvent(ev, out, offset) {
       out[offset] = ev.lfo === 2 ? 0xbe : 0xf1;
       out[offset + 1] = ev.value & 0xff;
       return;
-    case 'lfoBody': // ソフトウエアLFO本体(v2 3.6節)。常に4byte固定。lfo===2ならLFO2(0xbf)、既定はLFO1(0xf2)。
+    case 'lfoBody': // ソフトウエアLFO本体(v2 3.6節)。lfo===2ならLFO2(0xbf)、既定はLFO1(0xf2)。
+      // delay単独省略形(ev.short)は短縮コマンド0xc2(LFO1)/0xb9(LFO2)+delay 1byteのみ
+      // (参照.M実測、上のsizeOfEvent参照)。
+      if (ev.short) {
+        out[offset] = ev.lfo === 2 ? 0xb9 : 0xc2;
+        out[offset + 1] = ev.delay & 0xff;
+        return;
+      }
       out[offset] = ev.lfo === 2 ? 0xbf : 0xf2;
       out[offset + 1] = ev.delay & 0xff;
       out[offset + 2] = ev.speed & 0xff;
@@ -1077,17 +1087,11 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // 1つでもあれば、flags(4byte)をtone_ptrの直前に置く。無ければ従来通り何も挟まない
   // (後方互換: ヘッダ命令を使わないMMLでは、この2026-08-18のヘッダ機能追加より前と
   // 同じ「トーンテーブルの直前にflagsが無い」構造のまま)。
-  // 2026-08-18: #PPZExtendも他のヘッダ命令と同じくflags/メモテーブル出力の
-  // トリガーになることを自作corpus実測(pmdppzord.mml等、#PPZExtend以外のヘッダ命令を
-  // 一切含まない最小ファイル)で確認した。実測前はTitle等の文字列系ヘッダのみを
-  // 見ていたため、#PPZExtend単体のファイルでtone_ptrが4byteずれていた。
-  // 2026-08-19: #FM3Extendも#PPZExtendと同様にヘッダ命令の一種として扱う(FM3Extend単体で
-  // 他のヘッダ命令が無いケースは未実測だが、#PPZExtendで確立済みの規則「ヘッダ命令が
-  // 1つでもあればflags/メモテーブルを出力する」と対称に扱うのが妥当と判断した)。
-  const hasHeader = header.title != null || header.composer != null
-    || header.arranger != null || header.memo.length > 0
-    || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null
-    || header.ppzExtend != null || header.fm3Extend != null;
+  // 2026-08-18: 当初「#Title等のヘッダ命令が1つでもあればflags/メモテーブルを出力する」
+  // という条件分岐(`hasHeader`)を使っていたが、2026-08-19にpmdnest.mml/pmdloopx.mml
+  // (ヘッダ命令を一切使わない最小ファイル)を参照.M実測したところ、flags/メモテーブルは
+  // ヘッダ命令の有無に関係なく**常に**出力されると判明した(下のflagsOff/memoTailの
+  // コメント参照)。そのため`hasHeader`条件は撤去し、常時出力に統一した。
 
   // 出力トーンテーブルに載せるのは「FMパートの@nで実際に参照されている番号」のみ
   // (fmUsedToneNums、上のコメント参照)。toneTableには検証用にSSG/ADPCM由来の
@@ -1103,25 +1107,29 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // 双方で確認)。@未使用時はこのマーカだけがトーンテーブルの中身になる。
   const TONE_TERMINATOR = [0x00, 0xff];
 
-  let flagsOff = null;
-  if (hasHeader) {
-    flagsOff = cursor;
-    cursor += 4; // flags(memoTableOff 2byte + flaglow + flaghigh)。値は末尾で書く
-  }
+  // 2026-08-19実測(pmdnest.mml/pmdloopx.mml、いずれも#Title等のヘッダ命令を一切
+  // 使わない最小ファイル)で判明: flags(4byte)とメモ本体(文字列+ポインタテーブル、
+  // 全スロット空文字列)は`hasHeader`(ヘッダ命令の有無)に関係なく**常に**出力される。
+  // これは再生側がtone_ptrの直前4byteを無条件にflagsとして読む設計(上のコメント
+  // 「flags(4B、toneptr-4)」)と整合する——flagsを省略するとtone_ptrとflagsの相対位置
+  // 関係そのものが崩れるため、hasHeaderがfalseのファイルはこれまで(ヘッダ命令が
+  // 1つも無いcorpusがpmdnest/pmdloopxの2件しか無かったため)気づけていなかった
+  // だけで、常時出力が正しい。hasHeader自体は今回の実測後も変数として残す意味が
+  // 無くなったが、readabilityのため境界コメントに変数名の名残りを残す。
+  const flagsOff = cursor;
+  cursor += 4; // flags(memoTableOff 2byte + flaglow + flaghigh)。値は末尾で書く
   const toneOff = cursor; // tone_ptr
   cursor = toneOff + toneEntries.length * 26 + TONE_TERMINATOR.length;
 
   // メモ本体(文字列+ポインタテーブル)は、旧実装が置いていた「tone_ptrの直前」ではなく
   // 「トーンテーブルの直後」に置く(buildMemoTailのコメント参照、参照.M実測で訂正済み)。
-  let memoTail = null;
-  if (hasHeader) {
-    try {
-      memoTail = buildMemoTail(header, cursor);
-    } catch (e) {
-      return { file: null, errors: [{ line: header.titleLine ?? 1, message: e.message }], layout: null };
-    }
-    cursor = memoTail.endOff;
+  let memoTail;
+  try {
+    memoTail = buildMemoTail(header, cursor);
+  } catch (e) {
+    return { file: null, errors: [{ line: header.titleLine ?? 1, message: e.message }], layout: null };
   }
+  cursor = memoTail.endOff;
 
   const relLen = cursor;
   const rel = new Uint8Array(relLen);
