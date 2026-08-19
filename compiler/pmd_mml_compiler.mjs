@@ -203,21 +203,44 @@ function signedByte(v) {
 // 一方、異なる音程同士のタイ(ポルタメント等)はfmdriver_pmd.c由来の0xfbコマンド
 // (docs/pmd-compiler-spec.md 165行目、「直前ノートのkeyoffを抑止」)がそのまま必要
 // なため、同音程の場合のみ圧縮し、異音程の場合は従来通りtie(0xfb)+次ノートを出力する。
+// 2026-08-19追記: 同音程タイが3個以上連なる長い連結(合計clocksが255を超える)の場合の
+// 再分割規則。実データ実測(MSO_ET_Virtual_Intensity_88.MML パートE(FM5)の
+// `c1&c1&c2.`、合計clocks=96+96+72=264)で判明: 旧実装は「隣接ペアを255以下なら
+// その場で1個に圧縮する」貪欲法だったため、まず96+96=192を1個にまとめ、残り72を
+// 別ノードのまま出力していた(own: 192,tie,72)。しかし参照.Mは255,tie,9(own: c0 40 /
+// 参照: ff 40 09、いずれも合計264)だった。つまりMC.EXEは元のノート境界を無視して
+// **連結全体の合計clocksをいったんプールし、255ずつ貪欲に再分割する**
+// (255を1byteの上限いっぱいまず取り、余りを最後に残す)。パートF(FM6)・パートH(SSG2)
+// でも同型の差分(288=255+33)を確認済み。
 function mergeSamePitchTies(events) {
   const merged = [];
   let i = 0;
   while (i < events.length) {
     const ev = events[i];
-    const prev = merged[merged.length - 1];
-    if (ev.type === 'tie' && prev && prev.type === 'note'
-        && i + 1 < events.length && events[i + 1].type === 'note') {
-      const next = events[i + 1];
-      if (prev.octave === next.octave && prev.noteIndex === next.noteIndex
-          && prev.clocks + next.clocks <= 255) {
-        prev.clocks += next.clocks; // prevは既にクローン済み(下でpush時に{...ev}している)
-        i += 2;
+    if (ev.type === 'note') {
+      // 同音程タイで連結している限り先読みし、連結全体の合計clocksを求める。
+      let j = i;
+      let total = ev.clocks;
+      while (j + 2 < events.length && events[j + 1].type === 'tie' && events[j + 2].type === 'note'
+          && events[j + 2].octave === ev.octave && events[j + 2].noteIndex === ev.noteIndex) {
+        total += events[j + 2].clocks;
+        j += 2;
+      }
+      if (j === i) {
+        merged.push({ ...ev });
+        i++;
         continue;
       }
+      // 255ずつ貪欲に再分割(255,255,...,余り)、間はtieで接続。
+      let remaining = total;
+      while (remaining > 0) {
+        const chunk = Math.min(remaining, 255);
+        merged.push({ type: 'note', line: ev.line, octave: ev.octave, noteIndex: ev.noteIndex, clocks: chunk });
+        remaining -= chunk;
+        if (remaining > 0) merged.push({ type: 'tie', line: ev.line });
+      }
+      i = j + 1;
+      continue;
     }
     merged.push(ev.type === 'note' ? { ...ev } : ev);
     i++;
@@ -225,15 +248,34 @@ function mergeSamePitchTies(events) {
   return merged;
 }
 
+// 2026-08-19追記: mergeSamePitchTiesと同じ理由(実データMSO_ET_Virtual_Intensity_88.MML
+// パートF(FM6)「FH l16 @183o5*1 r1 r1 r1 >g1<」、連続する休符r1×3=96+96+96=288)で、
+// 隣接休符の結合も「貪欲ペア結合」ではなく「連結全体の合計をプールし255ずつ貪欲に
+// 再分割する」規則に統一する(own旧実装: 192,96の2個 / 参照.M: 255,33の2個。
+// パートH(SSG2)でも同型を確認済み)。
 function mergeAdjacentRests(events) {
   const merged = [];
-  for (const ev of events) {
-    const last = merged[merged.length - 1];
-    if (ev.type === 'rest' && last && last.type === 'rest' && last.clocks + ev.clocks <= 255) {
-      last.clocks += ev.clocks;
+  let i = 0;
+  while (i < events.length) {
+    const ev = events[i];
+    if (ev.type === 'rest') {
+      let j = i;
+      let total = ev.clocks;
+      while (j + 1 < events.length && events[j + 1].type === 'rest') {
+        total += events[j + 1].clocks;
+        j++;
+      }
+      let remaining = total;
+      while (remaining > 0) {
+        const chunk = Math.min(remaining, 255);
+        merged.push({ type: 'rest', line: ev.line, octave: ev.octave, clocks: chunk });
+        remaining -= chunk;
+      }
+      i = j + 1;
       continue;
     }
-    merged.push(ev.type === 'rest' ? { ...ev } : ev);
+    merged.push(ev);
+    i++;
   }
   return merged;
 }
@@ -431,8 +473,14 @@ function emitEvent(ev, out, offset) {
       out[offset + 1] = ev.value & 0xff;
       return;
     case 'fmSlotMask': // FM音源使用スロット位置指定(PMDMML.MAN §6-2。0xcf + 1byte)
+      // 2026-08-19実データ実測(MSO_FM_FS_PPZ.MML「C @4 s3」): 引数はMMLの数値(0-15)を
+      // そのまま書くのではなく**上位4bitへシフトした値**(digit<<4)を書く
+      // (own旧実装0x03、参照0x30)。fmdriver_pmd.c:pmd_cmdcf_slotmaskは読んだbyteの
+      // 下位4bitが非0なら`data<<4`をfm_slotoutへ入れる分岐を持つが、.M側は
+      // 既にシフト済みの値を格納する(=実行時の下位4bit判定は常に0になり通らない
+      // ように見えるが、.Mバイト列の再現が目的なのでMC.EXEの出力どおりに合わせる)。
       out[offset] = 0xcf;
-      out[offset + 1] = ev.value & 0xff;
+      out[offset + 1] = (ev.value << 4) & 0xff;
       return;
     case 'ssgToneNoise': // SSG/OPM トーン・ノイズ出力選択(PMDMML.MAN §6-5。0xed + 1byte)。
       // 引数は音源ミックスレジスタ(YM2149 0x07相当)へそのまま渡すビットマスクで、

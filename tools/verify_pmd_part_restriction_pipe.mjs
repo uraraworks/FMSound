@@ -91,7 +91,59 @@ function main() {
     check('Bにとって無関係な区間の"&2"はエラーにならない', r.errors.length === 0, JSON.stringify(r.errors));
   }
 
-  // 7. [陽性対照] パート限定の実装(active判定)を無効化すると、上の1が実際に
+  // 7. 対象外の間の'o'/'<'/'>'/'l'は、そのパートのオクターブ・デフォルト音長状態を
+  //    変更しない(2026-08-19実データ実測、MSO_ET_Virtual_Intensity_88.MML
+  //    「ABI |AB o5 @183|I o4@1| e32&...」。Aパート向けに`|AB o5`でo5にした直後、
+  //    `|I o4@1|`(I専用のはずのo4)がAの状態まで書き換えてしまい、参照.Mより
+  //    1オクターブ低いノートを出力していたバグ)。
+  {
+    const r = compileOk('ABI @1 o3 |AB o5|I o4|c4');
+    check("|AB o5|I o4|c4 でAは対象外区間のI向けo4に汚染されずo5のままc(内部表現oct-1=4)を出す",
+      JSON.stringify(r.layout.tracks.A.events.filter((e) => e.type === 'note').map((e) => e.octave)) === '[4]',
+      JSON.stringify(r.layout.tracks.A.events.filter((e) => e.type === 'note').map((e) => e.octave)));
+    check("同じ理由でIは自分向けのo4どおりc(内部表現oct-1=3)を出す",
+      JSON.stringify(r.layout.tracks.I.events.filter((e) => e.type === 'note').map((e) => e.octave)) === '[3]',
+      JSON.stringify(r.layout.tracks.I.events.filter((e) => e.type === 'note').map((e) => e.octave)));
+  }
+  {
+    const r = compileOk('AB @1 o4 |A l4|B l8|c');
+    check("|A l4|B l8|c でAは対象外のB向けl8に汚染されずl4(clocks=24)のcを出す",
+      r.layout.tracks.A.events.find((e) => e.type === 'note')?.clocks === 24,
+      JSON.stringify(r.layout.tracks.A.events.find((e) => e.type === 'note')));
+  }
+
+  // 8. [陽性対照] 上の7の"active時のみ状態を更新する"実装を無効化すると、
+  //    実際にオクターブ漏れが再現することを確認する(子プロセスで検証、理由は6と同じ)。
+  {
+    const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
+    const orig = fs.readFileSync(parserPath, 'utf8');
+    const NEEDLE = 'if (active) state.octave = oct - 1;';
+    const count = orig.split(NEEDLE).length - 1;
+    if (count !== 1) {
+      throw new Error(`陽性対照用のパッチ対象コードが見つかりません(想定1箇所、実際${count}箇所)`);
+    }
+    const broken = orig.replace(NEEDLE, 'state.octave = oct - 1;');
+    fs.writeFileSync(parserPath, broken, 'utf8');
+    try {
+      const compilerUrl = new URL('../compiler/pmd_mml_compiler.mjs', import.meta.url).href;
+      const script = `
+        import('${compilerUrl}').then(({ compileMml }) => {
+          const r = compileMml('ABI @1 o3 |AB o5|I o4|c4', { tones: { 1: {} } });
+          const a = r.layout ? r.layout.tracks.A.events.filter(e => e.type === 'note').map(e => e.octave) : null;
+          process.stdout.write(JSON.stringify({ errors: r.errors, a }));
+        }).catch((e) => { process.stdout.write(JSON.stringify({ threw: String(e && e.message) })); });
+      `;
+      const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+      const parsed = JSON.parse(out);
+      // 壊した状態では、I向けのo4がAへ漏れてoctave=3(o4相当)になってしまうはず(o5=4ではなく)。
+      const leaked = parsed.a && parsed.a[0] === 3; // I向けo4=内部表現3がAへ漏れる
+      check('[陽性対照] active判定を無効化するとI向けo4がAへ漏れる(検出器が機能している証拠)', !!leaked, out);
+    } finally {
+      fs.writeFileSync(parserPath, orig, 'utf8');
+    }
+  }
+
+  // 9. [陽性対照] パート限定の実装(active判定)を無効化すると、上の1が実際に
   //    崩れることを確認する(子プロセスで新しいモジュールグラフとして読み直す。
   //    同一プロセス内でのdynamic importはNodeのESMキャッシュにより無効化できない)。
   {

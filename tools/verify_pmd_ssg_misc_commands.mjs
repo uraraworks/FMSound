@@ -116,7 +116,12 @@ function main() {
     const ev = findEvent(r, 'C', 'fmSlotMask');
     check('s3がfmSlotMaskイベント(value=3)になる', !!ev && ev.value === 3, JSON.stringify(ev));
     const bytes = r.file.slice(ev._addr + 1, ev._addr + 3);
-    check('s3 のバイト列が 0xcf 03', bytes.length === 2 && bytes[0] === 0xcf && bytes[1] === 3, Array.from(bytes).map((b) => b.toString(16)).join(' '));
+    // 2026-08-19実データ実測(MSO_FM_FS_PPZ.MML「C @4 s3」の参照.M)で確定: 引数は
+    // MMLの数値をそのまま書くのではなく上位4bitへシフトした値(digit<<4)。
+    // 旧期待値0xcf03は「0xcf+1byteそのまま」という未検証の推測だった
+    // (compiler/pmd_mml_compiler.mjs のfmSlotMaskケースのコメント参照)。
+    check('s3 のバイト列が 0xcf 30(digit<<4、MC.EXE実測)', bytes.length === 2 && bytes[0] === 0xcf && bytes[1] === 0x30, Array.from(bytes).map((b) => b.toString(16)).join(' '));
+    check('[陽性対照] s3の出力は旧仮実装の0xcf03とは一致しない', bytes[1] !== 3, Array.from(bytes).map((b) => b.toString(16)).join(' '));
   }
 
   // 6. sはSSGパートでは未対応(PMDMML.MAN §6-2「[音源]FM」)。

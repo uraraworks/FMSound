@@ -381,7 +381,11 @@ function tryParseHeaderLine(raw, lineNo, header, errors) {
   const pcmM = PCM_HEADER_RE.exec(raw);
   if (pcmM) {
     const key = PCM_HEADER_KEY[pcmM[1].toLowerCase()];
-    header[key] = pcmM[2]; // 最後勝ち(Title等と同じ扱い。§2 全般注記に準拠)
+    // 2026-08-19実データ実測(MSO_FM_FS_PPZ.MML「#PPZFile mspcm3.PZI」、ALPHA_2022_ppz.MML/
+    // SS_TENG_ppz.mmlも同じ書式): 参照.Mのメモ領域には大文字化された値("MSPCM3.PZI")が
+    // 書かれている(own旧実装は本文そのまま小文字混じり)。DOSの8.3ファイル名慣習に
+    // 合わせてMC.EXEがコンパイル時に大文字化していると判明したため、ここで変換する。
+    header[key] = pcmM[2].toUpperCase(); // 最後勝ち(Title等と同じ扱い。§2 全般注記に準拠)
     header[`${key}Line`] = lineNo;
     return true;
   }
@@ -646,7 +650,14 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
     // 0xe2/0xe3(fmdriver_pmd.c:2958-2966)を使うのは数値/%が明示された場合だけ、
     // と判明した(own: e2 04 e2 04 / ref: f3 f3。どちらも「無指定×4=値4」相当だが
     // バイト表現が違う)。isDefaultはこの分岐に使う(compileMml側)。
-    const isDefault = !percent && !m;
+    // 2026-08-19追記: 実データ実測(INTOPAL=MSO_OF_Into_the_Palace_N.mml、`p1 (1`)で
+    // 「数値を明示的に1と書いた場合」も同じくf3/f4(短縮形)になると判明した
+    // (own旧実装: e2 04(明示のため長形式) / 参照: f3)。「%も数値も無い」ではなく
+    // 「(パーセント指定でなく)数値が1(無指定時の既定値と同じ)」がMC.EXEの短縮形の
+    // 判定条件だったと解釈するのが最も単純にこの2点の実測と整合する(この'(' ')'の
+    // MML仕様上の既定値がそもそも「1」であるため、無指定=1という理解に合わせて
+    // 「数値==1」で統一)。
+    const isDefault = !percent && (!m || parseInt(m[0], 10) === 1);
     if (m) { i += m[0].length; num = parseInt(m[0], 10); } else { num = 1; }
     if (percent) {
       if (num < 0 || num > 255) throw new ParseError(line, `'('/')' の%指定値が範囲外です(0-255): ${num}`);
@@ -926,13 +937,19 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       // PMDMML.MAN §4-4: oコマンドの範囲は1〜8(既定4)。実バイトのnibbleはこれより
       // 1小さい0-7(参照.M実測、docs/pmd-compiler-spec-v2.md 6章参照)。
       if (oct < 1 || oct > 8) throw new ParseError(line, `オクターブが範囲外です(1-8。PMDMML.MAN §4-4): ${oct}`);
-      state.octave = oct - 1;
+      // 2026-08-19実データ実測(MSO_ET_Virtual_Intensity_88.mml、`|AB o5 @183|I o4@1|`)で
+      // 判明: `|`(Skip Control 1)で対象外にされている間の'o'は、そのパートのオクターブ状態を
+      // 一切変更してはいけない(実測: own旧実装はactive不問でstate.octaveを常に更新していた
+      // ため、Aパート向けの`o5`の直後に`|I o4@1|`のo4がAにも適用されてしまい、参照.Mより
+      // 1オクターブ低いノートを出力していた)。イベント(events.push)と同じくactiveでゲートする。
+      if (active) state.octave = oct - 1;
       continue;
     }
     // 標準MML慣習: '<'=オクターブ下, '>'=オクターブ上(参照.M実測、
     // pmdbasic.mmlの`b>c<`で確認。旧実装は逆(未検証コメント付き)だった)。
-    if (c === '<') { i++; state.octave -= 1; continue; }
-    if (c === '>') { i++; state.octave += 1; continue; }
+    // 'o'と同じ理由でactive時のみ適用する(2026-08-19)。
+    if (c === '<') { i++; if (active) state.octave -= 1; continue; }
+    if (c === '>') { i++; if (active) state.octave += 1; continue; }
 
     if (c === 'l') {
       i++;
@@ -943,7 +960,9 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       let dots = 0;
       while (body[i] === '.') { dots++; i++; }
       if (dots > 0) clocks = applyDots(clocks, dots, line);
-      state.defaultLength = clocks;
+      // 'o'/'<'/'>'と同じ理由でactive時のみ適用する(2026-08-19、実データでの直接確認は
+      // 無いが、Skip Control 1の対象外部分が状態を変更しないという同一原則から適用)。
+      if (active) state.defaultLength = clocks;
       continue;
     }
     if (c === 'L') { i++; events.push({ type: 'globalLoop', line }); continue; }
@@ -961,14 +980,16 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       // (このファイル末尾付近)をそのまま使う。ADPCM(J)の`@n`は展開されず、FMと同じく
       // 0xFF+番号のまま(実測: `J o4 l4 @0 c @1 c` → `ff 00 30 18 ff 01 30 18 80`。
       // 分類メモには「Jも同様のはず」という推測があったが、実測ではJは対象外)。
-      // 実測(FINDINGS.md 9番)は@0-@9の10点のみ全数実測済みで、それ以外の番号での
-      // MC.EXEの挙動は未測定(推測で埋めない方針)。実データ実例(MSO_ET_Virtual_
-      // Intensity_88.MML「ABI @177...」「GD @183...」)ではFMパートと同じ行にSSGが
-      // 混在し、FM向けの音色番号(10を超える値)がそのままSSGパートにも流れてくる
-      // ケースが実在するため、範囲外の値は実測が無いまま安全側として従来通りの
-      // 'tone'イベント(0xFF+番号)にフォールバックする(エラーにはしない)。
-      const env = partKind === 'ssg' ? SSG_ENVELOPE_TABLE[tonenum] : null;
-      if (env) {
+      // 実測(FINDINGS.md 9番)は@0-@9の10点のみ全数実測済み。それ以外(10以上)の番号は
+      // 2026-08-19実データ実測(MSO_ET_Virtual_Intensity_88.MML)で追加確定した:
+      // `GD @183`(G=SSG1)・`ABI @177`(I=SSG3)・`ABI ... @183`(I=SSG3、別行)の3箇所とも、
+      // 参照.Mでは`0xF0 00 00 00 00`(=SSG_ENVELOPE_TABLE[0]と同一のAL/DD/SR/RRゼロ)に
+      // 展開されていた(177,183,225の3点、いずれも表引き失敗時に単純に0番へ丸まる
+      // 挙動と整合)。'tone'イベントへフォールバックする旧実装は誤りだったため、
+      // SSGパートは範囲に関わらず常にssgEnvOldへ展開し、表に無い番号は
+      // SSG_ENVELOPE_TABLE[0](オール0)を使う。
+      if (partKind === 'ssg') {
+        const env = SSG_ENVELOPE_TABLE[tonenum] ?? SSG_ENVELOPE_TABLE[0];
         events.push({ type: 'ssgEnvOld', line, al: env.al, dd: env.dd, sr: env.sr, rr: env.rr });
       } else {
         events.push({ type: 'tone', line, tonenum });
