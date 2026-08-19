@@ -117,12 +117,22 @@ function main() {
   {
     const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
     const orig = fs.readFileSync(parserPath, 'utf8');
-    const NEEDLE = 'if (active) state.octave = oct - 1;';
-    const count = orig.split(NEEDLE).length - 1;
-    if (count !== 1) {
-      throw new Error(`陽性対照用のパッチ対象コードが見つかりません(想定1箇所、実際${count}箇所)`);
+    // 'if (active) state.octave = oct - 1;' はtokenizeBody本体('o'コマンド)と
+    // '{...}'内(readBraceOctaveShifts、2026-08-19追加)の2箇所にある。本体側だけを
+    // 一意に特定するため、本体側だけに出るエラーメッセージ(先頭に"'{...}' 内の"が
+    // 付かない方)を含めてマッチさせる。
+    const ANCHOR = 'throw new ParseError(line, `オクターブが範囲外です(1-8。PMDMML.MAN §4-4): ${oct}`);';
+    const anchorCount = orig.split(ANCHOR).length - 1;
+    if (anchorCount !== 1) {
+      throw new Error(`陽性対照用のアンカーが見つかりません(想定1箇所、実際${anchorCount}箇所)`);
     }
-    const broken = orig.replace(NEEDLE, 'state.octave = oct - 1;');
+    const NEEDLE = 'if (active) state.octave = oct - 1;';
+    const anchorIdx = orig.indexOf(ANCHOR);
+    const needleIdx = orig.indexOf(NEEDLE, anchorIdx);
+    if (needleIdx < 0 || needleIdx - anchorIdx > 500) {
+      throw new Error('陽性対照用のパッチ対象コードが見つかりません(アンカー直後にNEEDLEが無い)');
+    }
+    const broken = orig.slice(0, needleIdx) + 'state.octave = oct - 1;' + orig.slice(needleIdx + NEEDLE.length);
     fs.writeFileSync(parserPath, broken, 'utf8');
     try {
       const compilerUrl = new URL('../compiler/pmd_mml_compiler.mjs', import.meta.url).href;

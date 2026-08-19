@@ -416,3 +416,66 @@ FM1の残差分は、これまでと同じ「1オクターブ高低差」パタ�
 含む最小MMLをMC.EXEに通し、`|`区間外(A)のオクターブが漏れの影響を受けるかを確認する。
 ADPCM/RHYTHMの残差分は、これらのポインタ/内容が他パートの残り位置ずれの下流である
 可能性が高く(クラス4と同型)、FM1/SSG3が解消すれば連動して改善する可能性がある。
+
+## 追記(2026-08-19、7周目セッション: 固定領域8byte後半(B)の実測反映・MSOET完全一致)
+
+前回の「未解決のまま残った項目」節に基づき、メインセッションがMC.EXE実測
+(自作MML `PFA〜PFG.MML`、`tools/pmd-reference/pmdrhfixa〜g.mml`として同梱)で
+r_offset固定領域(8byte、K/R未使用時。K/R使用時は別領域`mysteryAddr`だが
+同一構造と判明)の構造を確定した:
+
+```
+[A:LE16] 00 00 [B:LE16] 00 00
+```
+
+- **A**: 全パート中の最長パートの総クロック数(既知)と、K/R使用時はRパターンの
+  うち最長のものの総クロック数の**大きい方**(実パートが無いK/R専用最小構成
+  `pmdrr96`等6件で、Rパターン側が勝つケースを確認)。旧実装はK/R使用時、常に
+  Rパターン側だけを見ていたため、実パートの方が長い曲(SSTENG/DS4MAIA/MSOET)で
+  Aを過小評価していた。
+- **B**: 「そのパートの総クロック数 − `L`(globalLoop)の線形位置」の全パート
+  最大値。`L`の無いパートは寄与せず、どのパートにも`L`が無ければB=0。旧実装は
+  `rel[+5]=Aの上位byteの複製`という未確定の暫定実装で、既存corpus4本
+  (POPFUL/INTOPAL/MULE/MSOFMFS)はA・Bの上位byteがたまたま一致していたため
+  無症状のまま残っていた。
+
+`compiler/pmd_mml_compiler.mjs`の`computeLongestLoopSpan`/`findGlobalLoopLinearPos`
+(新規)と、K/R未使用時・使用時両方の8byte書き込み処理を実測どおりに修正した。
+
+これにより**ALPHA・SSTENG・DS4MAIAが完全一致に到達**(前回節の残差分は全てこの
+固定領域8byteの[5]byteに集中していたことが確定した)。
+
+### MSOETの残差分(2件)の原因も特定・修正
+
+固定領域修正後もMSOETに2byteだけ残った差分を追跡し、2つの原因を特定:
+
+1. 前回節で「実データで厳密に特定できず見送った」`{...}`(ポルタメント音程指定)内の
+   `o`/`<`/`>`ハンドラ(`readBraceOctaveShifts()`)が`|`制限区間の`active`で
+   ゲートされていなかったバグ。通常の`o`/`<`/`>`(旧実装は同型バグを2026-08-19
+   6周目セッションの5番で修正済み)と同じ修正を適用(`if (active)`でガード)。
+   これで48byte中46byteが解消。
+2. 残り2byte: `(`/`)`(音量相対変化)の数値のみ倍率で、ADPCM(`partKind==='adpcm'`)
+   パートが前回「未実測のためFMと同じ×4のまま」としていた分岐。MSOET line165の
+   Jパート(ADPCM)`(2`が参照.Mで`e2 20`(=2×16=32)だったため、PPZ8拡張と同じ
+   ×16に確定(FM×4/SSG×1/PPZ・ADPCM×16の4分岐が出揃った)。
+
+### 実データ8本の不一致バイト数(before→after、パーセントではなくバイト数)
+
+| stem | 全体byte数 | before(不一致byte数) | after(不一致byte数) |
+|---|---|---|---|
+| INTOPAL | 4006 | 0 | 0(維持) |
+| MULE | 2441 | 0 | 0(維持) |
+| POPFUL | 2617 | 0 | 0(維持) |
+| MSOFMFS | 9175 | 0 | 0(維持) |
+| ALPHA | 9662 | 1 | **0(完全一致)** |
+| SSTENG | 6706 | 3 | **0(完全一致)** |
+| DS4MAIA | 6447 | 4 | **0(完全一致)** |
+| MSOET | 6449 | 48 | **0(完全一致)** |
+
+**実データ8本すべて完全一致に到達(8/8)。** 引き続き8/8コンパイル可能
+(`probe3.mjs`確認済み)。既存回帰テスト(`verify_pmd_reference_corpus.mjs` 71件
+・`verify_pmd_*.mjs`全41ファイル)は全てPASS。`verify_pmd_rhythm_fixed_area_ticks.mjs`
+にB(後半4byte)のケース6件(実測PFA〜PFF.MML由来)と陽性対照を追加、
+`verify_pmd_part_restriction_pipe.mjs`の陽性対照NEEDLEを`{...}`内の同名コード
+追加により2箇所該当するよう変化したため一意化、新規`verify_pmd_vol_rel_multiplier.mjs`
+でFM/SSG/PPZ/ADPCMの4分岐(陽性対照込み)を追加した。

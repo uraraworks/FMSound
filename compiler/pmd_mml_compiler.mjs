@@ -598,6 +598,73 @@ function computeLongestPartTicks(tracks, header) {
   return max;
 }
 
+// トラック中の`L`(globalLoop、曲全体のループ開始点、PMDMML.MAN)の「線形位置」
+// (最初の1周分の演奏順で数えたクロック数。囲むループが`[...]n`で複数回展開されても
+// 位置そのものはn倍しない。ループ本体がすでに閉じて確定した区間は、その展開後の
+// 総クロック数ぶんだけ後続位置に加算する。trackTotalTicksと同じbefore/after/stack
+// 機構を流用し、globalLoopに出会った時点のprefix+cur.beforeを記録する)。
+// `L`が無ければnullを返す。2026-08-19実測(PFC〜PFG.MML)は全て`[...]n`ブロック無しの
+// 単純なケースのみで、`L`がブロック内にある場合の挙動は未検証(その場合でもこの実装は
+// 「初回通過時点の線形位置」を返す)。
+function findGlobalLoopLinearPos(events) {
+  let prefix = 0;
+  let cur = { before: 0, after: 0, sawExit: false };
+  const stack = [];
+  let pos = null;
+  for (const ev of events) {
+    if (ev.type === 'loopOpen') {
+      stack.push({ cur, prefix });
+      prefix = prefix + cur.before + (cur.sawExit ? cur.after : 0);
+      cur = { before: 0, after: 0, sawExit: false };
+      continue;
+    }
+    if (ev.type === 'loopExit') {
+      cur.sawExit = true;
+      continue;
+    }
+    if (ev.type === 'loopClose') {
+      const n = ev.count;
+      const total = cur.sawExit ? (cur.before * n + cur.after * (n - 1)) : (cur.before * n);
+      const parent = stack.pop();
+      prefix = parent.prefix;
+      cur = parent.cur;
+      if (cur.sawExit) cur.after += total; else cur.before += total;
+      continue;
+    }
+    if (ev.type === 'globalLoop') {
+      if (pos === null) pos = prefix + cur.before + (cur.sawExit ? cur.after : 0);
+      continue;
+    }
+    let clocks = 0;
+    if (ev.type === 'note' || ev.type === 'rest' || ev.type === 'portamento') clocks = ev.clocks;
+    if (cur.sawExit) cur.after += clocks; else cur.before += clocks;
+  }
+  return pos;
+}
+
+// r_offset固定領域(またはK/R使用時の8byte領域)の後半4byte(B)。
+// 2026-08-19実測(PFA〜PFG.MML、docs/pmd-compiler-real-data-diff-2026-08-19.md参照):
+// 「そのパートの総クロック数 − `L`の線形位置」の全パート最大値。`L`の無いパートは
+// 寄与しない。どのパートにも`L`が無ければ0。
+function computeLongestLoopSpan(tracks, header) {
+  const letters = [
+    ...PART_LETTERS,
+    ...(header.ppzExtend ? header.ppzExtend.split('') : []),
+    ...(header.fm3Extend ? header.fm3Extend.split('') : []),
+  ];
+  let max = 0;
+  for (const letter of letters) {
+    const raw = tracks.get(letter);
+    if (!raw || raw.length === 0) continue;
+    const loopPos = findGlobalLoopLinearPos(raw);
+    if (loopPos === null) continue;
+    const total = trackTotalTicks(raw);
+    const span = total - loopPos;
+    if (span > max) max = span;
+  }
+  return max;
+}
+
 // events に相対アドレス(_addr)を付与する。トラック終端(0x80)のアドレスも返す。
 function layoutTrack(events, startAddr) {
   let addr = startAddr;
@@ -1083,39 +1150,54 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     // 0x00で不変。
     const { tableAddr, patAddrs, patternLayouts, mysteryAddr } = rhythmIndexInfo;
     patAddrs.forEach((addr, i) => w16(tableAddr + i * 2, addr));
-    let longestPatternTicks = 0;
     for (const { events, termAddr } of patternLayouts) {
       for (const ev of events) emitEvent(ev, rel, ev._addr);
       rel[termAddr] = 0xff;
+    }
+    // 2026-08-19実測(PFG.MML: R0パターン有り・K R0 R0使用、および既存corpus
+    // pmdrr96/pmdrr192/pmdrrl8/pmdrrl8b/pmdrhbit/pmdrhpan: いずれも実パート(A-J)を
+    // 一切使わずK/Rのみの最小構成): この8byte領域はK/R未使用時のr_offset固定領域と
+    // 同じ`[A:LE16] 00 00 [B:LE16] 00 00`構造。
+    //   A = 「全パート中の最長パートの総クロック数」と「Rパターンのうち最も
+    //       総クロック数が長いものの総クロック数」の大きい方。
+    //   PFG.MML(実パートA=192、Rパターンは短い)ではAはパート側が勝ち、実パートを
+    //   一切使わないpmdrr96等の最小構成コーパスではAはパターン側の値になる
+    //   (この6件のcorpusで確認済み。パターン側とパート側を単純に比較して大きい方を
+    //   採る、というのがこの6件+PFGの全てを矛盾なく説明する)。
+    let longestPatternTicks = 0;
+    for (const { events } of patternLayouts) {
       const ticks = trackTotalTicks(events);
       if (ticks > longestPatternTicks) longestPatternTicks = ticks;
     }
-    rel[mysteryAddr] = longestPatternTicks & 0xff;
-    for (let i = 1; i < 8; i++) rel[mysteryAddr + i] = 0x00;
+    const aVal = Math.max(computeLongestPartTicks(tracks, header), longestPatternTicks) & 0xffff;
+    const bVal = computeLongestLoopSpan(tracks, header) & 0xffff;
+    rel[mysteryAddr] = aVal & 0xff;
+    rel[mysteryAddr + 1] = (aVal >> 8) & 0xff;
+    rel[mysteryAddr + 2] = 0x00;
+    rel[mysteryAddr + 3] = 0x00;
+    rel[mysteryAddr + 4] = bVal & 0xff;
+    rel[mysteryAddr + 5] = (bVal >> 8) & 0xff;
+    rel[mysteryAddr + 6] = 0x00;
+    rel[mysteryAddr + 7] = 0x00;
   } else {
-    // r_offset固定領域(8byte、K/R未使用時)。従来「先頭byteだけが総クロック数の下位8bit、
-    // 残り7byteは常に0x00」としていたが、実データ(POPFUL/INTOPAL/MULE/MSOFMFS、
-    // いずれもK/R未使用)を突き合わせたところ、総クロック数が256を超えるケース
-    // (実データはほぼ全て該当。既存corpusが256未満に収まっていたため気づけなかった)では
-    // 上位バイトも書かれており、単純な「下位8bitのみ」では説明できないと判明した
-    // (2026-08-19)。実測できた構造は次の通り(offsetはこの8byte領域内の相対位置):
-    //   [0]=総クロック数の下位byte、[1]=上位byte、[2..4]=0x00固定、
-    //   [5]=[1]と同じ値(上位byteの複製)、[6..7]=0x00固定。
-    // 4本(POPFUL/INTOPAL/MULE/MSOFMFS)全てで一致を確認済み。ただしALPHA(#PPZExtend
-    // 6パート使用)だけは[5]が複製にならず0x00だった。ALPHAは既知の別バグ
-    // (#PPZExtend拡張パート1本あたり6byte不足、docs/pmd-compiler-real-data-diff-*.md参照)
-    // により拡張パート領域の長さ自体がずれているため、この[5]の複製規則との関係は
-    // 未確定(そちらのバグを解消してから再検証が必要)。[1..4]の「総クロック数」の
-    // 定義自体はcomputeLongestPartTicksのコメント参照。
-    const longest = computeLongestPartTicks(tracks, header) & 0xffff;
-    const lo = longest & 0xff;
-    const hi = (longest >> 8) & 0xff;
-    rel[rhythmFixedAddr] = lo;
-    rel[rhythmFixedAddr + 1] = hi;
+    // r_offset固定領域(8byte、K/R未使用時)。2026-08-19実測(PFA〜PFG.MML、
+    // docs/pmd-compiler-real-data-diff-2026-08-19.md参照)で構造を確定:
+    //   `[A:LE16] 00 00 [B:LE16] 00 00`
+    //   A = 全パート中の最長パートの総クロック数(computeLongestPartTicksのコメント参照)。
+    //   B = 「そのパートの総クロック数 − `L`の線形位置」の全パート最大値
+    //       (computeLongestLoopSpanのコメント参照)。`L`が無いパートは寄与せず、
+    //       どのパートにも`L`が無ければB=0。
+    // 旧実装は[5]=[1]の複製(上位byteの複製)という未確定の暫定実装だったが、実際は
+    // 独立した値Bの上位byteであり、既存corpus(POPFUL/INTOPAL/MULE/MSOFMFS)でA・Bの
+    // 上位byteがたまたま一致していたため無症状のまま残っていた。
+    const aVal = computeLongestPartTicks(tracks, header) & 0xffff;
+    const bVal = computeLongestLoopSpan(tracks, header) & 0xffff;
+    rel[rhythmFixedAddr] = aVal & 0xff;
+    rel[rhythmFixedAddr + 1] = (aVal >> 8) & 0xff;
     rel[rhythmFixedAddr + 2] = 0x00;
     rel[rhythmFixedAddr + 3] = 0x00;
-    rel[rhythmFixedAddr + 4] = 0x00;
-    rel[rhythmFixedAddr + 5] = hi;
+    rel[rhythmFixedAddr + 4] = bVal & 0xff;
+    rel[rhythmFixedAddr + 5] = (bVal >> 8) & 0xff;
     rel[rhythmFixedAddr + 6] = 0x00;
     rel[rhythmFixedAddr + 7] = 0x00;
   }

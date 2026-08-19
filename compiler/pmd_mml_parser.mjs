@@ -637,8 +637,9 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
   //     参照.Mは`e2 03`(=3そのまま)、自作(旧実装)は`e2 0c`(=3×4=12)で食い違っていた)。
   //   - PPZ8拡張(partKind==='ppz'): ×16(MSO_FM_FS_PPZ.MMLのPPZ8拡張パート、
   //     `(2`→参照.Mは`e2 20`(=2×16=32)、自作(旧実装)は`e2 08`(=2×4=8))。
-  //   - ADPCM(partKind==='adpcm'): 未実測。他のPCM系(PPZ)と同じ×16と推測されるが
-  //     未確認のため、実測できるまではFMと同じ×4のまま(既存の後方互換動作を維持)。
+  //   - ADPCM(partKind==='adpcm'): ×16(2026-08-19実測、MSO_ET_Virtual_Intensity_88.MML
+  //     line165のJパート(ADPCM)、`(2`→参照.Mは`e2 20`(=2×16=32)、旧実装は`e2 08`
+  //     (=2×4=8)。以前「未実測」としていたPPZと同じ×16の推測が実測で確認できた)。
   function readVolRelArg() {
     let percent = false;
     if (body[i] === '%') { percent = true; i++; }
@@ -663,7 +664,7 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       if (num < 0 || num > 255) throw new ParseError(line, `'('/')' の%指定値が範囲外です(0-255): ${num}`);
       return { value: num, isDefault };
     }
-    const multiplier = partKind === 'ssg' ? 1 : partKind === 'ppz' ? 16 : 4;
+    const multiplier = partKind === 'ssg' ? 1 : (partKind === 'ppz' || partKind === 'adpcm') ? 16 : 4;
     const maxNum = Math.floor(255 / multiplier);
     if (num < 0 || num > maxNum) throw new ParseError(line, `'('/')' の数値が範囲外です(0-${maxNum}。無指定時は×${multiplier}され1byteに収める制約から算出): ${num}`);
     return { value: num * multiplier, isDefault };
@@ -694,14 +695,18 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
         // これより1小さい0-7(参照.M実測、docs/pmd-compiler-spec-v2.md 6章参照:
         // `pmdbasic.mml`の`o5`が参照.M上でnibble=4として符号化されていた)。
         if (oct < 1 || oct > 8) throw new ParseError(line, `'{...}' 内のオクターブが範囲外です(1-8。PMDMML.MAN §4-4): ${oct}`);
-        state.octave = oct - 1;
+        // 2026-08-19実測(MSO_ET_Virtual_Intensity_88.MML、docs/pmd-compiler-real-data-diff-
+        // 2026-08-19.md参照): 通常の'o'/'<'/'>'(line 942-952)と同じく`|`制限区間の外
+        // (active===false)ではstate.octaveを更新してはいけない。旧実装はactive不問で
+        // 常に更新しており、他パート向けの`|`区間を読み飛ばす際に音程が化けていた。
+        if (active) state.octave = oct - 1;
         continue;
       }
       // 標準MML慣習: '<'=オクターブ下, '>'=オクターブ上(参照.M実測、
       // pmdbasic.mmlの`b>c<`で b=0x4b→>後のc=0x50 と1オクターブ上がることを確認。
       // 旧実装は逆(未検証コメント付き)だった)。
-      if (body[i] === '<') { i++; state.octave -= 1; continue; }
-      if (body[i] === '>') { i++; state.octave += 1; continue; }
+      if (body[i] === '<') { i++; if (active) state.octave -= 1; continue; }
+      if (body[i] === '>') { i++; if (active) state.octave += 1; continue; }
       break;
     }
   }
