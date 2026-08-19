@@ -562,8 +562,22 @@ function applyDots(baseClocks, dotCount, line) {
   return total;
 }
 
+// デフォルト音長('l'コマンド、音符/休符の無指定時に使う値)は固定クロック値ではなく
+// 「全音符の何分の1か」という比率(n)+付点数(dots)で保持し、実際にクロック値が必要な
+// 都度(音符/休符を読む時点)、その時点でのglobalState.measLen('C'コマンドで変更可能)
+// から再計算する。2026-08-19、MC.EXE実測(tools/pmd-reference/pmdwhole.mml: `C72 l4 c`
+// `C132 d` `C204 e`)で判明: `l4`確定時のクロック値を`C`変更後も使い回すのは誤りで、
+// 「l4」は常に「現在のCの4分の1」を意味する。Rパターン内の無指定'r'が参照元Kの
+// その時点のデフォルト音長を継承する既存実装(ensurePatternCompiled呼び出し側)と
+// 同じ原則であり、この関数を通常パート・Rパターン本体の両方で共有する。
+function resolveDefaultLengthClocks(spec, globalState, line) {
+  let clocks = numericLengthToClocks(spec.n, line, globalState.measLen);
+  if (spec.dots > 0) clocks = applyDots(clocks, spec.dots, line);
+  return clocks;
+}
+
 // 本文(パート文字を除いた部分)を字句解析してイベント列を返す。
-// state: {octave, defaultLength(クロック値)} をパートごとに呼び出し元が持ち回す。
+// state: {octave, defaultLengthSpec({n, dots})} をパートごとに呼び出し元が持ち回す。
 // partKind: 'fm' | 'ssg' (v/Vの値域・変換がFM/SSGで異なるため、doc 6.6節)
 // globalState: {measLen} 。`C`(全音符長設定)は全パート共通のグローバル設定
 // (PMDMML.MAN §4-11「いずれかのパートの頭に設定すれば、すべてのパートに有効」)
@@ -620,7 +634,7 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       i += m[0].length;
       clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
     } else {
-      clocks = state.defaultLength;
+      clocks = resolveDefaultLengthClocks(state.defaultLengthSpec, globalState, line);
     }
     let dots = 0;
     while (body[i] === '.') { dots++; i++; }
@@ -961,13 +975,16 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
       i += m[0].length;
-      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+      const lenN = parseInt(m[0], 10);
+      // その時点のCに対する妥当性(約数かどうか)はここで検証しておく。実際に使われる
+      // クロック値は、後で音符/休符を読む時点のC(その時点でさらに変わっている
+      // 可能性がある)から都度再計算する(resolveDefaultLengthClocks参照)。
+      numericLengthToClocks(lenN, line, globalState.measLen);
       let dots = 0;
       while (body[i] === '.') { dots++; i++; }
-      if (dots > 0) clocks = applyDots(clocks, dots, line);
       // 'o'/'<'/'>'と同じ理由でactive時のみ適用する(2026-08-19、実データでの直接確認は
       // 無いが、Skip Control 1の対象外部分が状態を変更しないという同一原則から適用)。
-      if (active) state.defaultLength = clocks;
+      if (active) state.defaultLengthSpec = { n: lenN, dots };
       continue;
     }
     if (c === 'L') { i++; events.push({ type: 'globalLoop', line }); continue; }
@@ -1551,7 +1568,7 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
     if (c === '<' || c === '>') { i++; continue; }
     if (c === 'l') {
       // Kパート自身に音符は無く出力バイトも無いが、内部のデフォルト音長状態
-      // (state.defaultLength)は実際に更新する必要がある。2026-08-19、MC.EXE実測
+      // (state.defaultLengthSpec)は実際に更新する必要がある。2026-08-19、MC.EXE実測
       // (PRRL8.MML: `R0 \h r \b r` + `K C96 l8 R0`)で判明: Rパターン内の無指定`r`の
       // 休符長は、Rパターン自身のl指定(あればそちらが優先)が無ければ**参照元Kの
       // その時点のデフォルト音長を継承する**(下のR選択時ensurePatternCompiledへの
@@ -1561,12 +1578,11 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
       i += m[0].length;
-      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+      const lenN = parseInt(m[0], 10);
+      numericLengthToClocks(lenN, line, globalState.measLen); // 妥当性検証のみ
       let dots = 0;
       while (body[i] === '.') { dots++; i++; }
-      if (dots > 0) clocks = applyDots(clocks, dots, line);
-      state.defaultLength = clocks;
-      state.defaultLengthExplicit = true;
+      state.defaultLengthSpec = { n: lenN, dots };
       continue;
     }
     // 'v'(大雑把な音量)・'V'(細かい音量)・'q'(ゲート)・'_'/'__'(転調)も、実データでは
@@ -1687,16 +1703,14 @@ function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRe
       // (docs/pmd-compiler-spec-v2.md 1.3節、マニュアルとの食い違いとして記録済み)。
       if (num < 0 || num > 127) throw new ParseError(line, `Kパートの'R'パターン番号は0-127です(cmd&0x80分岐の制約でこの範囲のみ到達可能。docs/pmd-compiler-spec-v2.md 1.3節): ${num}`);
       // Rパターン本体は参照される時点で初めてコンパイルされる(遅延コンパイル)。
-      // 継承させるデフォルト音長は「今このKストリームで有効なdefaultLength」
-      // (直前の'l'反映後の値)。2026-08-19 MC.EXE実測(PRRL8/PRRL8B.MML)で確定。
-      // Kストリームでまだ一度も明示的に'l'が書かれていない場合は、生成時に固定で
-      // 焼き込んだ既定値(24)をそのまま使わず、その時点の`C`(全音符長)からl4相当を
-      // 都度再計算する(PRR192.MML実測: `K C192 R0`(l指定なし)でも参照先の休符が
-      // 48クロックになり、96クロック時代の既定値24が使い回されないことを確認済み)。
-      const seedDefaultLength = state.defaultLengthExplicit
-        ? state.defaultLength
-        : numericLengthToClocks(4, line, globalState.measLen);
-      if (onPatternRef) onPatternRef(num, seedDefaultLength, line);
+      // 継承させるデフォルト音長は「今このKストリームで有効なdefaultLengthSpec」
+      // (直前の'l'反映後の比率+付点。'l'が一度も書かれていなければ既定のl4相当
+      // {n:4,dots:0})。2026-08-19 MC.EXE実測(PRRL8/PRRL8B.MML)で確定。この比率は
+      // resolveDefaultLengthClocksで参照時点の`C`(全音符長)から都度クロック値へ
+      // 変換されるため、生成時に固定クロック値を焼き込んで古い`C`を引きずる
+      // (PRR192.MML実測: `K C192 R0`(l指定なし)でも参照先の休符が48クロックになる
+      // べきところ、96クロック時代の既定値24を使い回してしまう)心配が無い。
+      if (onPatternRef) onPatternRef(num, state.defaultLengthSpec, line);
       events.push({ type: 'rhSelect', line, pattern: num });
       continue;
     }
@@ -1779,7 +1793,7 @@ function tokenizeRhythmPatternBody(body, line, state, events, globalState) {
       i += m[0].length;
       clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
     } else {
-      clocks = state.defaultLength;
+      clocks = resolveDefaultLengthClocks(state.defaultLengthSpec, globalState, line);
     }
     let dots = 0;
     while (body[i] === '.') { dots++; i++; }
@@ -1802,11 +1816,11 @@ function tokenizeRhythmPatternBody(body, line, state, events, globalState) {
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
       i += m[0].length;
-      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+      const lenN = parseInt(m[0], 10);
+      numericLengthToClocks(lenN, line, globalState.measLen); // 妥当性検証のみ
       let dots = 0;
       while (body[i] === '.') { dots++; i++; }
-      if (dots > 0) clocks = applyDots(clocks, dots, line);
-      state.defaultLength = clocks;
+      state.defaultLengthSpec = { n: lenN, dots };
       continue;
     }
     if (c === '[') { i++; events.push({ type: 'loopOpen', line }); continue; }
@@ -2068,9 +2082,9 @@ export function parseMml(source) {
   const eofMarkerIdx = idx1a < 0 ? idx1c : (idx1c < 0 ? idx1a : Math.min(idx1a, idx1c));
   if (eofMarkerIdx >= 0) source = source.slice(0, eofMarkerIdx);
 
-  const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
+  const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLengthSpec}}
   const tones = new Map(); // tonenum -> toneOptions (buildToneEntry用、tonenumはキー側と重複保持)
-  // Rパターン番号(0-127) -> {events:[], state:{octave, defaultLength}}。
+  // Rパターン番号(0-127) -> {events:[], state:{octave, defaultLengthSpec}}。
   // 2026-08-19実測(FINDINGS.md 12番)により、パターン本体は定義行の字句順ではなく
   // **Kパートから最初に参照(R<n>)された時点**で遅延コンパイルする(下のrawPatternBodies/
   // ensurePatternCompiled参照)。無指定`r`の休符長がKパート側の`l`設定(パターン定義行より
@@ -2107,7 +2121,7 @@ export function parseMml(source) {
   // ものをそのまま使い回す(再コンパイルしない。PMD公式コンパイラがパターン本体を
   // 共有バイト列として1つだけ持つ設計に合わせた実装判断で、複数回・異なる文脈からの
   // 参照で結果が変わるケースは実測できていない)。
-  function ensurePatternCompiled(patNum, seedDefaultLength, refLine) {
+  function ensurePatternCompiled(patNum, seedDefaultLengthSpec, refLine) {
     if (compiledPatternNums.has(patNum)) return;
     compiledPatternNums.add(patNum);
     const chunks = rawPatternBodies.get(patNum);
@@ -2115,7 +2129,7 @@ export function parseMml(source) {
       errors.push({ line: refLine, message: `未定義のRパターンを参照しています: R${patNum}` });
       return;
     }
-    const info = { events: [], state: { octave: 0, defaultLength: seedDefaultLength } };
+    const info = { events: [], state: { octave: 0, defaultLengthSpec: seedDefaultLengthSpec } };
     rhythmPatterns.set(patNum, info);
     for (const { body, lineNo } of chunks) {
       try {
@@ -2286,7 +2300,7 @@ export function parseMml(source) {
     // パート指定を跨いだ暗黙の状態共有は行わない設計にする)。
     let lettersToScan = letters;
     if (/k/i.test(letters)) {
-      if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLength: 24, terminated: false } });
+      if (!tracks.has('K')) tracks.set('K', { events: [], state: { octave: 3, defaultLengthSpec: { n: 4, dots: 0 }, terminated: false } });
       const kTrack = tracks.get('K');
       // '/'(PMDMML.MAN §16-4)でKパートが既に打ち切られていれば、以降の行は
       // このパートについて一切コンパイルしない(通常パートと同じ規則)。
@@ -2334,7 +2348,7 @@ export function parseMml(source) {
         // 既定オクターブ: PMDMML.MAN §4-4の既定値はo4(1-8系)。nibble表現は
         // -1した3(oコマンド未実装当時の名残でoctave:4だったが、oコマンドの
         // 符号化修正(oct-1)に合わせてここも合わせる)。
-        tracks.set(p, { events: [], state: { octave: 3, defaultLength: 24, terminated: false } });
+        tracks.set(p, { events: [], state: { octave: 3, defaultLengthSpec: { n: 4, dots: 0 }, terminated: false } });
       }
     }
 
@@ -2390,12 +2404,13 @@ export function parseMml(source) {
   }
 
   // Kから一度も参照されなかった(=定義だけされた)Rパターンも、既存の「パターン番号は
-  // 0から連番」チェックやパターン索引表の構築に必要なため、既定の初期defaultLength(24、
-  // l4相当)で遅延コンパイルしておく。実測(FINDINGS.md 12番)はいずれもK参照ありのケースの
-  // ため、Kから参照されない場合の実機挙動は未確認だが、少なくとも「未定義パターン参照」
-  // エラーになったり出力から消えたりする既存の互換性は保つ。
+  // 0から連番」チェックやパターン索引表の構築に必要なため、既定の初期defaultLengthSpec
+  // ({n:4, dots:0}、l4相当。C=96のとき24クロック)で遅延コンパイルしておく。
+  // 実測(FINDINGS.md 12番)はいずれもK参照ありのケースのため、Kから参照されない場合の
+  // 実機挙動は未確認だが、少なくとも「未定義パターン参照」エラーになったり出力から
+  // 消えたりする既存の互換性は保つ。
   for (const patNum of rawPatternBodies.keys()) {
-    ensurePatternCompiled(patNum, 24, rawPatternBodies.get(patNum)[0]?.lineNo ?? 1);
+    ensurePatternCompiled(patNum, { n: 4, dots: 0 }, rawPatternBodies.get(patNum)[0]?.lineNo ?? 1);
   }
 
   if (errors.length === 0) {

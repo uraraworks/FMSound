@@ -101,7 +101,7 @@ function main() {
   {
     const parserPath = new URL('../compiler/pmd_mml_parser.mjs', import.meta.url);
     const orig = fs.readFileSync(parserPath, 'utf8');
-    const NEEDLE = "while (body[i] === ' ' || body[i] === '\\t') i++;\n    if (body[i] === '%') {\n      i++;\n      const m = /^\\d+/.exec(body.slice(i));\n      if (!m) throw new ParseError(line, `'%' の後に数値がありません`);\n      i += m[0].length;\n      return parseInt(m[0], 10);\n    }\n    const m = /^\\d+/.exec(body.slice(i));\n    let clocks;\n    if (m) {\n      i += m[0].length;\n      clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);\n    } else {\n      clocks = state.defaultLength;\n    }\n    let dots = 0;\n    while (body[i] === '.') { dots++; i++; }\n    return dots > 0 ? applyDots(clocks, dots, line) : clocks;\n  }\n\n  // '(' ')'";
+    const NEEDLE = "while (body[i] === ' ' || body[i] === '\\t') i++;\n    if (body[i] === '%') {\n      i++;\n      const m = /^\\d+/.exec(body.slice(i));\n      if (!m) throw new ParseError(line, `'%' の後に数値がありません`);\n      i += m[0].length;\n      return parseInt(m[0], 10);\n    }\n    const m = /^\\d+/.exec(body.slice(i));\n    let clocks;\n    if (m) {\n      i += m[0].length;\n      clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);\n    } else {\n      clocks = resolveDefaultLengthClocks(state.defaultLengthSpec, globalState, line);\n    }\n    let dots = 0;\n    while (body[i] === '.') { dots++; i++; }\n    return dots > 0 ? applyDots(clocks, dots, line) : clocks;\n  }\n\n  // '(' ')'";
     if (!orig.includes(NEEDLE)) {
       throw new Error('陽性対照用のパッチ対象コードが見つかりません(製品コードが変更された可能性)');
     }
