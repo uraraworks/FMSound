@@ -271,6 +271,13 @@ export async function init(ctx) {
       const ffFile = song.ffFile
         ? { data: song.ffFile, name: song.ffFileSource ?? null, matchedHeaderName: Boolean(song.ffFileMatchedHeaderName) }
         : null;
+      // 【不具合修正・2026-08-19】ここが唯一の窓口(exitEditorModeOnSongOpen()、
+      // 上のsetUiMode()直後のコメント参照)を通さず編集モードのままにしていた箇所。
+      // MMLソース無しの曲(mmlSourceText == null)を選ぶとreflectSongMmlSourceQuietly()も
+      // 呼ばれないため編集欄が前の曲のMMLを表示したまま残り、利用者報告の症状に
+      // 直結していた。playBytes()より前に呼ぶ(playBytes()自体はuiModeを見ないため
+      // 順序は自由だが、他の経路(loadSongFromUrl())の書き方に揃える)。
+      exitEditorModeOnSongOpen();
       playBytes(song.bytes, song.fileName, undefined, pcmFiles, [], mmlSourceText, ffFile);
     },
   });
@@ -328,6 +335,24 @@ export async function init(ctx) {
   function setUiMode(mode) {
     try { localStorage.setItem(UI_MODE_KEY, mode); } catch { /* ignore (private mode等) */ }
     applyUiMode(mode);
+  }
+
+  // 【不具合修正・2026-08-19、利用者報告】「編集モード(MML付きの曲を開いている)の
+  // まま曲ライブラリからMMLソース無しの曲を選ぶと、編集画面が前の曲のMMLを表示した
+  // まま残る」の対処。原因は「曲を開く」の入力源ごとに`if (uiMode === 'editor')
+  // setUiMode('player');`を個別に書いていたため(URL読み込み経路の2箇所には
+  // あったが、曲ライブラリ選択経路には無かった)。フィードバック
+  // feedback_single_fanin_point_for_input.md「入力源は末端の唯一の窓口へ集約する」
+  // に倣い、この小さな窓口関数へ集約し、曲を開く全経路(ファイル/D&D=openPmdFile()、
+  // 曲ライブラリ選択、URL読み込み=loadSongFromUrl())がこれを通るようにする。
+  //
+  // ここでは「モードをplayerへ戻す」だけを行い、restoreOriginalSongOnExitEditor()
+  // (下記、btnEditorMode専用)は呼ばない: 新しい曲を開く経路はこの直後に必ず
+  // playBytes()(またはpendingUrlSongへの代入)で新しい曲のデータへ丸ごと
+  // 置き換えるため、退避していた「元の曲」を鳴らし直す動作は不要かつ無駄
+  // (退避→即座に新曲で上書き、という無意味な往復になる)。
+  function exitEditorModeOnSongOpen() {
+    if (uiMode === 'editor') setUiMode('player');
   }
 
   // 課題(利用者提案、2026-08-18): 「聴く」ことを自作コンパイラの完成度から切り離す。
@@ -1707,6 +1732,11 @@ export async function init(ctx) {
     // 残っている`?mml=`はここで取り除く。
     clearLoadedUrlFromAddressBar();
     clearShareFragmentFromAddressBar();
+    // 【不具合修正・2026-08-19】この関数(ファイル選択/D&D、下のarchive分岐・
+    // 単体ファイル分岐どちらもここを通ってからplayBytes()へ進む)はexitEditorModeOnSongOpen()
+    // (唯一の窓口、上のsetUiMode()直後のコメント参照)が漏れていた経路の1つ。
+    // ここで一度だけ呼んでおけば両分岐をまとめてカバーできる。
+    exitEditorModeOnSongOpen();
 
     if (resolved.kind === 'archive') {
       const pmdCandidates = resolved.candidates.filter((c) => c.driver === 'pmd');
@@ -1915,8 +1945,9 @@ export async function init(ctx) {
       // pendingUrlSongは.M/.mバイナリの直接再生(プレイヤーモードの仕組み)を前提にしている。
       // エディタモードのままだと、上のupdateTransportButtonUI()分岐(uiMode!=='editor'限定)が
       // 効かず再生ボタンが有効化されないため、読み込み時にプレイヤーモードへ切り替える
-      // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。
-      if (uiMode === 'editor') setUiMode('player');
+      // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。【2026-08-19】唯一の窓口
+      // exitEditorModeOnSongOpen()経由に変更(元はここに直書きだった側、上のコメント参照)。
+      exitEditorModeOnSongOpen();
       // 書庫内の.PPC/.PZI/.PVI(・upstream未対応の.P86/.PPS)も同じ書庫のentriesから
       // 拾って一緒に保持する(playBytes()呼び出し時にpcmFiles/unsupportedFilesとして
       // 渡される。上のbtnPlayPauseハンドラ参照)。同名PCMの取り違え防止のため
@@ -1953,7 +1984,9 @@ export async function init(ctx) {
       return;
     }
 
-    if (uiMode === 'editor') setUiMode('player');
+    // 【2026-08-19】唯一の窓口exitEditorModeOnSongOpen()経由に変更(元はここに
+    // 直書きだった側。archive分岐側の同種コメント参照)。
+    exitEditorModeOnSongOpen();
     // 課題B: nameは仮想FS書き込み用にそのまま(#titleへのフォールバックを含みうる
     // 表示名)残し、FILEBARにはfileNameForBar(=fileName、ファイル名専用)を渡す
     // (playBytes()のfileNameForBar引数参照)。ツールバーの「読み込みました」は

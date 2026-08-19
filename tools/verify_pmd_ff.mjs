@@ -310,8 +310,12 @@ async function run() {
     /const ffSelection = selectFfFileForSong\(resolved\.entries, chosen\.entry\.name, mmlSourceText\);[\s\S]{0,400}?ffSelection,\s*\)/.test(src));
   check('[結線](b) loadSongFromUrl()もselectFfFileForSong()を呼び、pendingUrlSongへffFileとして渡している',
     /ffFile: ffSelection,/.test(src) && (src.match(/selectFfFileForSong\(resolved\.entries, chosen\.entry\.name, mmlSourceText\)/g) || []).length >= 2);
+  // {0,300}だった許容幅は、不具合修正(2026-08-19、曲を開く全経路でエディタモードを
+  // 終了するexitEditorModeOnSongOpen()呼び出しの追加)でconst ffFile〜playBytes()の
+  // 間にコメント+呼び出しが増えたぶん(実測643文字)を超えたため{0,800}へ拡げた
+  // (検査の意図=「ffFileがplayBytes()まで届いているか」自体は変えていない)。
   check('[結線](b) ライブラリ選択(onSelect)がsong.ffFileからffSelectionを組み立ててplayBytes()へ渡している',
-    /const ffFile = song\.ffFile[\s\S]{0,300}?playBytes\(song\.bytes, song\.fileName, undefined, pcmFiles, \[\], mmlSourceText, ffFile\)/.test(src));
+    /const ffFile = song\.ffFile[\s\S]{0,800}?playBytes\(song\.bytes, song\.fileName, undefined, pcmFiles, \[\], mmlSourceText, ffFile\)/.test(src));
 
   // --- [陽性対照] 上の(1)(2)を旧実装相当へ戻した文字列で、同じ検査が実際にFAILする ---
   const brokenA = src.replace(
