@@ -148,6 +148,11 @@ function sizeOfEvent(ev) {
     // PPZ8初期化(#PPZExtend、v2 2.2節)。0xb4 + 16byte固定引数(PPZ_1〜_8のデータ先頭
     // ポインタ、2byte LE×8。0なら該当chは未使用)。fmdriver_pmd.c:4253-4260実測どおり。
     case 'ppz8Init': return 17;
+    // FM3拡張初期化(#FM3Extend、PMDMML.MAN §2-20)。0xc6 + 6byte固定引数(拡張パート
+    // 1〜3のトラック先頭ポインタ、2byte LE×3。宣言数が3未満なら残りは0)。
+    // 2026-08-19、MC.EXE ver4.8s実測(PFM3B〜PFM3E.MML、パートA(FM1)トラックの先頭に
+    // 前置される配置を確定。tools/pmd-reference/README.md参照)。
+    case 'fm3Init': return 7;
     case 'detuneExtend': return 2; // DX + 1byte(0xcc、PMDMML.MAN §7-3。実測はpmd_mml_compiler.mjs先頭のコメント参照)
     case 'lfoSpeedExtend': return 2; // MXA=0xca / MXB=0xbb + 1byte(値0-1、PMDMML.MAN §9-5)
     case 'envSpeedExtend': return 2; // EX=0xc9 + 1byte(値0-1、PMDMML.MAN §8-2)
@@ -404,6 +409,11 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xb4;
       for (let k = 0; k < 8; k++) w16(offset + 1 + k * 2, ev.ptrs[k] & 0xffff);
       return;
+    case 'fm3Init': // FM3拡張初期化(#FM3Extend、PMDMML.MAN §2-20)。0xc6 + 拡張パート1〜3
+      // のトラック先頭ポインタ6byte(2byte LE×3、0=未宣言)。2026-08-19 MC.EXE実測で確定。
+      out[offset] = 0xc6;
+      for (let k = 0; k < 3; k++) w16(offset + 1 + k * 2, (ev.ptrs[k] ?? 0) & 0xffff);
+      return;
     case 'detuneExtend': // SSG音源音程補正指定(PMDMML.MAN §7-3。0xcc + 1byte、値0-1)
       out[offset] = 0xcc;
       out[offset + 1] = ev.value & 0xff;
@@ -512,7 +522,11 @@ function trackTotalTicks(events) {
 // ため対象外)を除く全40ケースでこの定義が成立することを確認済み
 // (pmdwhole.mmlは対象外の既存differenceがあるため元々100%不一致で対照外)。
 function computeLongestPartTicks(tracks, header) {
-  const letters = [...PART_LETTERS, ...(header.ppzExtend ? header.ppzExtend.split('') : [])];
+  const letters = [
+    ...PART_LETTERS,
+    ...(header.ppzExtend ? header.ppzExtend.split('') : []),
+    ...(header.fm3Extend ? header.fm3Extend.split('') : []),
+  ];
   let max = 0;
   for (const letter of letters) {
     const raw = tracks.get(letter);
@@ -575,29 +589,18 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   const { tracks, tones: parsedTones, header, rhythmPatterns, errors: parseErrors } = parseMml(source);
   if (parseErrors.length > 0) return { file: null, errors: parseErrors, layout: null };
 
-  // #FM3Extend(FM3ch拡張パート、PMDMML.MAN §2-20)は構文レベル(pmd_mml_parser.mjs、
-  // collectFm3Extend/kind='fm')までは対応済みだが、.M側の出力(upstream/98fmplayer/
+  // #FM3Extend(FM3ch拡張パート、PMDMML.MAN §2-20)。.M側の出力(upstream/98fmplayer/
   // fmdriver/fmdriver_pmd.c:3554 pmd_cmdc6_fm3ex_initが読む、3スロット×2byteポインタの
-  // 0xc6コマンド)を**どのトラックの・どの位置に**MC.EXEが書くかは実測できていない
-  // (#PPZExtendの0xb4は tools/pmd-reference/pmdppzord.mml等のMC.EXE ver4.8s実測で
-  // 「ADPCM(J)トラック先頭」という配置を確定させたが、今回はその実測パイプライン
-  // 〈WebNP2+MC.EXE、tools/webnp2-mc-pipeline/〉を使う余地が無かった)。
-  // 推測で「もっともらしい」配置(例: C=FM3本体トラックの先頭)を実装すると、
-  // 実機と一致しない.Mを黙って生成しかねない(PPZ8の0xb4も当初「ファイル末尾」という
-  // 推測が実測で誤りと判明した実績がある。既存の教訓「もっともらしい値は正しい
-  // 番地の証明にならない」)。そのため構文としては受理しつつ、.M生成はここで
-  // 明示的に止める。将来MC.EXE実測で配置が確定したら、この分岐を実装に置き換える。
-  if (header.fm3ExtendLetters && header.fm3ExtendLetters.length > 0) {
-    return {
-      file: null,
-      errors: [{
-        line: header.fm3ExtendLine ?? 1,
-        message: `#FM3Extend は構文としては解釈できていますが、.M側の出力位置(PMDMML.MAN §2-20、fmdriver_pmd.c:3554の0xc6コマンド)がMC.EXE実測で未確定のため、.M生成にはまだ対応していません(パート ${header.fm3ExtendLetters.join(',')})`,
-      }],
-      layout: null,
-    };
-  }
-
+  // 0xc6コマンド)の配置は、2026-08-19 WebNP2+MC.EXE ver4.8s実測(PFM3A〜PFM3E.MML、
+  // tools/pmd-reference/README.md参照)で確定した:
+  //   - 0xc6 + 3スロット分のポインタ(拡張パートの実体位置、宣言数が3未満なら残り0)を
+  //     **パートA(FM1)のトラック先頭に前置**する(下のidx===0の特別処理)。
+  //   - 拡張パート自身のトラック本体は、#PPZExtendのPPZ8パートと同じ位置
+  //     (RHYTHMスロット(idx===10)の直後・r_offsetの手前)に置く。宣言だけして
+  //     本文で使わない場合も、他パートと同様に空トラック(0x80のみ)を実体として置く
+  //     (下のidx===10の特別処理。#PPZExtendと同時に使われる場合、実データ
+  //     MSO_FM_FS_PPZ.MMLの参照.M実測でFM3Extendパート群→PPZ8パート群の順に
+  //     並ぶことを確認済みのため、既存のppzExtend配置ブロックより前に置く)。
   const toneTable = {};
   for (const [tn, opts] of parsedTones) toneTable[tn] = opts;
   if (tones) Object.assign(toneTable, tones); // 明示指定があれば本文中の定義より優先(後方互換)
@@ -683,6 +686,8 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // 書き戻す(sizeOfEventはptrsの値を見ないため、後から書き換えてもレイアウト全体の
   // アドレスには影響しない)。
   const ppzExtendLetters = header.ppzExtendLetters ?? [];
+  // #FM3Extend(PMDMML.MAN §2-20)の宣言済み拡張パート文字(最大3文字、宣言順)。
+  const fm3ExtendLetters = header.fm3ExtendLetters ?? [];
   // #Detune Extend(PMDMML.MAN §2-16)の対象パート。SSG(G,H,I)のみ(A-F/Jには効かない。
   // 実測: pmdhdrxt.M参照。下のSLOT_LETTERSループ内コメント参照)。
   const DETUNE_EXTEND_LETTERS = new Set(['G', 'H', 'I']);
@@ -712,6 +717,7 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     return prefix;
   }
   let ppz8InitEvent = null; // idx===9で確保、idx===10直後で.ptrsを確定させる
+  let fm3InitEvent = null; // idx===0で確保、idx===10直後で.ptrsを確定させる
   let cursor = HEADER_LEN;
   const trackLayout = {}; // partLetter -> {startAddr, termAddr, events}
   const slotAddr = new Array(SLOT_LETTERS.length); // 各スロットがヘッダに書き込むポインタ値
@@ -720,6 +726,24 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   let rhythmIndexInfo = null; // K/R使用時: {tableAddr, patAddrs, patternLayouts, mysteryAddr}
   for (let idx = 0; idx < SLOT_LETTERS.length; idx++) {
     const letter = SLOT_LETTERS[idx];
+    if (idx === 0 && fm3ExtendLetters.length > 0) {
+      // パートA(FM1): 0xc6(FM3拡張初期化)をパート先頭に置き、Aが実際に使われていれば
+      // その直後にA自身のトラック本体を続ける(2026-08-19実測、PFM3E.MML「A有り」ケースで
+      // A自身のイベント(cd)がc6ブロックの直後に現れることを確認済み)。ポインタ(ptrs)は
+      // idx===9のppz8Initと同様、拡張パート本体のアドレスが確定するidx===10直後で書き戻す。
+      fm3InitEvent = { type: 'fm3Init', line: header.fm3ExtendLine ?? 1, ptrs: [0, 0, 0] };
+      const aRaw = tracks.get('A');
+      const aEvents = aRaw ? mergeAdjacentRests(mergeSamePitchTies(aRaw)) : [];
+      // #LFOSpeed Extendとの同時使用順は未実測だが、#PPZExtend+J(0xb4が最初、Extendは後)の
+      // 既存規則に倣い、0xc6を最初に置く(このコメント冒頭の設計上の余地の範囲内)。
+      const combinedEvents = [fm3InitEvent, ...buildExtendPrefixEvents('A'), ...aEvents];
+      const startAddr = cursor;
+      const { endAddr, termAddr } = layoutTrack(combinedEvents, startAddr);
+      trackLayout.A = { startAddr, termAddr, events: combinedEvents };
+      slotAddr[idx] = startAddr;
+      cursor = endAddr;
+      continue;
+    }
     if (idx === 9 && ppzExtendLetters.length > 0) {
       // ADPCM(J): 0xb4(PPZ8初期化)をパート先頭に置き、Jが実際に使われていればその
       // トラック本体を続ける(fmdriver_pmd.c:4249、ADPCMパートの拡張コマンドとしてのみ
@@ -844,6 +868,32 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
     //     未使用c-fパートも同様にnonzeroポインタを持つことを確認済み)。
     //   - 8個を超えるスロット(宣言数より後ろ)は0のまま=未使用スキップ(fmdriver_pmd.c:4256
     //     `if(!ptr) continue`)。
+    if (idx === 10 && fm3ExtendLetters.length > 0) {
+      // FM3拡張パート(#FM3Extend)のトラック本体。#PPZExtendと同じ位置(RHYTHMスロット
+      // 直後・r_offsetの手前)に、宣言順で並べる。実データMSO_FM_FS_PPZ.MMLの参照.M実測
+      // (#PPZExtend abcdefgh + #FM3Extend xy、両方を同時宣言)で、FM3Extendパート(x,y)が
+      // PPZ8パート(a-h)より**前**に置かれることを確認したため、ppzExtendの配置ブロックより
+      // 前に置く。宣言だけで本文未使用の文字も、他の未使用パートと同様に1byteの終端(0x80)
+      // だけを指すプレースホルダとして扱う(2026-08-19実測、PFM3D.MML「decl only」ケース)。
+      const fm3Addrs = [0, 0, 0];
+      for (let k = 0; k < fm3ExtendLetters.length && k < 3; k++) {
+        const fm3Letter = fm3ExtendLetters[k];
+        const rawEvents = tracks.get(fm3Letter);
+        const events = rawEvents ? mergeAdjacentRests(mergeSamePitchTies(rawEvents)) : [];
+        if (events.length > 0) {
+          const startAddr = cursor;
+          const { endAddr, termAddr } = layoutTrack(events, startAddr);
+          trackLayout[fm3Letter] = { startAddr, termAddr, events };
+          fm3Addrs[k] = startAddr;
+          cursor = endAddr;
+        } else {
+          fm3Addrs[k] = cursor;
+          emptySlotAddrs.push(cursor);
+          cursor += 1;
+        }
+      }
+      if (fm3InitEvent) fm3InitEvent.ptrs = fm3Addrs;
+    }
     if (idx === 10 && ppzExtendLetters.length > 0) {
       const ppzAddrs = new Array(8).fill(0);
       for (let k = 0; k < ppzExtendLetters.length; k++) {
@@ -874,10 +924,13 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
   // トリガーになることを自作corpus実測(pmdppzord.mml等、#PPZExtend以外のヘッダ命令を
   // 一切含まない最小ファイル)で確認した。実測前はTitle等の文字列系ヘッダのみを
   // 見ていたため、#PPZExtend単体のファイルでtone_ptrが4byteずれていた。
+  // 2026-08-19: #FM3Extendも#PPZExtendと同様にヘッダ命令の一種として扱う(FM3Extend単体で
+  // 他のヘッダ命令が無いケースは未実測だが、#PPZExtendで確立済みの規則「ヘッダ命令が
+  // 1つでもあればflags/メモテーブルを出力する」と対称に扱うのが妥当と判断した)。
   const hasHeader = header.title != null || header.composer != null
     || header.arranger != null || header.memo.length > 0
     || header.pcmfile != null || header.ppzfile != null || header.ppsfile != null
-    || header.ppzExtend != null;
+    || header.ppzExtend != null || header.fm3Extend != null;
 
   // 出力トーンテーブルに載せるのは「FMパートの@nで実際に参照されている番号」のみ
   // (fmUsedToneNums、上のコメント参照)。toneTableには検証用にSSG/ADPCM由来の

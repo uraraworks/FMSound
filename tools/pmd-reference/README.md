@@ -121,6 +121,20 @@ corpus全43ケースで突き合わせても、K/R使用の3ケース(`pmdrhbit`
   `pmdppzsub`も完全一致に到達。上記追記節参照)。`pmdppznote`はr_offset固定領域自体は
   一致するが、PPZ8関連の別要因(未解明)で全体一致には至っていない。詳細はdocs/pmd-compiler-spec-v2.md
   2章を参照。
+- FM3拡張パート(`#FM3Extend`)は2026-08-19に実装・corpus追加済み(`pmdfm3a.mml`
+  「宣言なし」・`pmdfm3b.mml`「#FM3Extend xy、2パート」・`pmdfm3c.mml`
+  「#FM3Extend xyz、3パート」・`pmdfm3d.mml`「宣言のみ・未使用」・`pmdfm3e.mml`
+  「パートA自体にも音符あり」、いずれもWebNP2上のMC.EXE ver4.8s実測(`/V`)。
+  `0xc6`(FM3拡張初期化、3スロット×2byteポインタ)は**パートA(FM1)のトラック先頭に
+  前置**され、パートAに中身があればその直後にA自身のイベントが続く。拡張パート自身の
+  トラック本体は`#PPZExtend`のPPZ8パートと同じ位置(RHYTHMスロット直後・r_offsetの
+  手前)に置かれ、宣言だけで未使用の文字も他の未使用パートと同様に空トラック(`0x80`)
+  として実体を持つ。5ケースすべて11/11パート一致・バイト完全一致。
+  `#PPZExtend`と`#FM3Extend`を同時宣言する組み合わせ(実データ`MSO_FM_FS_PPZ.MML`で
+  実在)は、参照`.M`の構造読み取りで「FM3Extendパート群→PPZ8パート群」の順に並ぶことを
+  確認し、その順で実装した(この組み合わせ自体を再現するMC.EXE実測corpusは無く、
+  実データの参照.M構造からの読み取りのみが根拠。詳細は
+  `compiler/pmd_mml_compiler.mjs`のidx===10ブロックのコメント参照)。
 
 ## ヘッダ命令(`#Title`/`#Composer`/`#Memo`/`#PCMfile`/`#PPZfile`)のメモテーブル形式
 
