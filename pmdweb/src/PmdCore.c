@@ -495,6 +495,35 @@ double pmdweb_render_frames_for_test(int frames) {
   return absolute_sum;
 }
 
+// 検証専用(tools/experiment_p86_to_ppc.mjs)。renderFramesForTest()はabsSumしか
+// 返さず、ピッチ実測(自己相関/FFT)には生PCM波形そのものが要る。70ビンの
+// getSnapshotFftOffset()経由のFFTは表示用で分解能が粗い(約60Hzに1回更新・
+// 対数寄りのビン配分)ため使わない。ここでは指定フレーム数を素直にレンダリング
+// しつつ、そのまま静的バッファへ複製して保持する。製品UIからは呼ばれない。
+enum { CAPTURE_MAX_FRAMES = 262144 };  // 55467Hzで約4.7秒分。ピッチ実測に十分
+static int16_t g_capture_buffer[CAPTURE_MAX_FRAMES * CHANNEL_COUNT];
+
+int pmdweb_test_render_capture(int frames) {
+  if (!g_player.active || frames <= 0) return 0;
+  if (frames > CAPTURE_MAX_FRAMES) frames = CAPTURE_MAX_FRAMES;
+  int total = 0;
+  while (total < frames) {
+    int remain = frames - total;
+    int count = remain > FRAMES_PER_BLOCK ? FRAMES_PER_BLOCK : remain;
+    memset(g_audio_buffer, 0, count * CHANNEL_COUNT * sizeof(*g_audio_buffer));
+    opna_timer_mix(&g_player.timer, g_audio_buffer, count);
+    fft_feed(g_audio_buffer, count);
+    memcpy(&g_capture_buffer[total * CHANNEL_COUNT], g_audio_buffer,
+           (size_t)count * CHANNEL_COUNT * sizeof(*g_audio_buffer));
+    total += count;
+  }
+  return total;
+}
+
+uint32_t pmdweb_test_get_capture_pointer(void) {
+  return (uint32_t)(uintptr_t)g_capture_buffer;
+}
+
 uint32_t pmdweb_get_snapshot_ring_pointer(void) {
   return (uint32_t)(uintptr_t)g_snapshot_ring;
 }

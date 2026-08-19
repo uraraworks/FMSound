@@ -31,6 +31,8 @@ void pmdweb_set_ppz8_mask(unsigned mask);
 int pmdweb_test_load_ppc_file(const char *path);
 void pmdweb_test_write_opna_reg(unsigned reg, unsigned val);
 void pmdweb_test_reset_drum_no_rom(void);
+int pmdweb_test_render_capture(int frames);
+uint32_t pmdweb_test_get_capture_pointer(void);
 }
 
 namespace {
@@ -83,6 +85,11 @@ EMSCRIPTEN_BINDINGS(pmdweb) {
   emscripten::function("testWriteOpnaReg", &pmdweb_test_write_opna_reg);
   // 検証専用(tools/verify_pmd_rhythm.mjs 陽性対照)。製品UIからは呼ばれない。
   emscripten::function("testResetDrumNoRom", &pmdweb_test_reset_drum_no_rom);
+  // 検証専用(tools/experiment_p86_to_ppc.mjs)。生PCM波形を自己相関でピッチ実測
+  // するための静的バッファ経由キャプチャ。PmdCore.cのコメント参照。製品UIからは
+  // 呼ばれない。
+  emscripten::function("testRenderCapture", &pmdweb_test_render_capture);
+  emscripten::function("testGetCapturePointer", &pmdweb_test_get_capture_pointer);
   // PCM(.PPC/.PZI/.PVI/.P86/.PPS)状態。net/pmd-pcm.jsのdescribePmdPcmStatus()が
   // 利用者向けメッセージを組み立てるための材料(fmdriver.h参照)。
   emscripten::function("getPcmCount", &pmdweb_get_pcm_count);

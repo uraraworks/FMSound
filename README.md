@@ -154,10 +154,12 @@ The player currently has a few honest limitations worth stating up front.
   files.** Dropping a standalone `.M`/`.m` file gives no way to supply a PCM
   file alongside it, so PCM never loads in that case. If a song references
   PCM that can't be found, the UI shows a notice naming the missing file.
-  **`.P86` (PMD86) and `.PPS` (PPSDRV) aren't supported** — the upstream
-  sound core doesn't implement them, so neither does this web build (if the
-  archive happens to bundle the matching file anyway, the missing-PCM notice
-  is suppressed to avoid a misleading warning).
+  **`.P86` (PMD86) is supported via a JS-side conversion to a synthetic
+  `.PPC`** (see `docs/pmd-p86-support.md`), while **`.PPS` (PPSDRV) still
+  isn't** — the upstream sound core doesn't implement PPSDRV loading, so
+  neither does this web build (if the archive happens to bundle a matching
+  `.PPS` file anyway, the missing-PCM notice is suppressed to avoid a
+  misleading warning).
 - **The screen isn't optimized for phones yet, and phone support is planned.** Tablets haven't been checked or optimized for at this time.
 - **Sharing a MUCOM88 song that depends on a disk-specific external voice bank
   changes its sound for the recipient.** The share link (`?driver=` +

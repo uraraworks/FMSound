@@ -27,4 +27,8 @@
 # forkしたリポジトリ・手元ビルドごとに値が変わりうる(公開先の中継URLを埋め込むため)。
 /net/config.js
 
+# Claude Code のローカル設定(preview_start用launch.json等)。手元環境ごとに
+# 変わりうる個人設定のため追跡しない。
+/.claude/
+
 .DS_Store

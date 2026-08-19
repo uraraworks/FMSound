@@ -58,7 +58,7 @@ PMD(`fmdriver_pmd.c` の `pmd_get_pcm_status()` 相当、6059-6066行付近)で�
 | 0 | `.PPC`(ADPCM) | `"PPC"` | `pmd->ppcfile` |
 | 1 | `.PZI`/`.PVI`(PPZ8バンク1) | `"PPZ1"` | `pmd->ppzfile` |
 | 2 | `.PZI`/`.PVI`(PPZ8バンク2) | `"PPZ2"` | `pmd->ppzfile2` |
-| 3 | `.P86`/`.PPS` | (未実装のため常に不使用) | `pmd->ppsfile` |
+| 3 | `.P86`/`.PPS` | (upstreamは未実装のため常に不使用) | `pmd->ppsfile` |
 
 `pcmname` は `char[9]`(8文字+NUL)固定長。書き込みは `fmdriver_fillpcmname()`
 (`fmdriver_common.h`)が行い、**8文字までコピーしてスペースパディング、
@@ -73,6 +73,12 @@ PPZ8は**2バンクまで**(slot 1, 2)。3つ目以降のPPZファイルを曲�
 
 ## 3. PMD86を`.M`から判別できない理由
 
+> **2026-08-19 追記**: `.P86` はその後 `net/pmd-p86.js` による疑似
+> `.PPC`(ADPCM)変換で対応済みになった。upstream の C 側(このslotの
+> 読み込み自体)は依然未実装のままで、以下の記述はその upstream 側の
+> 制約について書いたもの。JS側の変換方式・実測の経緯は
+> `docs/pmd-p86-support.md` を参照。`.PPS`(PPSDRV用PCM)は今も未対応。
+
 - slot 3 (`pmd->ppsfile`) は `.P86`(PMD86用PCM)・`.PPS`(PPSDRV用PCM)の
   両方を指しうるが、**upstreamはこのslotの読み込み自体を実装していない**
   (`loadppc()`/`loadpmdppz()` に相当する `.P86`/`.PPS` 用のローダが
@@ -86,14 +92,18 @@ PPZ8は**2バンクまで**(slot 1, 2)。3つ目以降のPPZファイルを曲�
   入っていれば `.PPC`(ADPCM)不足として通常どおり案内が出る(実際には
   PMD86向けの`.P86`が必要な曲でも、slot 0 は「PPC」型として現れる)。
 
-### 対応方針
+### 対応方針(当時。`.P86`はその後対応済み)
 
 - 書庫(zip等)に `.P86` が同梱されており、かつそのファイル名がPCM不足
   メッセージの対象ファイル名と一致する場合は、**PCM不足の案内自体を
-  抑止する**(実際には対応していないが、必要なファイルは同梱されている
-  ため誤解を招く「不足」表示をしない、という判断)。
+  抑止する**(当時は実際には対応していなかったが、必要なファイルは
+  同梱されているため誤解を招く「不足」表示をしない、という判断)。
 - 単体の`.M`ファイルとして開いた場合(書庫を伴わない)は、PCM不足文言に
   「PMD86/PPSDRVは未対応」の注記を出す。
+
+`.P86` はその後 `net/pmd-p86.js` による疑似`.PPC`変換で対応済みになった
+ため、現在この注記が指すのは実質 `.PPS`(PPSDRV)のみ。詳細は
+`docs/pmd-p86-support.md` を参照。
 
 検証: `tools/verify_pmd_pcm_missing.mjs`(§5参照)。
 
