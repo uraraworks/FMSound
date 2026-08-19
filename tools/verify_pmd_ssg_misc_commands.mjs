@@ -126,12 +126,27 @@ function main() {
   }
 
   // 7. P(大文字、SSGトーン/ノイズ選択)がSSGパートで受理され、0xed + 1byte。
+  // 2026-08-19、MC.EXE ver4.8s実測(PPTBL.MML、tools/pmd-reference/pmdptbl.mml/.M)で
+  // 引数byteの変換表を確定: P1→0x07, P2→0x38, P3→0x3f(0x07|0x38)。値をそのまま
+  // (val&0xff)出力する旧仮実装の期待値(0xed 01)はこの実測より前の手書きの推測であり、
+  // 実測結果と食い違うため更新する(旧仮実装のコメントにも「1byteをそのまま格納」という
+  // 未検証の推測である旨が明記されていた)。
   {
     const r = compileOk('I @1 o4 P1 c4');
     const ev = findEvent(r, 'I', 'ssgToneNoise');
     check('P1がssgToneNoiseイベント(value=1)になる', !!ev && ev.value === 1, JSON.stringify(ev));
     const bytes = r.file.slice(ev._addr + 1, ev._addr + 3);
-    check('P1 のバイト列が 0xed 01', bytes.length === 2 && bytes[0] === 0xed && bytes[1] === 1, Array.from(bytes).map((b) => b.toString(16)).join(' '));
+    check('P1 のバイト列が 0xed 07(MC.EXE実測、PPTBL.MML)', bytes.length === 2 && bytes[0] === 0xed && bytes[1] === 0x07, Array.from(bytes).map((b) => b.toString(16)).join(' '));
+  }
+  // 7b. P2/P3も同じ変換表に従う(MC.EXE実測)。
+  {
+    const r = compileOk('I @1 o4 P2 c4 P3 c4');
+    const evs = r.layout.tracks.I.events.filter((e) => e.type === 'ssgToneNoise');
+    check('P2/P3が両方ssgToneNoiseイベントになる', evs.length === 2 && evs[0].value === 2 && evs[1].value === 3, JSON.stringify(evs));
+    const bytes2 = r.file.slice(evs[0]._addr + 1, evs[0]._addr + 3);
+    const bytes3 = r.file.slice(evs[1]._addr + 1, evs[1]._addr + 3);
+    check('P2 のバイト列が 0xed 38(MC.EXE実測)', bytes2.length === 2 && bytes2[0] === 0xed && bytes2[1] === 0x38, Array.from(bytes2).map((b) => b.toString(16)).join(' '));
+    check('P3 のバイト列が 0xed 3f(MC.EXE実測、0x07|0x38)', bytes3.length === 2 && bytes3[0] === 0xed && bytes3[1] === 0x3f, Array.from(bytes3).map((b) => b.toString(16)).join(' '));
   }
 
   // 8. w(小文字、SSGノイズ周波数)がSSGパートで受理され、0xee + 1byte。

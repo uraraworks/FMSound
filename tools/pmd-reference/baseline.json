@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-19T02:21:20.462Z",
+  "generatedAt": "2026-08-19T02:54:06.707Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -302,6 +302,13 @@
       "totalParts": 11,
       "byteMatchRate": 1
     },
+    "pmdptbl": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
     "pmdq1b": {
       "status": "compared",
       "identical": true,
@@ -318,17 +325,52 @@
     },
     "pmdrhbit": {
       "status": "compared",
-      "identical": false,
-      "matchedParts": 10,
+      "identical": true,
+      "matchedParts": 11,
       "totalParts": 11,
-      "byteMatchRate": 0.7647058823529411
+      "byteMatchRate": 1
     },
     "pmdrhpan": {
       "status": "compared",
-      "identical": false,
-      "matchedParts": 10,
+      "identical": true,
+      "matchedParts": 11,
       "totalParts": 11,
-      "byteMatchRate": 0.7647058823529411
+      "byteMatchRate": 1
+    },
+    "pmdrr192": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdrr96": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdrrdef": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdrrl8": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdrrl8b": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
     },
     "pmdsl": {
       "status": "compared",

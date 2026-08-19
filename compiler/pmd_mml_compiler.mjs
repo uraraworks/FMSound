@@ -22,6 +22,10 @@ import { encodeCp932 } from './cp932.mjs';
 
 const HEADER_LEN = 0x1a; // 11ポインタ(22) + r_offset(2) + tone_ptr(2)。doc 1.1/1.2節。
 
+// SSG 'P'(トーン/ノイズ出力選択、PMDMML.MAN §6-5)のMML数値(1-3) → 0xed引数byte変換表。
+// 2026-08-19、MC.EXE実測(PPTBL.MML、tools/pmd-reference/README.md参照)で確定。
+const SSG_TONE_NOISE_VALUE = { 1: 0x07, 2: 0x38, 3: 0x3f };
+
 // メモ/タイトルテーブル(#Title/#Composer/#Arranger/#Memo)。
 // 出典: upstream/98fmplayer/fmdriver/fmdriver_pmd.c の pmd_get_memo()(5962-5993)・
 // pmd_get_comment()(6008-6014、`pmd_get_memo(pmd, line+1)`)・
@@ -430,9 +434,12 @@ function emitEvent(ev, out, offset) {
       out[offset] = 0xcf;
       out[offset + 1] = ev.value & 0xff;
       return;
-    case 'ssgToneNoise': // SSG/OPM トーン・ノイズ出力選択(PMDMML.MAN §6-5。0xed + 1byte)
+    case 'ssgToneNoise': // SSG/OPM トーン・ノイズ出力選択(PMDMML.MAN §6-5。0xed + 1byte)。
+      // 引数は音源ミックスレジスタ(YM2149 0x07相当)へそのまま渡すビットマスクで、
+      // MMLの数値(1/2/3)とは非線形の対応。2026-08-19、MC.EXE実測(PPTBL.MML)で確定:
+      // P1(トーン)→0x07, P2(ノイズ)→0x38, P3(両方)→0x3f(=0x07|0x38、ビットOR)。
       out[offset] = 0xed;
-      out[offset + 1] = ev.value & 0xff;
+      out[offset + 1] = SSG_TONE_NOISE_VALUE[ev.value];
       return;
     case 'ssgEnvOld': // SSG/PCMソフトウエアエンベロープ・書式1(PMDMML.MAN §8-1。
       // 0xf0 + AL(1byte)/DD(1byte符号付き)/SR(1byte)/RR(1byte)、
@@ -561,6 +568,12 @@ function layoutTrack(events, startAddr) {
 // ポインタがその直後を指していた。0xffは通常コマンド表への「エスケープ」経路
 // (rcmd&0xc0==0xc0)を通る値で、fmdriver_pmd.c単体からは終端の意味の確証は
 // 得られていないが、実測上は常にこの1byteでパターンが閉じている)。
+//
+// 2026-08-19追記(PRRDEF/PRR96/PRR192/PRRL8/PRRL8B.MML実測): 当初「0xffの直後に
+// 総クロック数1byteが続く」と誤読しかけたが、実際はその1byteは各パターン自身の
+// 終端ではなく、**全パターン共通の「常にある8byte領域」(下のmysteryAddr)の先頭byte**
+// だった(pmdunimp.Mでは全パターンがクロック0のため0x00に見え、この領域の意味に
+// 気づけていなかった)。パターン自体の終端は引き続き0xff単独1byteのまま。
 function layoutRhythmPattern(events, startAddr) {
   let addr = startAddr;
   for (const ev of events) {
@@ -1014,14 +1027,23 @@ export function compileMml(source, { tones, ffFile, opmFlag = 0 } = {}) {
 
   if (rhythmIndexInfo) {
     // K/R使用時: 索引表(パターン番号順に本体アドレスをLEで書く) + 各パターン本体
-    // (`\`系イベント列 + 単独0xff終端) + 常にある8byte領域(0x00固定、上のコメント参照)。
+    // (`\`系イベント列 + 単独0xff終端) + 常にある8byte領域。
+    // 2026-08-19実測(PRRDEF/PRR96/PRR192/PRRL8/PRRL8B.MML): この8byte領域の
+    // 先頭byteは「常に0x00固定」ではなく、K/R未使用時のr_offset固定領域と同じ発想で
+    // **Rパターンのうち最も総クロック数が長いものの下位8bit**が入る(pmdunimp.Mが
+    // 全パターン0クロックだったため気づけていなかっただけ)。残り7byteは4ケースとも
+    // 0x00で不変。
     const { tableAddr, patAddrs, patternLayouts, mysteryAddr } = rhythmIndexInfo;
     patAddrs.forEach((addr, i) => w16(tableAddr + i * 2, addr));
+    let longestPatternTicks = 0;
     for (const { events, termAddr } of patternLayouts) {
       for (const ev of events) emitEvent(ev, rel, ev._addr);
       rel[termAddr] = 0xff;
+      const ticks = trackTotalTicks(events);
+      if (ticks > longestPatternTicks) longestPatternTicks = ticks;
     }
-    for (let i = 0; i < 8; i++) rel[mysteryAddr + i] = 0x00;
+    rel[mysteryAddr] = longestPatternTicks & 0xff;
+    for (let i = 1; i < 8; i++) rel[mysteryAddr + i] = 0x00;
   } else {
     // r_offset固定領域(8byte、K/R未使用時)。従来「先頭byteだけが総クロック数の下位8bit、
     // 残り7byteは常に0x00」としていたが、実データ(POPFUL/INTOPAL/MULE/MSOFMFS、

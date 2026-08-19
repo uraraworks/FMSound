@@ -1490,7 +1490,7 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
 // 必要があるため例外的に処理する(他パートと同じ、0xdfイベントもKのトラックへ積む。
 // PMDMML.MAN §4-11の「いずれかのパートの頭に設定すれば、すべてのパートに有効」を
 // 素直に読むと、指定した行の全パートの出力に同じ0xdfが載る)。
-function tokenizeRhythmKBody(body, line, events, globalState, state) {
+function tokenizeRhythmKBody(body, line, events, globalState, state, onPatternRef) {
   let i = 0;
   const n = body.length;
   while (i < n) {
@@ -1524,12 +1524,24 @@ function tokenizeRhythmKBody(body, line, events, globalState, state) {
     }
     if (c === '<' || c === '>') { i++; continue; }
     if (c === 'l') {
+      // Kパート自身に音符は無く出力バイトも無いが、内部のデフォルト音長状態
+      // (state.defaultLength)は実際に更新する必要がある。2026-08-19、MC.EXE実測
+      // (PRRL8.MML: `R0 \h r \b r` + `K C96 l8 R0`)で判明: Rパターン内の無指定`r`の
+      // 休符長は、Rパターン自身のl指定(あればそちらが優先)が無ければ**参照元Kの
+      // その時点のデフォルト音長を継承する**(下のR選択時ensurePatternCompiledへの
+      // 呼び出し参照)。読み捨てたままだとこの継承ができないため、以前の「Kには
+      // デフォルト音長の概念が無い」という判断を撤回し、実際に更新する。
       i++;
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'l' の後に音長数値がありません`);
       i += m[0].length;
-      while (body[i] === '.') i++;
-      continue; // Kにはデフォルト音長の概念が無いため読み捨てる
+      let clocks = numericLengthToClocks(parseInt(m[0], 10), line, globalState.measLen);
+      let dots = 0;
+      while (body[i] === '.') { dots++; i++; }
+      if (dots > 0) clocks = applyDots(clocks, dots, line);
+      state.defaultLength = clocks;
+      state.defaultLengthExplicit = true;
+      continue;
     }
     // 'v'(大雑把な音量)・'V'(細かい音量)・'q'(ゲート)・'_'/'__'(転調)も、実データでは
     // 「ABCDEFGHIJKab l12 o4 !H v14 q1 l16」のようにKと同じ行へ頻繁に混在する
@@ -1648,6 +1660,17 @@ function tokenizeRhythmKBody(body, line, events, globalState, state) {
       // 解釈される、fmdriver_pmd.c:1748)により実際に到達できるのは0-127のみ
       // (docs/pmd-compiler-spec-v2.md 1.3節、マニュアルとの食い違いとして記録済み)。
       if (num < 0 || num > 127) throw new ParseError(line, `Kパートの'R'パターン番号は0-127です(cmd&0x80分岐の制約でこの範囲のみ到達可能。docs/pmd-compiler-spec-v2.md 1.3節): ${num}`);
+      // Rパターン本体は参照される時点で初めてコンパイルされる(遅延コンパイル)。
+      // 継承させるデフォルト音長は「今このKストリームで有効なdefaultLength」
+      // (直前の'l'反映後の値)。2026-08-19 MC.EXE実測(PRRL8/PRRL8B.MML)で確定。
+      // Kストリームでまだ一度も明示的に'l'が書かれていない場合は、生成時に固定で
+      // 焼き込んだ既定値(24)をそのまま使わず、その時点の`C`(全音符長)からl4相当を
+      // 都度再計算する(PRR192.MML実測: `K C192 R0`(l指定なし)でも参照先の休符が
+      // 48クロックになり、96クロック時代の既定値24が使い回されないことを確認済み)。
+      const seedDefaultLength = state.defaultLengthExplicit
+        ? state.defaultLength
+        : numericLengthToClocks(4, line, globalState.measLen);
+      if (onPatternRef) onPatternRef(num, seedDefaultLength, line);
       events.push({ type: 'rhSelect', line, pattern: num });
       continue;
     }
@@ -2021,7 +2044,14 @@ export function parseMml(source) {
 
   const tracks = new Map(); // partLetter -> {events:[], state:{octave, defaultLength}}
   const tones = new Map(); // tonenum -> toneOptions (buildToneEntry用、tonenumはキー側と重複保持)
-  const rhythmPatterns = new Map(); // Rパターン番号(0-127) -> {events:[], state:{octave, defaultLength}}
+  // Rパターン番号(0-127) -> {events:[], state:{octave, defaultLength}}。
+  // 2026-08-19実測(FINDINGS.md 12番)により、パターン本体は定義行の字句順ではなく
+  // **Kパートから最初に参照(R<n>)された時点**で遅延コンパイルする(下のrawPatternBodies/
+  // ensurePatternCompiled参照)。無指定`r`の休符長がKパート側の`l`設定(パターン定義行より
+  // 後ろに書かれていても)を継承する挙動が、定義時点での即時コンパイルでは再現できないため。
+  const rhythmPatterns = new Map();
+  const rawPatternBodies = new Map(); // patNum -> [{body, lineNo}, ...](本体テキストのみ、未コンパイル)
+  const compiledPatternNums = new Set();
   const header = {
     title: null, composer: null, arranger: null, memo: [],
     titleLine: null, composerLine: null, arrangerLine: null, memoLines: [],
@@ -2045,6 +2075,33 @@ export function parseMml(source) {
   const varMap = collectVariableDefs(lines);
   const varSortedNames = [...varMap.keys()].sort((a, b) => b.length - a.length);
 
+  // Rパターンの遅延コンパイル(上のrhythmPatterns宣言コメント参照)。Kパートが
+  // 'R<n>' を初めて参照した時点で、その時のKのdefaultLengthをパターン本体の
+  // 初期値として与えつつ実際にトークナイズする。2回目以降の参照は既にコンパイル済みの
+  // ものをそのまま使い回す(再コンパイルしない。PMD公式コンパイラがパターン本体を
+  // 共有バイト列として1つだけ持つ設計に合わせた実装判断で、複数回・異なる文脈からの
+  // 参照で結果が変わるケースは実測できていない)。
+  function ensurePatternCompiled(patNum, seedDefaultLength, refLine) {
+    if (compiledPatternNums.has(patNum)) return;
+    compiledPatternNums.add(patNum);
+    const chunks = rawPatternBodies.get(patNum);
+    if (!chunks) {
+      errors.push({ line: refLine, message: `未定義のRパターンを参照しています: R${patNum}` });
+      return;
+    }
+    const info = { events: [], state: { octave: 0, defaultLength: seedDefaultLength } };
+    rhythmPatterns.set(patNum, info);
+    for (const { body, lineNo } of chunks) {
+      try {
+        const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
+        tokenizeRhythmPatternBody(expandedBody, lineNo, info.state, info.events, globalState);
+      } catch (e) {
+        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
+        else throw e;
+      }
+    }
+  }
+
   // #PPZExtend(v2 2.1節)も同様に本体ループより前に確定させる(collectPpzExtendの
   // コメント参照)。宣言順=PPZ_1〜_8の対応(2026-08-18確定)。
   const ppzResult = collectPpzExtend(lines);
@@ -2067,6 +2124,29 @@ export function parseMml(source) {
   for (const ch of fm3ExtendLetters) {
     if (ppzExtendSet.has(ch)) {
       errors.push({ line: fm3Result.letterLine ?? 1, message: `#FM3Extend の記号 '${ch}' は #PPZExtend でも宣言されています(同じ記号を両方で使うことはできません)` });
+    }
+  }
+
+  // Rパターン本体テキストの事前収集(軽量プリスキャン)。実データ(pmdunimp.mml等)で
+  // 「K R0」のようにKパートからの参照がパターン定義行より前に出現する構成が実在する
+  // (下のensurePatternCompiledは参照時点で遅延コンパイルするため、本文テキスト自体は
+  // 参照より前に必ず手元に無ければならない)。ヘッダ解析等の副作用は起こさず、
+  // 単純に「R<数値> ...」形式の行を集めるだけの軽い一致判定に留める(本処理と同じ
+  // 正規表現・コメント除去規則を使うが、エラー報告や状態更新はしない=本処理側の
+  // 対応するブロックが最終的な妥当性検査を担う)。
+  for (let li = 0; li < lines.length; li++) {
+    const lineNo = li + 1;
+    let raw = lines[li];
+    const commentIdx = raw.indexOf(';');
+    if (commentIdx >= 0) raw = raw.slice(0, commentIdx);
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const rPatPre = /^R(\d+)(?:[ \t]+(.*))?$/.exec(trimmed);
+    if (rPatPre) {
+      const patNum = parseInt(rPatPre[1], 10);
+      if (patNum < 0 || patNum > 127) continue; // 範囲外は本処理側のループで正式にエラー化する
+      if (!rawPatternBodies.has(patNum)) rawPatternBodies.set(patNum, []);
+      rawPatternBodies.get(patNum).push({ body: rPatPre[2] ?? '', lineNo });
     }
   }
 
@@ -2121,18 +2201,9 @@ export function parseMml(source) {
         errors.push({ line: lineNo, message: `Rパターン番号は0-127です(cmd&0x80分岐の制約でこの範囲のみ到達可能。docs/pmd-compiler-spec-v2.md 1.3節): ${patNum}` });
         continue;
       }
-      if (!rhythmPatterns.has(patNum)) {
-        rhythmPatterns.set(patNum, { events: [], state: { octave: 0, defaultLength: 24 } });
-      }
-      try {
-        const rBody = rPatM[2] ?? '';
-        const expandedBody = expandVariables(rBody, varMap, varSortedNames, lineNo, new Set());
-        const info = rhythmPatterns.get(patNum);
-        tokenizeRhythmPatternBody(expandedBody, lineNo, info.state, info.events, globalState);
-      } catch (e) {
-        if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
-        else throw e;
-      }
+      // 本文は上のプリスキャンで既に rawPatternBodies へ収集済み(遅延コンパイル、
+      // 上のrhythmPatterns宣言コメント参照)。ここでは行の妥当性検査のみ行い、
+      // 実際のトークナイズはKパートからの参照時(ensurePatternCompiled)まで待つ。
       continue;
     }
 
@@ -2196,7 +2267,7 @@ export function parseMml(source) {
       if (!kTrack.state.terminated) {
         try {
           const expandedBody = expandVariables(body, varMap, varSortedNames, lineNo, new Set());
-          tokenizeRhythmKBody(expandedBody, lineNo, kTrack.events, globalState, kTrack.state);
+          tokenizeRhythmKBody(expandedBody, lineNo, kTrack.events, globalState, kTrack.state, ensurePatternCompiled);
         } catch (e) {
           if (e instanceof ParseError) errors.push({ line: e.line, message: e.pmdMessage });
           else throw e;
@@ -2290,6 +2361,15 @@ export function parseMml(source) {
         throw e;
       }
     }
+  }
+
+  // Kから一度も参照されなかった(=定義だけされた)Rパターンも、既存の「パターン番号は
+  // 0から連番」チェックやパターン索引表の構築に必要なため、既定の初期defaultLength(24、
+  // l4相当)で遅延コンパイルしておく。実測(FINDINGS.md 12番)はいずれもK参照ありのケースの
+  // ため、Kから参照されない場合の実機挙動は未確認だが、少なくとも「未定義パターン参照」
+  // エラーになったり出力から消えたりする既存の互換性は保つ。
+  for (const patNum of rawPatternBodies.keys()) {
+    ensurePatternCompiled(patNum, 24, rawPatternBodies.get(patNum)[0]?.lineNo ?? 1);
   }
 
   if (errors.length === 0) {

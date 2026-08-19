@@ -218,6 +218,21 @@ corpus全43ケースで突き合わせても、K/R使用の3ケース(`pmdrhbit`
 =`0x30`だった)。`--update-baseline`後は`pmdmp.mml`も100%完全一致。`pmdq1b.mml`は
 元から100%完全一致。
 
+## 2026-08-19追記: SSG `P`(pmdptbl.mml)・Rパターン休符長(pmdrrdef/pmdrr96/pmdrr192/pmdrrl8/pmdrrl8b.mml)
+
+- `pmdptbl.mml`(`PPTBL.MML`実測): SSG(G/H/I) `P`(トーン/ノイズ選択)の`0xed`引数byteが
+  `P1→0x07`/`P2→0x38`/`P3→0x3f`(0x07|0x38)という非線形変換であることを確定した
+  (旧仮実装はMMLの数値をそのまま出力しており誤り)。
+- `pmdrrdef.mml`(l指定無し・既定C96)/`pmdrr96.mml`(K行に`C96`明示)/`pmdrr192.mml`
+  (K行に`C192`)/`pmdrrl8.mml`(K行に`l8`)/`pmdrrl8b.mml`(R定義行自体に`l8`)は、
+  RHYTHMパターン(`R<n>`)内の無指定`r`(休符)の長さが、その時点のデフォルト音長`l`に
+  従うことを確認するための最小構成5本(いずれも`R0 \h r \b r`+`K ... R0`)。
+  重要な点は「Rパターン本体はKパートから最初に参照された時点で遅延コンパイルされ、
+  参照元Kストリームのその時点のデフォルト音長を継承する」こと(`pmdrrl8.mml`は
+  l8がK行側にありRパターン定義行より後に書かれているにもかかわらず休符が12クロック
+  になる、という実測結果がこれを裏付けている)。詳細は
+  `docs/pmd-compiler-real-data-diff-2026-08-19.md`の「5周目セッション」節を参照。
+
 ## 実行
 
 ```sh
