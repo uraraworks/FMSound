@@ -17,7 +17,9 @@
 //          1件返し、引数にファイル名が含まれる
 //   [本体] PCMを使っていない曲(memoにPCM名なし)ではdescribePmdPcmStatus()が
 //          空配列を返す(使っていない曲に警告を出さない)
-//   [本体] PPSスロット・P86の分岐がそれぞれ意図したキーを返す
+//   [本体] PPSスロットの分岐が意図したキーを返す。collectUnsupportedPmdPcmFiles()が
+//          もう.P86を拾わないことの退行確認(.P86の変換結線自体は
+//          tools/verify_pmd_p86_wiring.mjsで検証する)
 //   [陽性対照] describePmdPcmStatus()が空配列を返すよう意図的に壊した入力
 //          (error全false)で、本来の主張(missingメッセージが出ること)を
 //          検証する側のチェックが実際にFAILする(症状で落ちる)ことを確認する
@@ -273,89 +275,26 @@ async function main() {
     ppsMessages[0] && ppsMessages[0].params.files.includes('DRUMS'),
     `files="${ppsMessages[0] && ppsMessages[0].params.files}"`);
 
-  // --- P86の分岐(collectUnsupportedPmdPcmFiles()経由の書庫由来ファイル一覧から) ---
+  // --- .P86の扱い(2026-08-19変更): 以前はここでcollectUnsupportedPmdPcmFiles()が
+  //     .P86を拾い、「PMD86は未対応」の抑止ロジック(basename先頭8文字一致で
+  //     pmd.pcm.missingを握りつぶす)をテストしていた。net/pmd-p86.js p86ToPpc()に
+  //     よる疑似.PPC変換が実装され、.P86はwriteSongWithPcm()が実際に変換して
+  //     鳴らせるようになったため、この抑止ロジックごと撤去された(誤りになった
+  //     ため。同梱を忘れた場合に何も言わなくなる)。
+  //     このファイルの役目は「PCM不足案内が正しく出ること」の検証であり、
+  //     .P86の変換結線そのもの(collectPmdPcmFiles()が.P86を拾う・
+  //     writeSongWithPcm()が.PPCへ変換する・変換失敗時の案内)は専用の
+  //     tools/verify_pmd_p86_wiring.mjs へ移した。ここでは
+  //     collectUnsupportedPmdPcmFiles()がもう.P86を拾わないことだけを
+  //     退行確認として残す。
   const unsupportedFromArchive = collectUnsupportedPmdPcmFiles([
     { name: 'songs/DRUM86.P86', data: new Uint8Array(0) },
+    { name: 'songs/DRUM.PPS', data: new Uint8Array(0) },
     { name: 'songs/OTHER.TXT', data: new Uint8Array(0) },
   ]);
-  check('[本体] collectUnsupportedPmdPcmFiles()が.P86だけを拾う(basename化・拡張子大文字化)',
-    unsupportedFromArchive.length === 1 && unsupportedFromArchive[0].name === 'DRUM86.P86' && unsupportedFromArchive[0].ext === '.P86',
+  check('[本体] collectUnsupportedPmdPcmFiles()はもう.P86を拾わない(.PPSだけ)',
+    unsupportedFromArchive.length === 1 && unsupportedFromArchive[0].ext === '.PPS',
     `result=${JSON.stringify(unsupportedFromArchive)}`);
-  const p86Messages = describePmdPcmStatus({ slots: [], unsupportedFiles: unsupportedFromArchive });
-  check('[本体] .P86が書庫にある場合、pmd.pcm.p86Unsupportedキーを返す',
-    p86Messages.length === 1 && p86Messages[0].key === 'pmd.pcm.p86Unsupported',
-    `messages=${JSON.stringify(p86Messages)}`);
-  check('[本体] P86メッセージの引数filesにファイル名が含まれる',
-    p86Messages[0] && p86Messages[0].params.files.includes('DRUM86.P86'),
-    `files="${p86Messages[0] && p86Messages[0].params.files}"`);
-
-  // --- .P86の名前が不足PPCスロットと一致する場合: 実測(2026-08-17, PMD 4.8で
-  //     コンパイルした曲13本中12本)で確定した事実として、work->pcmname[]は
-  //     拡張子を含まず8文字で切られるため「PPCが足りない」表示が実は.P86
-  //     (PMD86, upstream未実装)の誤案内になる。一致するスロットは不足メッセージ
-  //     から除外し、P86未対応メッセージだけを返す(矛盾する2メッセージを並べない)。 ---
-  const p86MatchUnsupported = collectUnsupportedPmdPcmFiles([
-    { name: 'songs/MBE86PCM.P86', data: new Uint8Array(0) },
-  ]);
-  const p86MatchMessages = describePmdPcmStatus({
-    slots: [{ type: 'PPC', name: 'MBE86PCM', error: true }],
-    unsupportedFiles: p86MatchUnsupported,
-  });
-  check('[本体] .P86の名前が不足PPCスロットと一致する場合、p86Unsupportedキーの1件だけを返す',
-    p86MatchMessages.length === 1 && p86MatchMessages[0].key === 'pmd.pcm.p86Unsupported',
-    `messages=${JSON.stringify(p86MatchMessages)}`);
-  check('[本体] 一致時、不足キー(pmd.pcm.missing)は含まれない',
-    !p86MatchMessages.some((m) => m.key === 'pmd.pcm.missing'),
-    `messages=${JSON.stringify(p86MatchMessages)}`);
-
-  // --- .P86があっても名前が一致しない場合: 無関係な.P86が同梱されていても
-  //     不足の事実(別のPCMが本当に足りない)は伝える必要がある。両方出す。 ---
-  const p86UnmatchUnsupported = collectUnsupportedPmdPcmFiles([
-    { name: 'songs/OTHERDRUM.P86', data: new Uint8Array(0) },
-  ]);
-  const p86UnmatchMessages = describePmdPcmStatus({
-    slots: [{ type: 'PPC', name: 'MBE86PCM', error: true }],
-    unsupportedFiles: p86UnmatchUnsupported,
-  });
-  check('[本体] .P86があっても名前が不一致なら、missingとp86Unsupportedの両方を返す',
-    p86UnmatchMessages.length === 2
-      && p86UnmatchMessages.some((m) => m.key === 'pmd.pcm.missing')
-      && p86UnmatchMessages.some((m) => m.key === 'pmd.pcm.p86Unsupported'),
-    `messages=${JSON.stringify(p86UnmatchMessages)}`);
-
-  // --- 一致判定は先頭8文字・大文字小文字無視: pcmnameは8文字で切られるため、
-  //     9文字以上のbasenameは末尾が落ちて比較対象外になる(fillpcmname()仕様)。
-  //     ここでは.P86側のbasenameが9文字以上でも先頭8文字が一致すれば抑止される
-  //     ことを確認する(大文字小文字も違えてよい)。 ---
-  const p86Long = collectUnsupportedPmdPcmFiles([
-    { name: 'songs/mbe86pcmEXTRA.P86', data: new Uint8Array(0) },
-  ]);
-  const p86LongMessages = describePmdPcmStatus({
-    slots: [{ type: 'PPC', name: 'MBE86PCM', error: true }],
-    unsupportedFiles: p86Long,
-  });
-  check('[本体] .P86のbasenameが9文字以上でも先頭8文字・大小無視で一致し抑止される',
-    p86LongMessages.length === 1 && p86LongMessages[0].key === 'pmd.pcm.p86Unsupported',
-    `messages=${JSON.stringify(p86LongMessages)}`);
-
-  // --- [陽性対照] 一致判定を無効化した相当の入力(=抑止ロジックを外した状態)で、
-  //     この検査が実際にFAILする側を確認する。describePmdPcmStatus()自体は
-  //     変更せず、「一致条件を満たすはずの.P86名をわざと一致しない名前に変えて
-  //     渡す」ことで、抑止が効かず不足メッセージが混ざってしまう状態を再現する。
-  //     この状態でも p86MatchMessages 相当の主張(missingキーを含まない)を検査すると
-  //     崩れることを確認し、「変えたら変わる」ではなく症状で落ちることを見る。 ---
-  const p86BrokenMatchUnsupported = collectUnsupportedPmdPcmFiles([
-    { name: 'songs/UNRELATED.P86', data: new Uint8Array(0) }, // 一致しない名前に壊す
-  ]);
-  const p86BrokenMatchMessages = describePmdPcmStatus({
-    slots: [{ type: 'PPC', name: 'MBE86PCM', error: true }],
-    unsupportedFiles: p86BrokenMatchUnsupported,
-  });
-  checkExpectFail(
-    '[陽性対照] .P86名を一致しないものに壊すと、「不足キーを含まない」という主張は症状で崩れる(missingキーが混ざる)',
-    !p86BrokenMatchMessages.some((m) => m.key === 'pmd.pcm.missing'),
-    `壊れた入力でのmessages=${JSON.stringify(p86BrokenMatchMessages)}(抑止が効いていれば含まれないはず)`,
-  );
 
   // --- 陽性対照: 不足しているのにerrorを全部falseへ壊した入力では、
   //     「不足メッセージが出る」という本来の主張が成立しなくなる(=検査が症状で落ちる)
@@ -383,12 +322,15 @@ async function main() {
   check('[結線] playBytes()がgetPcmCount()を使ってPCM状態を組み立てている',
     /getPcmCount\(\)/.test(appSrc) && /getPcmName\(/.test(appSrc) && /getPcmType\(/.test(appSrc) && /getPcmError\(/.test(appSrc));
 
-  // --- [i18n] ja/en両方に3キーが存在し、{files}プレースホルダを含むこと。
+  // --- [i18n] ja/en両方に2キーが存在し、{files}プレースホルダを含むこと。
   //     ja/en間の整合性(キー集合一致・プレースホルダ集合一致・訳し忘れ検出)は
   //     tools/verify_i18n.mjs が既に汎用的に検査している(DICT全体を走査するため、
   //     このスクリプトが新設したキーも自動的に対象へ入る)。ここではその前段として
-  //     「そもそもキーが存在し{files}を含むか」だけを軽く確認する。 ---
-  const PMD_PCM_KEYS = ['pmd.pcm.missing', 'pmd.pcm.ppsUnsupported', 'pmd.pcm.p86Unsupported'];
+  //     「そもそもキーが存在し{files}を含むか」だけを軽く確認する。
+  //     pmd.pcm.p86Invalid/p86Capacity({file}単数、requiredBytes/maxBytes)は
+  //     tools/verify_pmd_p86_wiring.mjs側で検証する(このファイルの主題である
+  //     「不足案内」とは別の主題=変換失敗案内のため)。 ---
+  const PMD_PCM_KEYS = ['pmd.pcm.missing', 'pmd.pcm.ppsUnsupported'];
   for (const lang of ['ja', 'en']) {
     for (const key of PMD_PCM_KEYS) {
       const value = I18N_DICT[lang] && I18N_DICT[lang][key];

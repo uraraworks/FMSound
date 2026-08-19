@@ -13,15 +13,20 @@
 // サブディレクトリを作り、曲とPCMを必ず同居させる。
 
 import { baseNameOf, dirNameOf } from './archive.js';
+import { p86ToPpc } from './pmd-p86.js';
 
-/** 対応拡張子(ドット付き、大文字小文字は無視)。upstream未実装の.P86(PMD86)・
- * .PPS(PPSDRV)は対象外(fmdriver_pmd.c参照)。 */
-export const PMD_PCM_EXTENSIONS = ['.PPC', '.PZI', '.PVI'];
+/** 対応拡張子(ドット付き、大文字小文字は無視)。.P86(PMD86)は2026-08-19に
+ * net/pmd-p86.js p86ToPpc()による疑似.PPC変換で対応済み(writeSongWithPcm()参照)。
+ * .PPS(PPSDRV)はupstream未実装のまま対象外(fmdriver_pmd.c参照)。 */
+export const PMD_PCM_EXTENSIONS = ['.PPC', '.PZI', '.PVI', '.P86'];
 
 const PMD_PCM_EXTENSION_RE = new RegExp(
   `\\.(${PMD_PCM_EXTENSIONS.map((ext) => ext.slice(1)).join('|')})$`,
   'i',
 );
+
+// .P86ファイル名判定・拡張子置換の両方に使う(writeSongWithPcm()参照)。
+const P86_FILENAME_RE = /\.P86$/i;
 
 /**
  * 書庫展開エントリ配列(net/archive.js extractArchive()の結果)からPMD PCM系
@@ -84,17 +89,18 @@ export function collectPmdPcmFiles(entries, songEntryName) {
   return result;
 }
 
-// upstreamが未実装の拡張子(.P86=PMD86, .PPS=PPSDRV)。PMD_PCM_EXTENSIONSには
-// 加えない(供給しても鳴らないので供給対象を増やす意味がない)。ここで拾うのは
-// あくまで「使われているが対応していない」ことを利用者に伝えるため。
-const PMD_PCM_UNSUPPORTED_EXTENSIONS = ['.P86', '.PPS'];
+// upstreamが未実装の拡張子(.PPS=PPSDRV)。.P86(PMD86)は2026-08-19にp86ToPpc()で
+// 対応済みになったためここから外した(PMD_PCM_EXTENSIONS側で拾う)。
+// PMD_PCM_EXTENSIONSには加えない(供給しても鳴らないので供給対象を増やす意味がない)。
+// ここで拾うのはあくまで「使われているが対応していない」ことを利用者に伝えるため。
+const PMD_PCM_UNSUPPORTED_EXTENSIONS = ['.PPS'];
 const PMD_PCM_UNSUPPORTED_EXTENSION_RE = new RegExp(
   `\\.(${PMD_PCM_UNSUPPORTED_EXTENSIONS.map((ext) => ext.slice(1)).join('|')})$`,
   'i',
 );
 
 /**
- * 書庫展開エントリ配列からupstream未実装のPCM系ファイル(.P86/.PPS)だけを拾う
+ * 書庫展開エントリ配列からupstream未実装のPCM系ファイル(.PPS)だけを拾う
  * 純関数。collectPmdPcmFiles()と対になるが、こちらはMEMFSへ書き込むためではなく
  * 「供給しても鳴らない」ことを利用者へ知らせるための情報収集用。
  * @param {{name: string, data: Uint8Array}[]} entries
@@ -147,30 +153,20 @@ function trimPcmName(name) {
  *    探せない。upstream の loadpmdppz()(common/fmplayer_file.c)自身が.PVI/.PZIを
  *    両方試す実装になっており、両方示すのはその実装と整合する判断。
  *    PPCは.PPC固定でよい(loadppc()が.PPCしか試さないため断定して正しい)。
- *  - unsupportedFilesに.P86があれば「PMD86は未対応」も追加する。
- * @param {{ slots: {type: string, name: string, error: boolean}[], unsupportedFiles?: {name: string, ext: string}[] }} args
- * @returns {{ key: string, params: { files: string } }[]}
+ *  - p86ConversionErrorsにエントリがあれば、.P86→疑似.PPC変換(pmd-p86.js
+ *    p86ToPpc())が失敗した旨を errorの種類ごとに専用メッセージで伝える。
+ *    【2026-08-19】以前ここには「.P86はupstream未対応」という抑止ロジック
+ *    (matchesP86())があったが、writeSongWithPcm()がp86ToPpc()で実際に変換して
+ *    鳴らせるようになったため誤りになった(同梱を忘れた場合に何も言わなくなる)。
+ *    撤去し、変換の成否で判断する形に置き換えた。
+ * @param {{ slots: {type: string, name: string, error: boolean}[],
+ *   unsupportedFiles?: {name: string, ext: string}[],
+ *   p86ConversionErrors?: { name: string, error: 'invalid_p86' | 'capacity',
+ *     requiredBytes?: number, maxBytes?: number }[] }} args
+ * @returns {{ key: string, params: Record<string, string|number> }[]}
  */
-export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
+export function describePmdPcmStatus({ slots, unsupportedFiles = [], p86ConversionErrors = [] }) {
   const messages = [];
-
-  const p86Names = (unsupportedFiles || [])
-    .filter((f) => f.ext === '.P86')
-    .map((f) => f.name);
-
-  // 実測(2026-08-17, PMD 4.8でコンパイルした曲13本中12本)で確定した事実:
-  // work->pcmname[]は拡張子を含まず8文字・空白詰めで格納される
-  // (fmdriver_common.h fmdriver_fillpcmname())。そのため「PPC不足」として
-  // 表示される名前がPMD86(.P86)の実体と一致することが多い(例: MBE86PCM)。
-  // これは upstream 未実装の .P86 を「.PPCが足りない」と誤案内してしまう
-  // (入れても鳴らない)ため、basenameが一致するスロットは不足メッセージから
-  // 除外し、PMD86未対応メッセージだけを出す。
-  // 一致判定は先頭8文字・大文字小文字無視で行う: pcmnameは8文字で切られるため、
-  // 9文字以上のbasenameは末尾が落ちて比較対象にならない(同じくfillpcmname()仕様)。
-  const p86Bases8 = p86Names.map((n) => n.replace(/\.[^.]*$/, '').slice(0, 8).toUpperCase());
-  function matchesP86(name) {
-    return p86Bases8.includes(name.slice(0, 8).toUpperCase());
-  }
 
   const missingNames = [];
   const ppsNames = [];
@@ -183,7 +179,6 @@ export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
       continue;
     }
     if (slot.error) {
-      if (matchesP86(name)) continue; // 実体は.P86(PMD86)。「.PPCが足りない」は誤案内
       const ext = PCM_TYPE_TO_EXT[type] || '';
       missingNames.push(`${name}${ext}`);
     }
@@ -196,8 +191,18 @@ export function describePmdPcmStatus({ slots, unsupportedFiles = [] }) {
     messages.push({ key: 'pmd.pcm.ppsUnsupported', params: { files: ppsNames.join(', ') } });
   }
 
-  if (p86Names.length > 0) {
-    messages.push({ key: 'pmd.pcm.p86Unsupported', params: { files: p86Names.join(', ') } });
+  // .P86→疑似.PPC変換の失敗。requiredBytes/maxBytesは実数値をそのまま渡す
+  // (利用者指示: capacityは必要量と上限の実数値を文言に含める。翻訳可能なように
+  // p86ToPpc()の日本語message文字列はここでは使わず、構造化された値だけを使う)。
+  for (const err of p86ConversionErrors || []) {
+    if (err.error === 'capacity') {
+      messages.push({
+        key: 'pmd.pcm.p86Capacity',
+        params: { file: err.name, requiredBytes: err.requiredBytes, maxBytes: err.maxBytes },
+      });
+    } else {
+      messages.push({ key: 'pmd.pcm.p86Invalid', params: { file: err.name } });
+    }
   }
 
   return messages;
@@ -242,6 +247,17 @@ function cleanupPreviousSongDir(Module, dir) {
  * songName/pcmFiles[].name は日本語やスラッシュを含みうる(#titleフォールバックや
  * 書庫内サブフォルダ由来)ため、ディレクトリ区切りとして誤解釈されないよう必ず
  * basename化してから書き込む。
+ * 【2026-08-19拡張】pcmFilesに.P86(PMD86のPCM)が混じっている場合、そのままでは
+ * ドライバが読めない(loadppc()は.PPCしか探さない)ため、net/pmd-p86.js p86ToPpc()で
+ * 疑似.PPCへ変換してから`<拡張子抜きの元の名前>.PPC`として書く。理由:
+ * ドライバの`work->pcmname[0]`には拡張子抜き8文字(例`MBE86PCM`)が入り、loadppc()は
+ * その名前に`.PPC`を付けて同じディレクトリを探す。元の`.P86`はそのまま書いても
+ * 誰も探さないので書かない(前の曲の残骸と紛れる事故を避ける、cleanupPreviousSongDir()
+ * と同じ考え方)。
+ * 変換に失敗した場合(容量超過/不正な.P86)はそのPCMを書かず、失敗理由を
+ * `Module.__pmdPcmP86Failures`(呼び出しごとに全消去してから積み直す配列)へ積む。
+ * html/pmd-app.js reportPmdPcmStatus()がここを読み、describePmdPcmStatus()の
+ * p86ConversionErrors引数へ渡して利用者へ理由を説明する。
  * @param {*} Module - createPmdWeb()が返すEmscripten Module
  * @param {{songName: string, songBytes: Uint8Array, pcmFiles?: {name: string, data: Uint8Array}[]}} args
  * @returns {string} Module.playMusic()に渡す絶対パス
@@ -257,8 +273,25 @@ export function writeSongWithPcm(Module, { songName, songBytes, pcmFiles = [] })
 
   const songPath = `${dir}/${baseNameOf(songName)}`;
   Module.FS.writeFile(songPath, songBytes);
+
+  // この曲の.P86変換失敗を集める配列。曲を読み込むたびに全消去してから積み直す
+  // (前の曲の失敗を持ち越さない)。
+  const p86Failures = [];
+  Module.__pmdPcmP86Failures = p86Failures;
+
   for (const pcm of pcmFiles) {
-    Module.FS.writeFile(`${dir}/${baseNameOf(pcm.name)}`, pcm.data);
+    const base = baseNameOf(pcm.name);
+    if (P86_FILENAME_RE.test(base)) {
+      const converted = p86ToPpc(pcm.data);
+      if (!converted.ok) {
+        p86Failures.push({ name: base, ...converted });
+        continue; // 変換できない.P86は書かない(残骸が紛れる事故を避ける)
+      }
+      const ppcName = base.replace(P86_FILENAME_RE, '.PPC');
+      Module.FS.writeFile(`${dir}/${ppcName}`, converted.bytes);
+      continue;
+    }
+    Module.FS.writeFile(`${dir}/${base}`, pcm.data);
   }
   return songPath;
 }

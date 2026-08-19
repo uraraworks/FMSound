@@ -119,9 +119,16 @@ const ja = {
   // --- PMDのPCM(.PPC/.PZI/.PVI/.P86/.PPS)読み込み状態。net/pmd-pcm.jsの
   // describePmdPcmStatus()が生成キーを決め、html/pmd-app.jsがnet.*と同じ
   // setNetStatus()経由で表示する(net.*ではないがこの表示枠を流用しているだけ)。
-  'pmd.pcm.missing': 'この曲は {files} を必要としますが読み込めていません。PCMパートは鳴りません。PCMファイルを曲と同じ書庫(zip等)に入れて開いてください。なおPMD86(.P86)とPPSDRV(.PPS)のPCMは未対応です。',
+  // 【2026-08-19】PMD86(.P86)はpmd-p86.js p86ToPpc()による疑似.PPC変換で対応済みに
+  // なったため、missingの案内文から「PMD86は未対応」の一文を削除した。PPSDRV(.PPS)は
+  // 引き続き未対応。
+  'pmd.pcm.missing': 'この曲は {files} を必要としますが読み込めていません。PCMパートは鳴りません。PCMファイルを曲と同じ書庫(zip等)に入れて開いてください。なおPPSDRV(.PPS)のPCMは未対応です。',
   'pmd.pcm.ppsUnsupported': 'この曲はPPSDRV({files})を使いますが未対応です。そのパートは鳴りません。',
-  'pmd.pcm.p86Unsupported': 'この曲はPMD86のPCM({files})を使いますが未対応です。PCMパートは鳴りません。',
+  // 旧pmd.pcm.p86Unsupported(「PMD86は未対応」)は用済みのため削除し、変換失敗用の
+  // 2キーに作り替えた(pmd.pcm.p86Invalid/p86Capacity。net/pmd-pcm.js
+  // describePmdPcmStatus()参照)。
+  'pmd.pcm.p86Invalid': 'この曲のPMD86 PCM({file})を変換できませんでした。壊れているか、対応していない形式です。そのPCMパートは鳴りません。',
+  'pmd.pcm.p86Capacity': 'この曲のPMD86 PCM({file})は変換後のデータ量(必要{requiredBytes}バイト)がADPCM RAMの容量({maxBytes}バイト)を超えるため読み込めません。そのPCMパートは鳴りません。',
   'pmd.editor.noMmlSource': 'この曲にはMMLソースが無いため編集できません。編集欄には別の曲のMMLが入っています。',
 
   // --- 外部音色ファイル(.FF、`#FFFile`)の選択状態。net/pmd-ff.js
@@ -332,9 +339,10 @@ const en = {
   'mml.caveatMissingRefsPcm': 'This song references {files}, which cannot be loaded. The drums (ADPCM) will differ from the original.',
   'mml.caveatMissingRefsBoth': 'This song references {files}, which cannot be loaded. The instrument tones and drums will differ from the original.',
 
-  'pmd.pcm.missing': 'This song requires {files}, which could not be loaded. Its PCM parts will be silent. Put the PCM file in the same archive (zip, etc.) as the song and open it again. Note that PMD86 (.P86) and PPSDRV (.PPS) PCM are not supported.',
+  'pmd.pcm.missing': 'This song requires {files}, which could not be loaded. Its PCM parts will be silent. Put the PCM file in the same archive (zip, etc.) as the song and open it again. Note that PPSDRV (.PPS) PCM is not supported.',
   'pmd.pcm.ppsUnsupported': 'This song uses PPSDRV ({files}), which is not supported. That part will be silent.',
-  'pmd.pcm.p86Unsupported': 'This song uses PMD86 PCM ({files}), which is not supported. Its PCM parts will be silent.',
+  'pmd.pcm.p86Invalid': "This song's PMD86 PCM ({file}) could not be converted. It may be corrupted or in an unsupported format. That PCM part will be silent.",
+  'pmd.pcm.p86Capacity': "This song's PMD86 PCM ({file}) could not be loaded: the converted data ({requiredBytes} bytes required) exceeds the ADPCM RAM capacity ({maxBytes} bytes). That PCM part will be silent.",
   'pmd.editor.noMmlSource': "This song has no MML source, so it cannot be edited. The editor contains a different song's MML.",
 
   'pmd.ff.missing': 'This song requires an external voice file ({file}), which could not be found. Parts whose voice (@) is not defined in the body cannot be compiled. Put the .FF file in the same archive as the song and open it again.',

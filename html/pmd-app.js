@@ -782,7 +782,13 @@ export async function init(ctx) {
         error: Module.getPcmError(i) !== 0,
       });
     }
-    const messages = [...describePmdPcmStatus({ slots, unsupportedFiles }), ...extraMessages];
+    // .P86→疑似.PPC変換の失敗(net/pmd-pcm.js writeSongWithPcm()が積む)。
+    // 曲を読み込むたびに全消去してから積み直されるため、常に直近の曲のぶんだけになる。
+    const p86ConversionErrors = Module.__pmdPcmP86Failures || [];
+    const messages = [
+      ...describePmdPcmStatus({ slots, unsupportedFiles, p86ConversionErrors }),
+      ...extraMessages,
+    ];
     if (messages.length > 0) {
       setNetStatus(messages.map((m) => t(m.key, m.params)).join(' '), true);
     }
@@ -1779,8 +1785,10 @@ export async function init(ctx) {
       // 別ディレクトリに複数ある取り違え不具合の修正(2026-08-18)で、選ばれた曲の
       // 書庫内エントリ名(chosen.entry.name。表示用のdisplayNameではなくパスを
       // 含む実際の名前)を渡し、曲と同じディレクトリのものを優先させる。
-      // upstream未対応の.P86/.PPSも同じentriesから拾い、reportPmdPcmStatus()経由の
-      // 案内に使う(collectUnsupportedPmdPcmFiles())。
+      // upstream未対応の.PPS(.P86は2026-08-19対応済み。collectPmdPcmFiles()側で
+      // 拾われ、上のpcmFiles経由でwriteSongWithPcm()が疑似.PPCへ変換する)も
+      // 同じentriesから拾い、reportPmdPcmStatus()経由の案内に使う
+      // (collectUnsupportedPmdPcmFiles())。
       // MMLソース連動(2026-08-18): 同じ書庫のchosen.related(主ファイルと同じ
       // ディレクトリのエントリ集合、net/song-select.js SongCandidate.related)から
       // 同名`.mml`を探す(net/pmd-mml-source.js)。見つかれば、playBytes()が
@@ -1948,7 +1956,7 @@ export async function init(ctx) {
       // (「曲を開く」ボタンでの読み込みと同じ扱いにする)。【2026-08-19】唯一の窓口
       // exitEditorModeOnSongOpen()経由に変更(元はここに直書きだった側、上のコメント参照)。
       exitEditorModeOnSongOpen();
-      // 書庫内の.PPC/.PZI/.PVI(・upstream未対応の.P86/.PPS)も同じ書庫のentriesから
+      // 書庫内の.PPC/.PZI/.PVI/.P86(・upstream未対応の.PPS)も同じ書庫のentriesから
       // 拾って一緒に保持する(playBytes()呼び出し時にpcmFiles/unsupportedFilesとして
       // 渡される。上のbtnPlayPauseハンドラ参照)。同名PCMの取り違え防止のため
       // chosen.entry.name(曲の書庫内エントリ名)を渡す(collectPmdPcmFiles()参照)。
