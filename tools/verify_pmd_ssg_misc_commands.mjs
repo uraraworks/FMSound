@@ -60,7 +60,13 @@ function findEvent(r, part, type) {
 function main() {
   // 1. E書式1(4引数)がSSGパートで受理され、0xf0 + AL/DD(符号付き)/SR/RRの5byteになる。
   {
-    const r = compileOk('G @1 o4 E1,-3,2,0 c4');
+    // 2026-08-19追記: SSGパートの`@n`はFINDINGS.md 9番の実測により、それ自体が
+    // ssgEnvOldイベントへ展開されるようになった(タスク1)。この`@1`はもともと
+    // 単なる無害な前置き(F音色テーブル検証用のダミー)だったが、SSGでは今や
+    // それ自体がE(無印)より先にssgEnvOldイベントを1個生成してしまい、下の
+    // findEvent(最初の一致)がE(無印)ではなく`@1`側を拾ってしまうため取り除く
+    // (Eコマンド自体の検証には不要だった)。
+    const r = compileOk('G o4 E1,-3,2,0 c4');
     const ev = findEvent(r, 'G', 'ssgEnvOld');
     check('E1,-3,2,0(書式1)がssgEnvOldイベントになる', !!ev && ev.al === 1 && ev.dd === -3 && ev.sr === 2 && ev.rr === 0,
       JSON.stringify(ev));
@@ -71,7 +77,7 @@ function main() {
 
   // 2. E書式1・負のDD値が実データそのまま(E2,-4,70,0)通る。
   {
-    const r = compileOk('H @1 o4 E2,-4,70,0 c4');
+    const r = compileOk('H o4 E2,-4,70,0 c4');
     const ev = findEvent(r, 'H', 'ssgEnvOld');
     check('E2,-4,70,0 が受理される(実データ実例)', !!ev && ev.al === 2 && ev.dd === -4 && ev.sr === 70 && ev.rr === 0, JSON.stringify(ev));
   }

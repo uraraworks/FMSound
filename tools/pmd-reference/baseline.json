@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-19T00:26:23.015Z",
+  "generatedAt": "2026-08-19T01:35:21.029Z",
   "cases": {
     "pmdadpc": {
       "status": "compared",
@@ -16,6 +16,90 @@
       "byteMatchRate": 1
     },
     "pmdbasic": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup1": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup2": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup3": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup4": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup5": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup6": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup7": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup8": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdup9": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdupa": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdupb": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdcdupc": {
       "status": "compared",
       "identical": true,
       "matchedParts": 11,
@@ -261,6 +345,13 @@
       "byteMatchRate": 1
     },
     "pmdssg": {
+      "status": "compared",
+      "identical": true,
+      "matchedParts": 11,
+      "totalParts": 11,
+      "byteMatchRate": 1
+    },
+    "pmdssgenv": {
       "status": "compared",
       "identical": true,
       "matchedParts": 11,

@@ -25,8 +25,26 @@ export const PART_KIND = {
   G: 'ssg', H: 'ssg', I: 'ssg',
   J: 'adpcm',
 };
+// FMパート(A-F)判定用。`C`(measLen)重複バグ再現(下のFM_PART_LETTERS_SET参照箇所)で使う。
+const FM_PART_LETTERS_SET = new Set(['A', 'B', 'C', 'D', 'E', 'F']);
 export const NOTE_LETTER_TO_BASE_INDEX = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 const DEFAULT_MEAS_LEN = 96; // 全音符長の初期値。`C`(v2 3.8節, 0xdf)で変更可能。
+
+// SSG(G-I)の`@n`ソフトウエアエンベロープ対応表(@0-@9)。2026-08-19、MC.EXE ver4.8s
+// 実測で全10点確定(FINDINGS.md 9番、PSENV.MML)。出力は`0xF0`+AL/DD/SR/RR
+// (ssgEnvOldと同一書式)。推測で埋めていないので、この10件以外の番号はエラーにする。
+const SSG_ENVELOPE_TABLE = {
+  0: { al: 0, dd: 0, sr: 0, rr: 0 },
+  1: { al: 2, dd: -1, sr: 0, rr: 1 },
+  2: { al: 2, dd: -2, sr: 0, rr: 1 },
+  3: { al: 2, dd: -2, sr: 0, rr: 8 },
+  4: { al: 2, dd: -1, sr: 24, rr: 1 },
+  5: { al: 2, dd: -2, sr: 24, rr: 1 },
+  6: { al: 2, dd: -2, sr: 4, rr: 1 },
+  7: { al: 2, dd: 1, sr: 0, rr: 1 },
+  8: { al: 1, dd: 2, sr: 0, rr: 1 },
+  9: { al: 1, dd: 2, sr: 24, rr: 1 },
+};
 
 // 'v'(大雑把な音量, PMDMML.MAN §5-1)のFM/PCM用変換テーブル。v0〜v16 -> V値。
 // 出典: PMDMML.MAN §5-1 の一覧表そのもの(WebFetchで原文確認、本ファイル冒頭コメント参照)。
@@ -925,7 +943,26 @@ function tokenizeBody(body, line, state, rawEvents, partKind, globalState, partL
       const m = /^\d+/.exec(body.slice(i));
       if (!m) throw new ParseError(line, `'@' の後に音色番号がありません`);
       i += m[0].length;
-      events.push({ type: 'tone', line, tonenum: parseInt(m[0], 10) });
+      const tonenum = parseInt(m[0], 10);
+      // 2026-08-19実測(FINDINGS.md 9番、PSENV.MML): SSG(G-I)の`@n`は、FMのように
+      // 音色番号を0xFF+番号で参照するのではなく、内蔵SSGソフトウエアエンベロープ
+      // (0-9)を選び、コンパイル時に`0xF0`+AL/DD/SR/RR(ssgEnvOldと同一書式、計5byte)へ
+      // その場で展開される。対応表は10点(@0-@9)すべて実測済みで、SSG_ENVELOPE_TABLE
+      // (このファイル末尾付近)をそのまま使う。ADPCM(J)の`@n`は展開されず、FMと同じく
+      // 0xFF+番号のまま(実測: `J o4 l4 @0 c @1 c` → `ff 00 30 18 ff 01 30 18 80`。
+      // 分類メモには「Jも同様のはず」という推測があったが、実測ではJは対象外)。
+      // 実測(FINDINGS.md 9番)は@0-@9の10点のみ全数実測済みで、それ以外の番号での
+      // MC.EXEの挙動は未測定(推測で埋めない方針)。実データ実例(MSO_ET_Virtual_
+      // Intensity_88.MML「ABI @177...」「GD @183...」)ではFMパートと同じ行にSSGが
+      // 混在し、FM向けの音色番号(10を超える値)がそのままSSGパートにも流れてくる
+      // ケースが実在するため、範囲外の値は実測が無いまま安全側として従来通りの
+      // 'tone'イベント(0xFF+番号)にフォールバックする(エラーにはしない)。
+      const env = partKind === 'ssg' ? SSG_ENVELOPE_TABLE[tonenum] : null;
+      if (env) {
+        events.push({ type: 'ssgEnvOld', line, al: env.al, dd: env.dd, sr: env.sr, rr: env.rr });
+      } else {
+        events.push({ type: 'tone', line, tonenum });
+      }
       continue;
     }
 
@@ -2209,7 +2246,21 @@ export function parseMml(source) {
         // 拒否は撤去済み、tools/verify_pmd_ssg_misc_commands.mjs参照)、FM3Extend
         // パートでもEはpartKindでは拒否されない。
         const kind = ppzExtendSet.has(p) ? 'ppz' : (fm3ExtendSet.has(p) ? 'fm' : PART_KIND[p]);
+        const beforeLen = trackInfo.events.length;
         tokenizeBody(expandedBody, lineNo, trackInfo.state, trackInfo.events, kind, globalState, p);
+        // 2026-08-19実測(FINDINGS.md 10番、PC1〜PC9/PCA/PCB/PCC.MML): パート指定に
+        // FMパート(A-F)が1つ以上含まれ、かつGが含まれる行では、`C`(measLen)の出力が
+        // Gのトラックにのみ2回出る(MC.EXEのFM→SSG境界の実装上の癖と思われるが、
+        // バイト一致が目的のためそのまま再現する)。重複するのはCコマンドだけで、
+        // 同じ行のv/q/*等は対象外。FMを含まない行(GHI/GHIJK等)ではGも1回のまま。
+        if (p === 'G' && partLetters.some((letter) => FM_PART_LETTERS_SET.has(letter))) {
+          const newEvents = trackInfo.events.slice(beforeLen);
+          trackInfo.events.length = beforeLen;
+          for (const ev of newEvents) {
+            trackInfo.events.push(ev);
+            if (ev.type === 'measLen') trackInfo.events.push({ ...ev });
+          }
+        }
       }
     } catch (e) {
       if (e instanceof ParseError) {
