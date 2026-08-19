@@ -86,6 +86,21 @@ K以外の文字だけが解釈されてKの分だけ黙って捨てられてい
 `volAbs`/`gateAbs`/`transposeAbs`と同じイベント種別のはず)を許可するよう
 `tokenizeRhythmKBody`の対応コマンド表を拡張することを検討する。
 
+**解消済み(2026-08-19、別セッション)**: 脱落の真の経路は「複数パート指定行でKだけ
+未対応コマンドをスキップしている」ではなく、`tokenizeRhythmKBody`内部で`v`/`V`/`q`/`_`/`__`を
+**構文としては消費しつつ意図的にイベントを積まず捨てていた**ことだった(パート分配ロジック
+自体は元から正しくKへ本文を渡していた)。`v`/`V`は`volAbs`、`q`は`gateAbs`/`gateRandRange`/
+`gateMin`、`_`/`__`は`transposeAbs`/`transposeRel`を積むよう修正(他パートの`tokenizeBody`と
+同じイベント種別・同じ0xfd/0xfe/0xb1/0xb3/0xf5/0xe7)。ただし`v`の数値変換だけはFM用の
+`V_LOWERCASE_FM_TABLE`を適用すると参照と一致せず、実データ実測(`v14`→`fd 0e`=14そのまま)
+によりKパートは常に無変換(raw)で積む。DS4_MAIA.mmlのRHYTHM区画はownLength/refLength
+とも322→328(参照と一致)になり、パート単位一致長も0→22byteに改善。全体一致率(位置基準の
+`wholeFileMatch`)は43.3%→43.1%とわずかに下がったが、パート整列済みの一致率
+(`compareFiles().summary.totalByteMatchRate`)は43.7%→44.1%へ改善しており、位置基準指標の
+低下はクラス4(ADPCM等のポインタずれ、未解消)がRHYTHM区画の長さ変化で二次的に下流バイト列を
+ずらした結果で、この修正自体の後退ではない。詳細は`compiler/pmd_mml_parser.mjs`の
+`tokenizeRhythmKBody`内コメント参照。
+
 ### クラス4(二次的、独立したバグではない): ADPCM・後続パートのポインタ値のずれ
 
 ADPCM(J)パートは全8本で**出力長は参照と完全一致**するが、内容はほぼ一致しない

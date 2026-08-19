@@ -1483,39 +1483,109 @@ function tokenizeRhythmKBody(body, line, events, globalState, state) {
     }
     // 'v'(大雑把な音量)・'V'(細かい音量)・'q'(ゲート)・'_'/'__'(転調)も、実データでは
     // 「ABCDEFGHIJKab l12 o4 !H v14 q1 l16」のようにKと同じ行へ頻繁に混在する
-    // (`!H`変数展開の中身に`_`が含まれるケースも実測)。いずれもKには対応する出力先が
-    // 無く読み捨てて構わない(o/l/C以外は本当に無視してよいコマンド群、PMDMML.MAN上も
-    // 音符/音量/ゲート系はK/Rパートの演奏内容そのものには関与しない)ため、構文だけ
-    // 消費して捨てる(範囲チェックはしない。他パート側で同じ文字列がchecked済みのため)。
-    if (c === 'v' || c === 'V') {
+    // (`!H`変数展開の中身に`_`が含まれるケースも実測)。
+    // 当初は「Kには対応する出力先が無い」と判断し構文だけ消費して捨てていたが、
+    // 実データDS4_MAIA.mmlの参照.M実測で誤りと判明: 単独K行(`K !H T175 ... v14 q0 ...`
+    // ではなく`ABCDEFGHIJK !H T175 o5 v14 q0 l8`、Kも含む複数パート指定行)のKトラックにも
+    // `f5 00`(transposeAbs 0)・`fd 0e`(volAbs 14)・`fe 00`(gateAbs 0)がそのまま出力されて
+    // おり、参照.Mの全体長差(328-322=6byte)ともちょうど一致した。つまり黙って捨てていたのは
+    // 複数パート指定行のK分配自体ではなく、このtokenizeRhythmKBody内部の意図的な読み捨てが
+    // 原因(パート分配ロジック自体は元から複数パート指定行のKへ正しく本文を渡していた)。
+    // 他パート(tokenizeBody)と同じイベント種別(volAbs/gateAbs/transposeAbs/transposeRel)を
+    // 積むよう変更する。ただしvolAbsの数値変換は実データで検証済みの範囲のみ反映する:
+    // v14→fd 0e(=14そのまま、SSGパートと同じ無変換)であり、FM用のV_LOWERCASE_FM_TABLE
+    // (v14→122相当)を適用すると参照と一致しないため、Kでは常に無変換(raw)で積む。
+    if (c === 'V') {
       i++;
       const m = /^\d+/.exec(body.slice(i));
-      if (!m) throw new ParseError(line, `'${c}' の後に音量数値がありません`);
+      if (!m) throw new ParseError(line, `'V' の後に音量数値がありません`);
       i += m[0].length;
+      const val = parseInt(m[0], 10);
+      if (val < 0 || val > 255) throw new ParseError(line, `'V' の値が範囲外です(Kパートは0-255): ${val}`);
+      events.push({ type: 'volAbs', line, value: val });
+      continue;
+    }
+    if (c === 'v') {
+      i++;
+      const m = /^\d+/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'v' の後に音量数値がありません`);
+      i += m[0].length;
+      const val = parseInt(m[0], 10);
+      // 'v'(大雑把な音量)は本来FM/SSG等で変換テーブルを介するが、Kパートでは実データ
+      // (v14→fd 0e)実測により無変換と確認済み。範囲は他パートの'V'と同じ0-255までは
+      // 実測できていないため、既存'v'の最大値(16)を踏襲して保守的に制限する。
+      if (val < 0 || val > 16) throw new ParseError(line, `'v' の値が範囲外です(Kパートは0-16): ${val}`);
+      events.push({ type: 'volAbs', line, value: val });
       continue;
     }
     if (c === 'q') {
       i++;
       const m1 = /^\d+/.exec(body.slice(i));
-      if (m1) i += m1[0].length;
+      let num1 = null;
+      if (m1) {
+        i += m1[0].length;
+        num1 = parseInt(m1[0], 10);
+        if (num1 < 0 || num1 > 255) throw new ParseError(line, `'q'の数値1が範囲外です(0-255。0xfe): ${num1}`);
+      }
+      let num2 = null;
       if (body[i] === '-') {
         i++;
         const m2 = /^\d+/.exec(body.slice(i));
-        if (m2) i += m2[0].length;
+        if (!m2) throw new ParseError(line, `'q-' の後に数値2がありません`);
+        i += m2[0].length;
+        num2 = parseInt(m2[0], 10);
+        if (num2 < 0 || num2 > 127) throw new ParseError(line, `'q'の数値2が範囲外です(0-127。0xb1下位7bit): ${num2}`);
       }
+      let num3 = null;
       if (body[i] === ',') {
         i++;
         const m3 = /^\d+/.exec(body.slice(i));
-        if (m3) i += m3[0].length;
+        if (!m3) throw new ParseError(line, `'q,' の後に数値3がありません`);
+        i += m3[0].length;
+        num3 = parseInt(m3[0], 10);
+        if (num3 < 0 || num3 > 255) throw new ParseError(line, `'q'の数値3が範囲外です(0-255): ${num3}`);
+      }
+      if (num1 == null && num2 == null && num3 == null) {
+        throw new ParseError(line, `'q'の書式が不正です(数値1・数値2('-n')・数値3(',n')の少なくとも一つが必要)`);
+      }
+      // 数値2(gateRandRange)の差分計算はtokenizeBody側の'q'実装(PMDMML.MAN §4-13、
+      // 参照.M実測)と同じロジックを踏襲する。Kパート単独の実データでは数値1のみ
+      // (q0)しか確認できていないため、数値2/数値3の経路は他パートと同一という
+      // 前提(共通コマンド0xb1/0xb3のはず)で実装するが、実測未確認のまま。
+      if (num1 != null) {
+        events.push({ type: 'gateAbs', line, value: num1 });
+        state.qNum1 = num1;
+      }
+      if (num2 != null) {
+        let value;
+        if (state.qNum1 != null) {
+          const heldNum1 = state.qNum1;
+          const range = Math.abs(heldNum1 - num2);
+          if (range > 127) throw new ParseError(line, `'q'の数値1と数値2の差が範囲外です(127以内。0xb1下位7bit): |${heldNum1}-${num2}|=${range}`);
+          value = (num2 < heldNum1 ? 0x80 : 0x00) | range;
+        } else {
+          value = 0x80 | num2;
+        }
+        events.push({ type: 'gateRandRange', line, value });
+      }
+      if (num3 != null) {
+        events.push({ type: 'gateMin', line, value: num3 });
       }
       continue;
     }
     if (c === '_') {
       i++;
-      if (body[i] === '_') i++;
-      const m = /^[+-]?\d+/.exec(body.slice(i));
-      if (!m) throw new ParseError(line, `'_' の後に転調数値がありません`);
+      let relative = false;
+      if (body[i] === '_') { relative = true; i++; }
+      const m = /^([+-]?)(\d+)/.exec(body.slice(i));
+      if (!m) throw new ParseError(line, `'${relative ? '__' : '_'}' の後に転調数値がありません`);
       i += m[0].length;
+      let val = parseInt(m[2], 10);
+      if (m[1] === '-') val = -val;
+      if (val < -128 || val > 127) {
+        throw new ParseError(line, `'${relative ? '__' : '_'}'(転調)の値が範囲外です(-128〜127): ${val}`);
+      }
+      events.push({ type: relative ? 'transposeRel' : 'transposeAbs', line, value: val });
       continue;
     }
     if (c === 'R') {
