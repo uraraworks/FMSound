@@ -35,7 +35,7 @@ jobs:
       DISK_PROXY_URL: ${{ vars.DISK_PROXY_URL }}
     steps:
       - name: Checkout FMSound
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Load pinned upstream revisions
         # GITHUB_ENV へ流し込むファイルはコメント行(#...)や空行を許さない
@@ -62,7 +62,7 @@ jobs:
           fi
 
       - name: Setup emsdk
-        uses: mymindstorm/setup-emsdk@v14
+        uses: mymindstorm/setup-emsdk@v16
         with:
           version: ${{ env.EMSDK_VERSION }}
 
@@ -87,10 +87,10 @@ jobs:
         run: tools/build_dist.sh
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -106,4 +106,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
